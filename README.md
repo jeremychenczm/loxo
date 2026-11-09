@@ -57,12 +57,6 @@ Both modes use the same agent model, governance rules, run ledger, and review fl
 
 Woken agents call back through six MCP tools: `get_issue`, `comment_on_issue`, `update_issue_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.
 
-### Deterministic workflow automation
-
-Repeatable work compiles into a validated workflow DSL executed by a deterministic DAG engine. It supports expected-edge joins, conditional branches, skip propagation, bounded loops, and concurrency caps. Execution state is event-sourced in Postgres, allowing interrupted workflows to recover after restart.
-
-Workflows can be drawn on a React Flow canvas with bidirectional DSL conversion and auto-layout, or generated from natural language with deterministic normalization, repair passes, and thirteen structural validation rules around the LLM.
-
 ### Execution on connected machines
 
 A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSocket. Pairing codes, hashed machine tokens, allowed-workdir fencing, and exponential backoff let agents use local runtimes and files while the control plane remains centralized.
@@ -76,8 +70,7 @@ A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSo
 | **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted issue while retaining a link to its source. |
 | **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, scoped memory, and permission levels. |
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, issue, and captured workspace evidence. |
-| **Workshop** | Runs bounded multi-agent discussions with deterministic speaker selection, stop phrases, and a shared whiteboard that can become a versioned workflow draft. |
-| **Projects & goals** | Groups issues, repositories, workspaces, and automations while a hierarchical goal tree preserves the reason behind the work. |
+| **Projects & goals** | Groups issues, repositories, and workspaces while a hierarchical goal tree preserves the reason behind the work. |
 
 ![Issue receipt — every issue renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/issue-receipt.png)
 
@@ -86,13 +79,12 @@ A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSo
 ```mermaid
 flowchart LR
     subgraph Client
-        FE[Next.js 14 web app<br/>React Flow, Kanban, chat]
+        FE[Next.js 14 web app<br/>Kanban and chat]
     end
     subgraph Server[Backend REST and WebSocket on port 4000]
         API[Express REST API]
-        WS[WebSocket gateway<br/>chat, workflow, machines]
+        WS[WebSocket gateway<br/>chat and machines]
         WAKE[Wake admission<br/>claims, locks, FIFO]
-        ENGINE[Workflow engine<br/>event-sourced DAG executor]
         MCP[MCP control plane<br/>6 tools and run tokens]
         RUNNER[Agent runner<br/>5 CLI runtimes and API mode]
     end
@@ -106,17 +98,15 @@ flowchart LR
     FE -->|REST| API
     FE -->|WebSocket upgrade| WS
     API --> WAKE --> RUNNER
-    API --> ENGINE
     RUNNER --> MCP
     RUNNER -->|spawn CLI| FS
     RUNNER -->|SSE| LLM
-    ENGINE --> PG
     API --> PG
     RUNNER -.->|paired machine turn| DAEMON
 ```
 
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
-- **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, review state, and event-sourced workflow state.
+- **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, and review state.
 - **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
 - **Monorepo:** `backend/` contains about 20 domain modules, `frontend/` contains 20 App Router routes, `daemon/` hosts the machine connector, and `packages/shared/` holds shared runner and protocol types.
 
@@ -169,11 +159,11 @@ Approve the code under **Settings → Machines**, then bind a machine-backed age
 ## Testing
 
 ```bash
-cd backend && npm test    # 414 tests — API, engine, governance, and integrations
+cd backend && npm test    # 331 tests — API, runs, governance, and workspaces
 cd daemon  && npm test    # 13 tests — turn relay and workdir fencing
 ```
 
-The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound review, and workflow join and race regressions.
+The suite covers admission and cross-surface claims, workspace capture, permission enforcement, and snapshot-bound review.
 
 ## Status and roadmap
 
@@ -187,8 +177,8 @@ Loxo is a working platform under active solo development. The core loop — issu
 ## Repository layout
 
 ```
-backend/          Express API, WebSocket gateway, runner, and workflow engine
-frontend/         Next.js 14 app with Tailwind, React Flow, and Zustand
+backend/          Express API, WebSocket gateway, and agent runner
+frontend/         Next.js 14 app with Tailwind and Zustand
 daemon/           Headless connector for execution on paired machines
 packages/shared/  Runner and machine-protocol types shared across processes
 ```

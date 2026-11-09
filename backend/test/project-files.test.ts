@@ -6,16 +6,11 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import { archiveProject } from '../src/modules/projects/project-files.service';
-import { registerDeliverable } from '../src/modules/workflows/deliverables.service';
-import { createExecution } from '../src/modules/workflows/execution-store';
-import { normalizeDsl } from '../src/modules/teams/workflow-dsl';
 import { storage } from '../src/storage/layout';
 
 const app = createApp();
 let token = '';
-let strangerToken = '';
 let userId = '';
-let teamId = '';
 let projectId = '';
 let workspace = '';
 
@@ -34,18 +29,6 @@ beforeAll(async () => {
   });
   token = reg.body.token;
   userId = reg.body.user.id;
-  const stranger = await request(app).post('/auth/register').send({
-    email: 'pfiles2@example.com',
-    username: 'pfiles2',
-    password: 'a-strong-password',
-  });
-  strangerToken = stranger.body.token;
-
-  const team = await request(app)
-    .post('/api/teams')
-    .set({ Authorization: `Bearer ${token}` })
-    .send({ name: 'Files team' });
-  teamId = team.body.team.id;
 
   const project = await request(app)
     .post('/api/projects')
@@ -227,77 +210,5 @@ describe('rename and delete', () => {
       .send({ path: 'kill-me.md' });
     expect(res.status).toBe(200);
     expect(fs.existsSync(path.join(workspace, 'kill-me.md'))).toBe(false);
-  });
-});
-
-describe('deliverable review over HTTP', () => {
-  let deliverableId = '';
-
-  beforeAll(async () => {
-    const workflow = normalizeDsl(
-      {
-        nodes: [
-          { id: 'start', type: 'start', label: 'Task' },
-          { id: 'a', type: 'agent', label: 'A', kind: 'worker' },
-          { id: 'end', type: 'end', label: 'Done' },
-        ],
-        edges: [
-          { from: 'start', to: 'a' },
-          { from: 'a', to: 'end' },
-        ],
-      },
-      new Set()
-    );
-    const execution = await createExecution({
-      userId,
-      teamId,
-      projectId,
-      task: 'produce',
-      mode: 'dag',
-      dryRun: true,
-      workflow,
-      nodeIds: workflow.nodes.map((n) => n.id),
-    });
-    const deliverable = await registerDeliverable({
-      userId,
-      projectId,
-      executionId: execution.id,
-      nodeId: 'a',
-      filePath: 'docs/readme.md',
-    });
-    deliverableId = deliverable.id;
-  });
-
-  it('lists and reviews deliverables with ownership checks', async () => {
-    const list = await request(app)
-      .get(`/api/projects/${projectId}/deliverables`)
-      .set(auth());
-    expect(list.status).toBe(200);
-    expect(list.body.deliverables.map((d: { id: string }) => d.id)).toContain(deliverableId);
-
-    const foreignList = await request(app)
-      .get(`/api/projects/${projectId}/deliverables`)
-      .set({ Authorization: `Bearer ${strangerToken}` });
-    expect(foreignList.status).toBe(404);
-
-    const badStatus = await request(app)
-      .patch(`/api/projects/${projectId}/deliverables/${deliverableId}`)
-      .set(auth())
-      .send({ status: 'superseded' });
-    expect(badStatus.status).toBe(400);
-
-    const foreignReview = await request(app)
-      .patch(`/api/projects/${projectId}/deliverables/${deliverableId}`)
-      .set({ Authorization: `Bearer ${strangerToken}` })
-      .send({ status: 'accepted' });
-    expect(foreignReview.status).toBe(404);
-
-    const ok = await request(app)
-      .patch(`/api/projects/${projectId}/deliverables/${deliverableId}`)
-      .set(auth())
-      .send({ status: 'accepted' });
-    expect(ok.status).toBe(200);
-    expect(ok.body.deliverable.status).toBe('accepted');
-    expect(ok.body.deliverable.reviewedAt).toBeTruthy();
   });
 });

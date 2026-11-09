@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { badRequest } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
-import { listDeliverables, reviewDeliverable } from '../workflows/deliverables.service';
 import {
   archiveProject,
   buildFileTree,
@@ -30,7 +29,6 @@ export const projectsRouter = Router();
 projectsRouter.use(requireAuth);
 
 const bindingFields = {
-  teamIds: z.array(z.string().uuid()).max(50).optional(),
   agentIds: z.array(z.string().uuid()).max(100).optional(),
 };
 
@@ -224,37 +222,6 @@ projectsRouter.delete('/:id/files', async (req: AuthedRequest, res, next) => {
     const target = typeof req.body?.path === 'string' ? req.body.path : pathQuery(req);
     await deleteFile(req.auth!.userId, String(req.params.id), target);
     res.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
-});
-
-projectsRouter.get('/:id/deliverables', async (req: AuthedRequest, res, next) => {
-  try {
-    await getProject(req.auth!.userId, String(req.params.id)); // ownership
-    res.json({
-      deliverables: await listDeliverables(req.auth!.userId, String(req.params.id)),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-projectsRouter.patch('/:id/deliverables/:deliverableId', async (req: AuthedRequest, res, next) => {
-  try {
-    const status = req.body?.status;
-    if (status !== 'accepted' && status !== 'revision') {
-      throw badRequest('invalid_status', 'Status must be accepted or revision');
-    }
-    const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 2000) : undefined;
-    res.json({
-      deliverable: await reviewDeliverable(
-        req.auth!.userId,
-        String(req.params.deliverableId),
-        status,
-        note
-      ),
-    });
   } catch (error) {
     next(error);
   }

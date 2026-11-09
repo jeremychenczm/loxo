@@ -13,7 +13,6 @@ export interface AddMemoInput {
   subjectId: string;
   source: MemoSource;
   content: string;
-  executionId?: string | null;
 }
 
 export async function addMemo(input: AddMemoInput): Promise<Memo | null> {
@@ -27,7 +26,6 @@ export async function addMemo(input: AddMemoInput): Promise<Memo | null> {
       subjectId: input.subjectId,
       source: input.source,
       content,
-      executionId: input.executionId ?? null,
     })
     .returning();
   return row!;

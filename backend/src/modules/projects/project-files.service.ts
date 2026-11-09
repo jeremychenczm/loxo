@@ -4,7 +4,7 @@ import AdmZip from 'adm-zip';
 import { badRequest, notFound } from '../../http/errors';
 import { cleanRelativePath, PathEscapeError, resolveInside } from '../../storage/path-safety';
 import { storage } from '../../storage/layout';
-import { sanitizeFileName } from '../workflows/artifacts';
+import { sanitizeFileName } from '../../storage/file-ops';
 import { getProject } from './projects.service';
 
 const MAX_TREE_DEPTH = 5;

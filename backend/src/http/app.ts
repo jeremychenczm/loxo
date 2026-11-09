@@ -7,15 +7,12 @@ import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { machinesRouter } from '../modules/machines/machines.routes';
 import { memosRouter } from '../modules/memory/memos.routes';
-import { workshopRouter } from '../modules/workshop/workshop.routes';
 import { dashboardRouter } from '../modules/dashboard/dashboard.routes';
 import { goalsRouter } from '../modules/goals/goals.routes';
 import { issuesRouter } from '../modules/issues/issues.routes';
 import { projectsRouter } from '../modules/projects/projects.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
 import { handleMcpRequest } from '../modules/runs/mcp-server';
-import { teamsRouter } from '../modules/teams/teams.routes';
-import { workflowsRouter } from '../modules/workflows/workflows.routes';
 import { providersRouter } from '../modules/providers/providers.routes';
 import { HttpError } from './errors';
 
@@ -46,8 +43,6 @@ export function createApp(): express.Express {
   app.use('/api/agent-groups', groupsRouter);
   app.use('/api/agent-presets', apiPresetsRouter);
   app.use('/api/conversations', conversationsRouter);
-  app.use('/api/workshop', workshopRouter);
-  app.use('/api/teams', teamsRouter);
   app.use('/api/projects', projectsRouter);
   app.use('/api/goals', goalsRouter);
   app.use('/api/issues', issuesRouter);
@@ -67,7 +62,6 @@ export function createApp(): express.Express {
         id: null,
       });
     });
-  app.use('/api/workflows', workflowsRouter);
   app.use('/api/machines', machinesRouter);
   app.use('/api/memos', memosRouter);
 

@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
-    "@xyflow/react": "^12.11.1",
     "framer-motion": "^11.18.2",
     "next": "14.2.21",
     "react": "^18.3.1",

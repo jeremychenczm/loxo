@@ -169,6 +169,13 @@
       "when": 1794192402350,
       "tag": "0023_remove-slack",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794192811953,
+      "tag": "0024_remove-teams-workflows",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,6 @@ import {
   fetchProjects,
   type ProjectView,
 } from '@/lib/projects';
-import { fetchTeams, type TeamView } from '@/lib/teams';
 
 function formatRecency(iso: string): string {
   const date = new Date(iso);
@@ -18,16 +17,14 @@ function formatRecency(iso: string): string {
 }
 
 interface CreateDialogProps {
-  teams: TeamView[];
   agents: Agent[];
   onClose: () => void;
   onCreated: (project: ProjectView) => void;
 }
 
-function CreateDialog({ teams, agents, onClose, onCreated }: CreateDialogProps) {
+function CreateDialog({ agents, onClose, onCreated }: CreateDialogProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [teamIds, setTeamIds] = useState<string[]>([]);
   const [agentIds, setAgentIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +40,6 @@ function CreateDialog({ teams, agents, onClose, onCreated }: CreateDialogProps) 
       const project = await createProject({
         name: name.trim(),
         description: description.trim() || undefined,
-        teamIds,
         agentIds,
       });
       onCreated(project);
@@ -72,25 +68,6 @@ function CreateDialog({ teams, agents, onClose, onCreated }: CreateDialogProps) 
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
-          <div>
-            <p className="mb-1 text-xs font-medium text-pixel-black/60">Teams</p>
-            <div className="flex flex-wrap gap-2">
-              {teams.map((team) => (
-                <button
-                  key={team.id}
-                  onClick={() => toggle(teamIds, team.id, setTeamIds)}
-                  className={`border px-2 py-1 text-xs ${
-                    teamIds.includes(team.id)
-                      ? 'border-pixel-line bg-pixel-yellow/30 font-bold text-pixel-black'
-                      : 'border-pixel-line text-pixel-black/60 hover:bg-pixel-cream'
-                  }`}
-                >
-                  {team.name}
-                </button>
-              ))}
-              {teams.length === 0 && <p className="text-xs text-pixel-black/50">No teams yet.</p>}
-            </div>
-          </div>
           <div>
             <p className="mb-1 text-xs font-medium text-pixel-black/60">Agents</p>
             <div className="flex flex-wrap gap-2">
@@ -134,7 +111,6 @@ function CreateDialog({ teams, agents, onClose, onCreated }: CreateDialogProps) 
 
 function ProjectsPageInner() {
   const [projects, setProjects] = useState<ProjectView[]>([]);
-  const [teams, setTeams] = useState<TeamView[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
 
@@ -147,7 +123,6 @@ function ProjectsPageInner() {
 
   useEffect(() => {
     reload();
-    fetchTeams().then(setTeams).catch(() => setTeams([]));
     fetchAgents().then(setAgents).catch(() => setAgents([]));
   }, [reload]);
 
@@ -187,7 +162,7 @@ function ProjectsPageInner() {
               </button>
             </div>
             <p className="mt-1 truncate text-xs text-pixel-black/60">
-              {project.teamIds.length} teams · {project.agentIds.length} agents ·{' '}
+              {project.agentIds.length} agents ·{' '}
               {project.description || 'No description yet'}
             </p>
             <p className="mt-1 text-xs text-pixel-black/50">Last active {formatRecency(project.updatedAt)}</p>
@@ -200,7 +175,6 @@ function ProjectsPageInner() {
 
       {showCreate && (
         <CreateDialog
-          teams={teams}
           agents={agents}
           onClose={() => setShowCreate(false)}
           onCreated={(project) => {

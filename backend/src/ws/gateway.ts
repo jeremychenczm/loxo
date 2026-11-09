@@ -13,7 +13,6 @@ import {
   touchMachineLastSeen,
 } from '../modules/machines/machines.service';
 import { handleChatFrame } from './chat-channel';
-import { attachWorkflowBroadcast, handleWorkflowFrame } from './workflow-channel';
 
 export interface WsGateway {
   wss: WebSocketServer;
@@ -36,7 +35,6 @@ interface TrackedSocket extends WebSocket {
  */
 export function attachWsGateway(server: Server): WsGateway {
   const wss = new WebSocketServer({ noServer: true });
-  attachWorkflowBroadcast();
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? '/', 'http://internal');
@@ -115,10 +113,6 @@ export function attachWsGateway(server: Server): WsGateway {
       }
       if (typeof message.type === 'string' && message.type.startsWith('chat.')) {
         void handleChatFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
-        return;
-      }
-      if (typeof message.type === 'string' && message.type.startsWith('workflow.')) {
-        handleWorkflowFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
       }
     });
   });

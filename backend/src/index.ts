@@ -3,7 +3,6 @@ import { assertRequiredEnv, config } from './config';
 import { closeDb } from './db/client';
 import { configureEgressProxy } from './http/egress-proxy';
 import { createApp } from './http/app';
-import { markInterruptedExecutions } from './modules/workflows/execution-store';
 import { attachWsGateway } from './ws/gateway';
 
 assertRequiredEnv();
@@ -12,11 +11,6 @@ configureEgressProxy();
 const app = createApp();
 const server = createServer(app);
 const gateway = attachWsGateway(server);
-
-const interrupted = await markInterruptedExecutions();
-if (interrupted > 0) {
-  console.log(`Marked ${interrupted} workflow execution(s) as interrupted`);
-}
 
 server.listen(config.port, () => {
   console.log(`Loxo backend listening on http://localhost:${config.port}`);

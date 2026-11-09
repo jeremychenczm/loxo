@@ -6,8 +6,6 @@ import {
   agents,
   projectAgents,
   projects,
-  projectTeams,
-  teams,
   type Project,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
@@ -18,7 +16,6 @@ import { storage } from '../../storage/layout';
 const METADATA_FILE = '.swarmdev-project.json';
 
 export interface ProjectView extends Project {
-  teamIds: string[];
   agentIds: string[];
 }
 
@@ -40,16 +37,15 @@ function writeMetadata(userId: string, project: Project): void {
 
 async function loadBindings(
   projectIds: string[]
-): Promise<Map<string, { teamIds: string[]; agentIds: string[] }>> {
-  const bindings = new Map<string, { teamIds: string[]; agentIds: string[] }>();
-  for (const id of projectIds) bindings.set(id, { teamIds: [], agentIds: [] });
+): Promise<Map<string, { agentIds: string[] }>> {
+  const bindings = new Map<string, { agentIds: string[] }>();
+  for (const id of projectIds) bindings.set(id, { agentIds: [] });
   if (projectIds.length === 0) return bindings;
 
-  const [teamRows, agentRows] = await Promise.all([
-    db.select().from(projectTeams).where(inArray(projectTeams.projectId, projectIds)),
-    db.select().from(projectAgents).where(inArray(projectAgents.projectId, projectIds)),
-  ]);
-  for (const row of teamRows) bindings.get(row.projectId)?.teamIds.push(row.teamId);
+  const agentRows = await db
+    .select()
+    .from(projectAgents)
+    .where(inArray(projectAgents.projectId, projectIds));
   for (const row of agentRows) bindings.get(row.projectId)?.agentIds.push(row.agentId);
   return bindings;
 }
@@ -59,29 +55,12 @@ async function toView(project: Project): Promise<ProjectView> {
   return { ...project, ...bindings.get(project.id)! };
 }
 
-/** Replaces bindings; every referenced team/agent must belong to the owner. */
+/** Replaces bindings; every referenced agent must belong to the owner. */
 async function syncBindings(
   userId: string,
   projectId: string,
-  input: { teamIds?: string[]; agentIds?: string[] }
+  input: { agentIds?: string[] }
 ): Promise<void> {
-  if (input.teamIds) {
-    const teamIds = [...new Set(input.teamIds)];
-    if (teamIds.length > 0) {
-      const owned = await db
-        .select({ id: teams.id })
-        .from(teams)
-        .where(and(eq(teams.userId, userId), inArray(teams.id, teamIds)));
-      if (owned.length !== teamIds.length) {
-        throw badRequest('invalid_binding', 'One or more teams do not exist');
-      }
-    }
-    await db.delete(projectTeams).where(eq(projectTeams.projectId, projectId));
-    if (teamIds.length > 0) {
-      await db.insert(projectTeams).values(teamIds.map((teamId) => ({ projectId, teamId })));
-    }
-  }
-
   if (input.agentIds) {
     const agentIds = [...new Set(input.agentIds)];
     if (agentIds.length > 0) {
@@ -102,7 +81,7 @@ async function syncBindings(
 
 export async function createProject(
   userId: string,
-  input: { name: string; description?: string; teamIds?: string[]; agentIds?: string[] }
+  input: { name: string; description?: string; agentIds?: string[] }
 ): Promise<ProjectView> {
   const [project] = await db
     .insert(projects)
@@ -158,7 +137,7 @@ export async function touchProject(userId: string, projectId: string): Promise<P
 export async function updateProject(
   userId: string,
   projectId: string,
-  input: { name?: string; description?: string; teamIds?: string[]; agentIds?: string[] }
+  input: { name?: string; description?: string; agentIds?: string[] }
 ): Promise<ProjectView> {
   const [project] = await db
     .update(projects)

@@ -70,3 +70,12 @@ export function dirSizeBytes(dir: string): number {
   if (!fs.existsSync(dir)) return 0;
   return walkFiles(dir).reduce((total, file) => total + fs.statSync(file).size, 0);
 }
+
+/** Reduces a display name to a portable file-name stem. */
+export function sanitizeFileName(value: string): string {
+  const cleaned = value
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 80);
+  return cleaned || 'file';
+}

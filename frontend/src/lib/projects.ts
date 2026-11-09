@@ -8,7 +8,6 @@ export interface ProjectView {
   description: string;
   /** 'default' is the built-in fallback project for issues created without one. */
   kind: 'normal' | 'default';
-  teamIds: string[];
   agentIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -40,20 +39,6 @@ export interface FilePreview {
   binary: boolean;
 }
 
-export type DeliverableStatus = 'pending' | 'accepted' | 'revision' | 'superseded';
-
-export interface Deliverable {
-  id: string;
-  projectId: string;
-  executionId: string;
-  nodeId: string;
-  agentId: string | null;
-  filePath: string;
-  status: DeliverableStatus;
-  createdAt: string;
-  reviewedAt: string | null;
-}
-
 export const fetchProjects = () =>
   apiFetch<{ projects: ProjectView[] }>('/api/projects').then((r) => r.projects);
 
@@ -63,7 +48,6 @@ export const fetchProject = (id: string) =>
 export const createProject = (input: {
   name: string;
   description?: string;
-  teamIds?: string[];
   agentIds?: string[];
 }) =>
   apiFetch<{ project: ProjectView }>('/api/projects', {
@@ -73,7 +57,7 @@ export const createProject = (input: {
 
 export const updateProject = (
   id: string,
-  input: { name?: string; description?: string; teamIds?: string[]; agentIds?: string[] }
+  input: { name?: string; description?: string; agentIds?: string[] }
 ) =>
   apiFetch<{ project: ProjectView }>(`/api/projects/${id}`, {
     method: 'PATCH',
@@ -110,22 +94,6 @@ export const deleteProjectFile = (id: string, path: string) =>
     method: 'DELETE',
     body: JSON.stringify({ path }),
   });
-
-export const fetchDeliverables = (id: string) =>
-  apiFetch<{ deliverables: Deliverable[] }>(`/api/projects/${id}/deliverables`).then(
-    (r) => r.deliverables
-  );
-
-export const reviewDeliverable = (
-  projectId: string,
-  deliverableId: string,
-  status: 'accepted' | 'revision',
-  note?: string
-) =>
-  apiFetch<{ deliverable: Deliverable }>(
-    `/api/projects/${projectId}/deliverables/${deliverableId}`,
-    { method: 'PATCH', body: JSON.stringify(note ? { status, note } : { status }) }
-  ).then((r) => r.deliverable);
 
 /** Authenticated binary fetch; saves via a temporary object URL. */
 async function saveBlob(path: string, fallbackName: string): Promise<void> {

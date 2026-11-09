@@ -1,15 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 
-type MobileTabKey = 'projects' | 'agents' | 'teams' | 'me';
+type MobileTabKey = 'issues' | 'agents' | 'projects' | 'me';
 
 const MOBILE_TABS: Array<{ key: MobileTabKey; label: string; accent: string; href: string }> = [
-  { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow', href: '/?mobileTab=projects' },
-  { key: 'agents', label: 'Agents', accent: 'bg-pixel-yellow', href: '/?mobileTab=contacts' },
-  { key: 'teams', label: 'Teams', accent: 'bg-pixel-yellow', href: '/?mobileTab=teams' },
-  { key: 'me', label: 'Me', accent: 'bg-pixel-gray', href: '/?mobileTab=me' },
+  { key: 'issues', label: 'Issues', accent: 'bg-pixel-yellow', href: '/issues' },
+  { key: 'agents', label: 'Agents', accent: 'bg-pixel-yellow', href: '/agents' },
+  { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow', href: '/projects' },
+  { key: 'me', label: 'Me', accent: 'bg-pixel-gray', href: '/settings/providers' },
 ];
 
 function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
@@ -21,7 +21,7 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
       </svg>
     );
   }
-  if (tab === 'teams') {
+  if (tab === 'issues') {
     return (
       <svg viewBox="0 0 24 24" className={common} aria-hidden="true">
         <path fill="currentColor" d="M12 3 3 8l9 5 9-5-9-5Zm-7 9 7 4 7-4v5l-7 4-7-4v-5Z" />
@@ -42,36 +42,28 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
   );
 }
 
-const TAB_QUERY_KEYS: Record<string, MobileTabKey> = {
-  projects: 'projects',
-  contacts: 'agents',
-  teams: 'teams',
-  me: 'me',
-};
-
-function activeTabForRoute(pathname: string, searchTab: string | null): MobileTabKey {
-  if (pathname === '/' && searchTab && TAB_QUERY_KEYS[searchTab]) return TAB_QUERY_KEYS[searchTab]!;
-  if (pathname.startsWith('/teams') || pathname.startsWith('/workshop')) return 'teams';
+function activeTabForRoute(pathname: string): MobileTabKey | null {
+  if (pathname.startsWith('/issues')) return 'issues';
   if (pathname.startsWith('/agents') || pathname.startsWith('/upload')) return 'agents';
+  if (pathname.startsWith('/projects')) return 'projects';
   if (pathname.startsWith('/settings')) return 'me';
-  return 'projects';
+  return null;
 }
 
 export function MobileAppNav() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   // Full-screen chat routes hide the tab bar.
   if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/agents/')) {
     return null;
   }
 
-  const activeKey = activeTabForRoute(pathname, searchParams.get('mobileTab'));
+  const activeKey = activeTabForRoute(pathname);
 
   return (
     <nav
       data-mobile-app-nav="true"
-      className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-pixel-line bg-pixel-white shadow-[0_-4px_0_0_rgba(17,17,17,0.10)] md:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-pixel-line bg-pixel-white shadow-[0_-4px_0_0_rgba(17,17,17,0.10)] md:hidden"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0px)' }}
     >
       {MOBILE_TABS.map((tab) => {

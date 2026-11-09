@@ -62,7 +62,6 @@ function TraditionalSidebar({
     { href: '/issues', label: 'Issues', icon: 'teams' },
     { href: '/goals', label: 'Goals', icon: 'workshop' },
     { href: '/agents', label: 'My Agents', icon: 'agents' },
-    { href: '/workshop', label: 'Workshop', icon: 'workshop' },
     { href: '/settings/providers', label: 'Providers', icon: 'settings' },
     { href: '/settings/machines', label: 'Machines', icon: 'settings' },
   ];
@@ -184,7 +183,7 @@ function TraditionalSidebar({
                           <span className="min-w-0 flex-1">
                             <span className="block truncate leading-tight">{project.name}</span>
                             <span className="block truncate text-[10px] leading-tight opacity-60">
-                              {project.teamIds.length} teams · {project.agentIds.length} agents
+                              {project.agentIds.length} agents
                             </span>
                           </span>
                         </Link>
@@ -255,7 +254,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 
   const isPublicPath = pathname === '/' || pathname === '/login' || pathname === '/register';
   const isRouteGuardBlocking = !isPublicPath && (!hasHydrated || !token);
-  const isChatRoute = /^\/agents\/[^/]+$/.test(pathname) || pathname.startsWith('/workshop');
+  const isChatRoute = /^\/agents\/[^/]+$/.test(pathname);
   const isProjectDetailRoute = /^\/projects\/[^/]+/.test(pathname);
 
   const mainClassName = isChatRoute

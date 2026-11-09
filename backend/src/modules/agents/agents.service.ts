@@ -212,10 +212,6 @@ export async function updateAgentConfig(
 }
 
 export async function deleteAgent(userId: string, agentId: string): Promise<void> {
-  // Manifest unlink must run before the row delete cascades member rows away.
-  const { unlinkAgentFromTeams } = await import('../teams/teams.service');
-  await unlinkAgentFromTeams(userId, agentId);
-
   const deleted = await db
     .delete(agents)
     .where(and(eq(agents.id, agentId), eq(agents.userId, userId)))

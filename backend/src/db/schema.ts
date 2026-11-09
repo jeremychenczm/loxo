@@ -14,7 +14,6 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type { RuntimeProbe } from '@swarmdev/shared';
-import type { WorkflowDsl } from '../modules/teams/workflow-dsl';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -169,23 +168,10 @@ export type Message = typeof messages.$inferSelect;
  * manifest file under the user's storage (deliberate design: complex graph
  * structures stay out of the relational schema).
  */
-export const teams = pgTable('teams', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  description: text('description').notNull().default(''),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type Team = typeof teams.$inferSelect;
-
 /**
  * Project workspace: a durable directory agents collaborate in, bound to
- * teams/agents via join tables (deliberate deviation from JSON-array
- * columns). `updatedAt` is the recency key maintained by touchProject.
+ * agents via a join table. `updatedAt` is the recency key maintained by
+ * touchProject.
  */
 export type ProjectKind = 'normal' | 'default';
 
@@ -213,23 +199,6 @@ export const projects = pgTable(
 
 export type Project = typeof projects.$inferSelect;
 
-export const projectTeams = pgTable(
-  'project_teams',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    teamId: uuid('team_id')
-      .notNull()
-      .references(() => teams.id, { onDelete: 'cascade' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('project_teams_project_team').on(t.projectId, t.teamId)]
-);
-
-export type ProjectTeam = typeof projectTeams.$inferSelect;
-
 export const projectAgents = pgTable(
   'project_agents',
   {
@@ -247,139 +216,12 @@ export const projectAgents = pgTable(
 
 export type ProjectAgent = typeof projectAgents.$inferSelect;
 
-export type WorkflowExecutionStatus =
-  | 'queued'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted';
-
-export type WorkflowNodeStatus =
-  | 'pending'
-  | 'ready'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'skipped';
-
-/**
- * Primary execution record. The DSL is snapshotted at start so history stays
- * readable after the team manifest changes.
- */
-export const workflowExecutions = pgTable('workflow_executions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  teamId: uuid('team_id')
-    .notNull()
-    .references(() => teams.id, { onDelete: 'cascade' }),
-  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
-  task: text('task').notNull(),
-  status: text('status').$type<WorkflowExecutionStatus>().notNull().default('queued'),
-  mode: text('mode').notNull(), // dag | state-machine
-  dryRun: boolean('dry_run').notNull().default(false),
-  workflow: jsonb('workflow').$type<WorkflowDsl>().notNull(),
-  finalOutput: text('final_output'),
-  error: text('error'),
-  startedAt: timestamp('started_at', { withTimezone: true }),
-  finishedAt: timestamp('finished_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type WorkflowExecution = typeof workflowExecutions.$inferSelect;
-
-export const workflowNodeStates = pgTable(
-  'workflow_node_states',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    executionId: uuid('execution_id')
-      .notNull()
-      .references(() => workflowExecutions.id, { onDelete: 'cascade' }),
-    nodeId: text('node_id').notNull(),
-    status: text('status').$type<WorkflowNodeStatus>().notNull().default('pending'),
-    runCount: integer('run_count').notNull().default(0),
-    output: text('output').notNull().default(''),
-    error: text('error'),
-    startedAt: timestamp('started_at', { withTimezone: true }),
-    finishedAt: timestamp('finished_at', { withTimezone: true }),
-  },
-  (t) => [uniqueIndex('workflow_node_states_execution_node').on(t.executionId, t.nodeId)]
-);
-
-export type WorkflowNodeState = typeof workflowNodeStates.$inferSelect;
-
-/** Append-only event log; `seq` is assigned by the executor per execution. */
-export const workflowEvents = pgTable(
-  'workflow_events',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    executionId: uuid('execution_id')
-      .notNull()
-      .references(() => workflowExecutions.id, { onDelete: 'cascade' }),
-    seq: integer('seq').notNull(),
-    type: text('type').notNull(),
-    nodeId: text('node_id'),
-    message: text('message').notNull().default(''),
-    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('workflow_events_execution_seq').on(t.executionId, t.seq)]
-);
-
-export type WorkflowEvent = typeof workflowEvents.$inferSelect;
-
-/** Files a node produced: workspace diffs and the per-run node-output log. */
-export const workflowArtifacts = pgTable('workflow_artifacts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  executionId: uuid('execution_id')
-    .notNull()
-    .references(() => workflowExecutions.id, { onDelete: 'cascade' }),
-  nodeId: text('node_id').notNull(),
-  runCount: integer('run_count').notNull().default(1),
-  kind: text('kind').notNull(), // workspace-file | node-output
-  label: text('label').notNull().default(''), // created | updated | output
-  path: text('path').notNull(), // relative to the run root
-  size: integer('size').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type WorkflowArtifact = typeof workflowArtifacts.$inferSelect;
-
-export type DeliverableStatus = 'pending' | 'accepted' | 'revision' | 'superseded';
-
-/**
- * Reviewable file a project workflow produced. Registering a new deliverable
- * for the same project+path supersedes the previous pending one.
- */
-export const deliverables = pgTable('deliverables', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  executionId: uuid('execution_id')
-    .notNull()
-    .references(() => workflowExecutions.id, { onDelete: 'cascade' }),
-  nodeId: text('node_id').notNull(),
-  agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
-  filePath: text('file_path').notNull(),
-  status: text('status').$type<DeliverableStatus>().notNull().default('pending'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
-});
-
-export type Deliverable = typeof deliverables.$inferSelect;
-
 export type MemoScope = 'agent' | 'team' | 'project';
 export type MemoSource = 'retro' | 'review';
 
 /**
- * Distilled learning from a workflow run or a deliverable review, scoped to
- * the agent/team/project it belongs to. subjectId is polymorphic (no FK);
+ * Distilled learning from a review, scoped to the agent/team/project it
+ * belongs to. subjectId is polymorphic (no FK);
  * rows are pruned with their owner via the users cascade.
  */
 export const memos = pgTable('memos', {
@@ -391,28 +233,10 @@ export const memos = pgTable('memos', {
   subjectId: uuid('subject_id').notNull(),
   source: text('source').$type<MemoSource>().notNull(),
   content: text('content').notNull(),
-  executionId: uuid('execution_id').references(() => workflowExecutions.id, {
-    onDelete: 'set null',
-  }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type Memo = typeof memos.$inferSelect;
-
-/** Synced from the manifest on save; answers "which teams use this agent". */
-export const teamMembers = pgTable('team_members', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  teamId: uuid('team_id')
-    .notNull()
-    .references(() => teams.id, { onDelete: 'cascade' }),
-  agentId: uuid('agent_id')
-    .notNull()
-    .references(() => agents.id, { onDelete: 'cascade' }),
-  nodeId: text('node_id').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type TeamMember = typeof teamMembers.$inferSelect;
 
 /**
  * Paired daemon hosts that execute machine-bound agents. `tokenHash` is the
