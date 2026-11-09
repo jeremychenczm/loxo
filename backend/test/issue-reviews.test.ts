@@ -2,13 +2,11 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
-import { listMemos } from '../src/modules/memory/memos.service';
 import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 
 const app = createApp();
 let token = '';
-let userId = '';
 let agentId = '';
 
 beforeAll(async () => {
@@ -21,7 +19,6 @@ beforeAll(async () => {
     password: 'a-strong-password',
   });
   token = reg.body.token;
-  userId = reg.body.user.id;
 
   const agent = await request(app)
     .post('/api/agents')
@@ -103,7 +100,7 @@ describe('issue reviews', () => {
     expect(listed.body.reviews).toHaveLength(1);
   });
 
-  it('request changes reopens work, distills memos, and re-wakes the assignee', async () => {
+  it('request changes reopens work and re-wakes the assignee', async () => {
     const issue = await createIssue('Needs rework');
     await request(app)
       .patch(`/api/issues/${issue.id}`)
@@ -125,11 +122,6 @@ describe('issue reviews', () => {
     const comments = await request(app).get(`/api/issues/${issue.id}/comments`).set(auth());
     const bodies = comments.body.comments.map((c: { body: string }) => c.body);
     expect(bodies).toContain('[CHANGES REQUESTED] The button is still misaligned on mobile.');
-
-    const agentMemos = await listMemos(userId, 'agent', agentId);
-    expect(agentMemos.some((m) => m.content.includes('misaligned'))).toBe(true);
-    const projectMemos = await listMemos(userId, 'project', issue.projectId);
-    expect(projectMemos.some((m) => m.content.includes('misaligned'))).toBe(true);
 
     // The rework wake produced a second run.
     const runs = await request(app).get(`/api/runs?issueId=${issue.id}`).set(auth());

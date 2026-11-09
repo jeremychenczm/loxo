@@ -98,7 +98,6 @@ conversationsRouter.post('/:id/file-issue', async (req: AuthedRequest, res, next
       title: z.string().trim().min(1).max(300),
       description: z.string().max(10_000).optional(),
       projectId: z.string().uuid().optional(),
-      goalId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'title is required');

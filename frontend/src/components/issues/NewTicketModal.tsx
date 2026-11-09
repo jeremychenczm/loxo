@@ -1,14 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { Goal } from '@/lib/goals';
 import type { ProjectView } from '@/lib/projects';
 import { createIssue, type Issue } from '@/lib/issues';
 import { BracketButton, PAPER, Rule, TornEdge } from './receipt-parts';
 
 interface NewTicketModalProps {
   projects: ProjectView[];
-  goals: Goal[];
   /** Preselected project, e.g. the board's active filter. */
   initialProjectId?: string;
   onClose: () => void;
@@ -20,7 +18,6 @@ const FIELD =
 
 export function NewTicketModal({
   projects,
-  goals,
   initialProjectId,
   onClose,
   onCreated,
@@ -29,7 +26,6 @@ export function NewTicketModal({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [projectId, setProjectId] = useState(initialProjectId ?? defaultProject?.id ?? '');
-  const [goalId, setGoalId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -49,7 +45,6 @@ export function NewTicketModal({
         title: trimmed,
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(projectId ? { projectId } : {}),
-        ...(goalId ? { goalId } : {}),
       });
       onCreated(issue);
     } catch (err) {
@@ -123,23 +118,6 @@ export function NewTicketModal({
                 {ordered.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="mb-1 font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
-                Goal
-              </p>
-              <select
-                value={goalId}
-                onChange={(e) => setGoalId(e.target.value)}
-                className={FIELD}
-              >
-                <option value="">None</option>
-                {goals.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.title}
                   </option>
                 ))}
               </select>

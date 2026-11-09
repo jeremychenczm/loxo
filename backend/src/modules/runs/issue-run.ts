@@ -1,7 +1,6 @@
 import type { Agent, Issue, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { listComments } from '../issues/comments.service';
-import { collectNodeMemos } from '../memory/memos.service';
 import { getProviderCredentials } from '../providers/providers.service';
 import { dispatchAgentTurn } from '../runner/dispatch';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-turn';
@@ -60,10 +59,6 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
     author: c.authorType,
     body: c.body,
   }));
-  const memos = await collectNodeMemos(run.userId, {
-    agentId: agent.id,
-    projectId: issue.projectId,
-  });
 
   // A repository binding switches the run into the issue's isolated worktree;
   // without one the legacy shared project workspace remains in effect.
@@ -87,7 +82,6 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
     status: issue.status,
     reason: run.reason,
     comments,
-    memos,
     workspace,
     controlPlane: hasControlPlane ? 'mcp' : 'report',
   });

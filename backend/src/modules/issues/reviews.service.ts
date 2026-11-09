@@ -10,7 +10,6 @@ import {
 } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
 import { getProjectRepository, latestIssueSnapshot } from '../code-workspaces/workspace.service';
-import { addMemo } from '../memory/memos.service';
 import { addAgentComment, addHumanComment } from './comments.service';
 import { moveIssue } from './issues.service';
 
@@ -65,10 +64,9 @@ async function findOwnedIssue(userId: string, issueId: string): Promise<Issue> {
 }
 
 /**
- * One review verdict: record it, put the feedback on the timeline, distill
- * it into memory, then move the issue. Order matters — the comment and memo
- * must exist before the transition, because moving to in_progress re-wakes
- * the assignee and the next run reads both.
+ * One review verdict: record it, put the feedback on the timeline, then move
+ * the issue. The comment must exist before the transition, because moving to
+ * in_progress re-wakes the assignee and the next run reads it.
  */
 export async function createReview(
   userId: string,
@@ -127,26 +125,6 @@ export async function createReview(
     await addAgentComment(userId, issueId, reviewerAgentId, commentBody);
   } else {
     await addHumanComment(userId, issueId, commentBody);
-  }
-
-  if (input.decision === 'changes_requested') {
-    const memoContent = `Review feedback on issue #${issue.issueNumber} (${issue.title}): ${body}`;
-    if (issue.assigneeAgentId) {
-      await addMemo({
-        userId,
-        scope: 'agent',
-        subjectId: issue.assigneeAgentId,
-        source: 'review',
-        content: memoContent,
-      });
-    }
-    await addMemo({
-      userId,
-      scope: 'project',
-      subjectId: issue.projectId,
-      source: 'review',
-      content: memoContent,
-    });
   }
 
   // in_review -> done | in_progress are both legal transitions; moving to

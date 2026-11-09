@@ -13,7 +13,7 @@ import { appendMessage, getConversation } from './conversations.service';
 export async function fileIssueFromConversation(
   userId: string,
   conversationId: string,
-  input: { title: string; description?: string; projectId?: string; goalId?: string }
+  input: { title: string; description?: string; projectId?: string }
 ): Promise<Issue> {
   const conversation = await getConversation(userId, conversationId);
 
@@ -21,7 +21,6 @@ export async function fileIssueFromConversation(
     title: input.title,
     description: input.description,
     projectId: input.projectId,
-    goalId: input.goalId,
     assignee: { agentId: conversation.agentId },
     sourceConversationId: conversation.id,
   });

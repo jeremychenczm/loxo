@@ -127,7 +127,6 @@ issuesRouter.get('/', async (req: AuthedRequest, res, next) => {
     const schema = z.object({
       projectId: z.string().uuid().optional(),
       status: issueStatus.optional(),
-      goalId: z.string().uuid().optional(),
       assigneeAgentId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.query);
@@ -155,7 +154,6 @@ issuesRouter.post('/', async (req: AuthedRequest, res, next) => {
       title: z.string().trim().min(1).max(300),
       description: z.string().max(10000).optional(),
       projectId: z.string().uuid().optional(),
-      goalId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Issue title is required');
@@ -178,7 +176,6 @@ issuesRouter.patch('/:id', async (req: AuthedRequest, res, next) => {
     const schema = z.object({
       title: z.string().trim().min(1).max(300).optional(),
       description: z.string().max(10000).optional(),
-      goalId: z.string().uuid().nullable().optional(),
       assignee: assignmentPatch.optional(),
       reviewer: assignmentPatch.optional(),
     });

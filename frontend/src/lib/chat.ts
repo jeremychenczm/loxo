@@ -60,7 +60,7 @@ export const draftIssue = (id: string, range?: { fromMessageId?: string; toMessa
 
 export const fileIssue = (
   id: string,
-  input: { title: string; description?: string; projectId?: string; goalId?: string }
+  input: { title: string; description?: string; projectId?: string }
 ) =>
   apiFetch<{ issue: Issue }>(`/api/conversations/${id}/file-issue`, {
     method: 'POST',

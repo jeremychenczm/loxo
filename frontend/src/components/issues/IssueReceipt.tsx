@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth';
 import type { Agent } from '@/lib/agents';
-import type { Goal } from '@/lib/goals';
 import { BracketButton, CircularStamp, PAPER, Rule, TornEdge } from './receipt-parts';
 import {
   CLIENT_TRANSITIONS,
@@ -54,7 +53,6 @@ interface IssueReceiptProps {
   printEntrance?: boolean;
   projectName?: string;
   agents: Agent[];
-  goals: Goal[];
   onClose: () => void;
   /** Fired after any mutation so the board behind can refresh. */
   onChanged: () => void;
@@ -111,7 +109,6 @@ export function IssueReceipt({
   printEntrance = false,
   projectName,
   agents,
-  goals,
   onClose,
   onChanged,
 }: IssueReceiptProps) {
@@ -367,22 +364,6 @@ export function IssueReceipt({
               <span className="max-w-[55%] truncate font-pixel text-sm text-pixel-black">
                 {projectName ?? '-'}
               </span>
-            </Row>
-            <Row label="Goal">
-              <select
-                value={issue.goalId ?? ''}
-                onChange={(e) =>
-                  void mutate(() => updateIssue(issue.id, { goalId: e.target.value || null }))
-                }
-                className={VALUE_SELECT}
-              >
-                <option value="">None</option>
-                {goals.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.title}
-                  </option>
-                ))}
-              </select>
             </Row>
             <Row label="Assignee">
               <select

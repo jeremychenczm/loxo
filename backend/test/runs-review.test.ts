@@ -3,7 +3,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import { issueReviews } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { listMemos } from '../src/modules/memory/memos.service';
 import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
 import { issueRunToken } from '../src/modules/runs/run-token';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
@@ -202,7 +201,7 @@ describe('reviewer routing', () => {
     gated.release();
   });
 
-  it('agent rejection reopens work, re-wakes the assignee, and distills a memo', async () => {
+  it('agent rejection reopens work and re-wakes the assignee', async () => {
     const gated = gateReviewRun();
     const issue = await createIssue('Reject and rework');
     await setPrincipals(issue.id, workerId, inspectorId);
@@ -230,9 +229,6 @@ describe('reviewer routing', () => {
 
     const workerRuns = (await runsFor(issue.id)).filter((r) => r.agentId === workerId);
     expect(workerRuns.length).toBeGreaterThanOrEqual(2); // initial + rework
-
-    const memosForWorker = await listMemos(userId, 'agent', workerId);
-    expect(memosForWorker.some((m) => m.content.includes('edge case'))).toBe(true);
   });
 
   it('stops waking the reviewer once the automated-cycle fuse blows', async () => {

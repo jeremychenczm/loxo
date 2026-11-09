@@ -2,7 +2,6 @@ import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
-  goals,
   issues,
   projects,
   users,
@@ -78,15 +77,6 @@ async function assertOwnedProject(userId: string, projectId: string): Promise<vo
   if (!row) throw badRequest('invalid_project', 'Project does not exist');
 }
 
-async function assertOwnedGoal(userId: string, goalId: string): Promise<void> {
-  const [row] = await db
-    .select({ id: goals.id })
-    .from(goals)
-    .where(and(eq(goals.id, goalId), eq(goals.userId, userId)))
-    .limit(1);
-  if (!row) throw badRequest('invalid_goal', 'Goal does not exist');
-}
-
 async function assertOwnedAgent(userId: string, agentId: string): Promise<void> {
   const [row] = await db
     .select({ id: agents.id })
@@ -136,7 +126,6 @@ export async function createIssue(
     title: string;
     description?: string;
     projectId?: string;
-    goalId?: string;
     assignee?: AssignmentPatch;
     /** Validated by the caller; not exposed through the HTTP create route. */
     sourceConversationId?: string;
@@ -148,7 +137,6 @@ export async function createIssue(
   } else {
     projectId = (await getOrCreateDefaultProject(userId)).id;
   }
-  if (input.goalId) await assertOwnedGoal(userId, input.goalId);
   const assignee = input.assignee
     ? await resolvePrincipal(userId, input.assignee, 'assignee')
     : { agentId: null, userId: null };
@@ -169,7 +157,6 @@ export async function createIssue(
       .values({
         userId,
         projectId: projectId!,
-        goalId: input.goalId ?? null,
         issueNumber: counter!.value,
         title: input.title,
         description: input.description ?? '',
@@ -185,12 +172,11 @@ export async function createIssue(
 
 export async function listIssues(
   userId: string,
-  filter: { projectId?: string; status?: IssueStatus; goalId?: string; assigneeAgentId?: string }
+  filter: { projectId?: string; status?: IssueStatus; assigneeAgentId?: string }
 ): Promise<Issue[]> {
   const conditions = [eq(issues.userId, userId)];
   if (filter.projectId) conditions.push(eq(issues.projectId, filter.projectId));
   if (filter.status) conditions.push(eq(issues.status, filter.status));
-  if (filter.goalId) conditions.push(eq(issues.goalId, filter.goalId));
   if (filter.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filter.assigneeAgentId));
   return db
     .select()
@@ -237,7 +223,6 @@ export async function updateIssue(
   input: {
     title?: string;
     description?: string;
-    goalId?: string | null;
     assignee?: AssignmentPatch | null;
     reviewer?: AssignmentPatch | null;
   }
@@ -245,12 +230,9 @@ export async function updateIssue(
   const existing = await findIssue(userId, issueId);
   if (!existing) throw notFound('Issue not found');
 
-  if (typeof input.goalId === 'string') await assertOwnedGoal(userId, input.goalId);
-
   const patch: Partial<typeof issues.$inferInsert> = {
     ...(input.title !== undefined ? { title: input.title } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.goalId !== undefined ? { goalId: input.goalId } : {}),
     updatedAt: new Date(),
   };
 

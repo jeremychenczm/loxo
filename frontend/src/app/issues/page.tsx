@@ -13,7 +13,6 @@ import { IssueReceipt } from '@/components/issues/IssueReceipt';
 import { NewTicketModal } from '@/components/issues/NewTicketModal';
 import { ApiError } from '@/lib/api';
 import { fetchAgents, type Agent } from '@/lib/agents';
-import { fetchGoals, type Goal } from '@/lib/goals';
 import {
   CLIENT_TRANSITIONS,
   STATUS_META,
@@ -59,7 +58,6 @@ function BoardPage() {
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [goals, setGoals] = useState<Goal[]>([]);
   const [projectFilter, setProjectFilter] = useState<string>('');
   const [dragSource, setDragSource] = useState<IssueStatus | null>(null);
   const [openIssue, setOpenIssue] = useState<Issue | null>(null);
@@ -80,14 +78,12 @@ function BoardPage() {
       fetchBoard(projectFilter || undefined),
       fetchProjects(),
       fetchAgents().catch(() => [] as Agent[]),
-      fetchGoals().catch(() => ({ goals: [] as Goal[] })),
     ])
-      .then(([boardRes, projectsRes, agentList, goalsRes]) => {
+      .then(([boardRes, projectsRes, agentList]) => {
         if (cancelled) return;
         setBoard(boardRes.board);
         setProjects(projectsRes);
         setAgents(agentList);
-        setGoals(goalsRes.goals);
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : 'Load failed'))
       .finally(() => !cancelled && setLoading(false));
@@ -338,7 +334,6 @@ function BoardPage() {
       {creating && (
         <NewTicketModal
           projects={projects}
-          goals={goals}
           initialProjectId={projectFilter || undefined}
           onClose={() => setCreating(false)}
           onCreated={(issue) => {
@@ -356,7 +351,6 @@ function BoardPage() {
           printEntrance={printEntrance}
           projectName={projects.find((p) => p.id === openIssue.projectId)?.name}
           agents={agents}
-          goals={goals}
           onClose={() => {
             setOpenIssue(null);
             void refresh();

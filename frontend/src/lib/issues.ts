@@ -12,7 +12,6 @@ export type IssueStatus =
 export interface Issue {
   id: string;
   projectId: string;
-  goalId: string | null;
   issueNumber: number;
   title: string;
   description: string;
@@ -79,7 +78,6 @@ export function createIssue(input: {
   title: string;
   description?: string;
   projectId?: string;
-  goalId?: string;
 }) {
   return apiFetch<{ issue: Issue }>('/api/issues', {
     method: 'POST',
@@ -92,7 +90,6 @@ export function updateIssue(
   input: {
     title?: string;
     description?: string;
-    goalId?: string | null;
     assignee?: AssignmentPatch | null;
     reviewer?: AssignmentPatch | null;
   }

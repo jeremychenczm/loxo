@@ -6,9 +6,6 @@ import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { machinesRouter } from '../modules/machines/machines.routes';
-import { memosRouter } from '../modules/memory/memos.routes';
-import { dashboardRouter } from '../modules/dashboard/dashboard.routes';
-import { goalsRouter } from '../modules/goals/goals.routes';
 import { issuesRouter } from '../modules/issues/issues.routes';
 import { projectsRouter } from '../modules/projects/projects.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
@@ -44,10 +41,8 @@ export function createApp(): express.Express {
   app.use('/api/agent-presets', apiPresetsRouter);
   app.use('/api/conversations', conversationsRouter);
   app.use('/api/projects', projectsRouter);
-  app.use('/api/goals', goalsRouter);
   app.use('/api/issues', issuesRouter);
   app.use('/api/runs', runsRouter);
-  app.use('/api/dashboard', dashboardRouter);
 
   // Agent control plane; authenticated by per-run tokens, not user JWTs.
   app
@@ -63,7 +58,6 @@ export function createApp(): express.Express {
       });
     });
   app.use('/api/machines', machinesRouter);
-  app.use('/api/memos', memosRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ code: 'not_found', message: 'Route not found' });

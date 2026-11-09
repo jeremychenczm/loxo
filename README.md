@@ -2,18 +2,16 @@
 
 **A control plane for persistent AI agent teams.**
 
-Loxo coordinates continuous work across CLI coding agents and API agents: set goals, assign issues, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
+Loxo coordinates continuous work across CLI coding agents and API agents: assign issues, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 480 automated tests*
-
-![Dashboard — the live operations view: on-duty agent roster, run ledger, spend, and a needs-attention triage panel](docs/screenshots/dashboard.png)
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 314 automated tests*
 
 ## Core loop
 
 ```
-Goal ──> Issue ──> Assign (wake) ──> Run ──> Review ──> Distill ──> better next run
-                        ▲                                  │
-                        └───────── rejection re-wakes ─────┘
+Issue ──> Assign (wake) ──> Run ──> Review ──> Done
+            ▲                         │
+            └── rejection re-wakes ───┘
 ```
 
 Every task has an owner, every run leaves evidence, and every completion passes through a human-controlled boundary. Rejected work returns to the assignee with feedback; an agent approval is a recommendation, not permission to ship.
@@ -40,8 +38,6 @@ Agents are concurrent OS processes, so correctness cannot depend on caller disci
 
 Reviewer agents can reject work, reopen the issue, and re-wake the assignee. Their approvals only recommend completion; a human decides whether the issue closes. A three-cycle fuse stops automated rejection loops and escalates them for human review.
 
-The learning loop follows the same rule. Retrospectives become agent-, team-, and project-scoped memos under strict context caps, but promotion into persistent agent memory requires human review.
-
 ## Execution model
 
 ### Six runtime options, two execution modes
@@ -65,12 +61,11 @@ A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSo
 
 | Surface | What it does |
 |---|---|
-| **Dashboard** | Shows open issues, active runs, busy agents, daily spend, recent activity, and work that needs attention. |
 | **Issue board** | Enforces a server-side state machine. The client mirrors valid transitions, while fractional ordering makes a drag operation one `PATCH` instead of a full-column renumber. |
 | **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted issue while retaining a link to its source. |
-| **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, scoped memory, and permission levels. |
+| **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, and permission levels. |
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, issue, and captured workspace evidence. |
-| **Projects & goals** | Groups issues, repositories, and workspaces while a hierarchical goal tree preserves the reason behind the work. |
+| **Projects** | Groups issues, repositories, and workspaces. |
 
 ![Issue receipt — every issue renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/issue-receipt.png)
 
@@ -159,7 +154,7 @@ Approve the code under **Settings → Machines**, then bind a machine-backed age
 ## Testing
 
 ```bash
-cd backend && npm test    # 331 tests — API, runs, governance, and workspaces
+cd backend && npm test    # 314 tests — API, runs, governance, and workspaces
 cd daemon  && npm test    # 13 tests — turn relay and workdir fencing
 ```
 
@@ -167,7 +162,7 @@ The suite covers admission and cross-surface claims, workspace capture, permissi
 
 ## Status and roadmap
 
-Loxo is a working platform under active solo development. The core loop — issues, wakes, runs, reviews, workspaces, and memos — is implemented and tested end to end. Planned operational work includes:
+Loxo is a working platform under active solo development. The core loop — issues, wakes, runs, reviews, and workspaces — is implemented and tested end to end. Planned operational work includes:
 
 - **Observability** — structured traces and latency/error metrics, per-agent budget alerts and hard stops, and heartbeat checks for long-lived agents.
 - **Approvals and triage** — a notification inbox, approval center, issue priorities, and sorting controls.

@@ -216,28 +216,6 @@ export const projectAgents = pgTable(
 
 export type ProjectAgent = typeof projectAgents.$inferSelect;
 
-export type MemoScope = 'agent' | 'team' | 'project';
-export type MemoSource = 'retro' | 'review';
-
-/**
- * Distilled learning from a review, scoped to the agent/team/project it
- * belongs to. subjectId is polymorphic (no FK);
- * rows are pruned with their owner via the users cascade.
- */
-export const memos = pgTable('memos', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  scope: text('scope').$type<MemoScope>().notNull(),
-  subjectId: uuid('subject_id').notNull(),
-  source: text('source').$type<MemoSource>().notNull(),
-  content: text('content').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type Memo = typeof memos.$inferSelect;
-
 /**
  * Paired daemon hosts that execute machine-bound agents. `tokenHash` is the
  * SHA-256 of the machine token; the plaintext is shown once at pairing.
@@ -262,29 +240,6 @@ export const machines = pgTable('machines', {
 });
 
 export type Machine = typeof machines.$inferSelect;
-
-export type GoalStatus = 'active' | 'achieved' | 'archived';
-
-/**
- * The "why" axis of work. Goals form an optional hierarchy via parentGoalId;
- * issues attach to a goal independently of their project (two parallel axes).
- */
-export const goals = pgTable('goals', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  title: text('title').notNull(),
-  description: text('description').notNull().default(''),
-  status: text('status').$type<GoalStatus>().notNull().default('active'),
-  parentGoalId: uuid('parent_goal_id').references((): AnyPgColumn => goals.id, {
-    onDelete: 'set null',
-  }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type Goal = typeof goals.$inferSelect;
 
 export type IssueStatus =
   | 'backlog'
@@ -311,7 +266,6 @@ export const issues = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    goalId: uuid('goal_id').references(() => goals.id, { onDelete: 'set null' }),
     issueNumber: integer('issue_number').notNull(),
     title: text('title').notNull(),
     description: text('description').notNull().default(''),

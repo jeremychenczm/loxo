@@ -176,6 +176,13 @@
       "when": 1794192811953,
       "tag": "0024_remove-teams-workflows",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794193464402,
+      "tag": "0025_remove-goals-memos",
+      "breakpoints": true
     }
   ]
 }
