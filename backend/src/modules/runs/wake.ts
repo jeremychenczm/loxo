@@ -51,7 +51,7 @@ export async function drainRunsForTests(): Promise<void> {
 
 /**
  * The single admission surface for agent wake-ups. Every trigger source
- * (assignment, manual nudge, and later chat/workflow) calls this and nothing
+ * (assignment, manual nudge, review, and later chat) calls this and nothing
  * else; merge, lock, and rejection logic lives here exactly once.
  *
  * Order of checks: agent and issue must exist and be owned by the caller;

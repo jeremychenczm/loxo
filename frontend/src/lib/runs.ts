@@ -1,7 +1,7 @@
 import { apiFetch } from './api';
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'workflow' | 'review';
+export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'review';
 
 export interface Run {
   id: string;

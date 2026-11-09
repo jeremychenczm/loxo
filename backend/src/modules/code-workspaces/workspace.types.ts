@@ -54,7 +54,7 @@ export interface PrepareWorkspaceInput {
 
 export type ObservedWorkspaceState = 'ready' | 'dirty' | 'missing' | 'error';
 
-/** Observable Git and filesystem facts only; workflow state lives on the issue. */
+/** Observable Git and filesystem facts only; issue status lives on the issue. */
 export interface WorkspaceObservation {
   state: ObservedWorkspaceState;
   worktreePath: string;

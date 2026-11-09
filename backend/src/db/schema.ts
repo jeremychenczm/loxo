@@ -159,11 +159,6 @@ export const messages = pgTable('messages', {
 export type Message = typeof messages.$inferSelect;
 
 /**
- * Team row is an index; the canvas graph and workflow DSL live in a JSON
- * manifest file under the user's storage (deliberate design: complex graph
- * structures stay out of the relational schema).
- */
-/**
  * Project workspace: a durable directory agents collaborate in, bound to
  * agents via a join table. `updatedAt` is the recency key maintained by
  * touchProject.
@@ -314,7 +309,7 @@ export const issueComments = pgTable(
 
 export type IssueComment = typeof issueComments.$inferSelect;
 
-export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'workflow' | 'review';
+export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'review';
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 

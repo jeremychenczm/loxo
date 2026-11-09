@@ -79,9 +79,9 @@ export interface IssueRunTurnContext {
 }
 
 /**
- * Issue-run prompt. Like workflow nodes this is non-interactive, but the
- * deliverable is different: the work report lands on the issue timeline —
- * via submit_result on the control plane, or the reply text as fallback.
+ * Issue-run prompt. The run is non-interactive and the work report lands on
+ * the issue timeline — via submit_result on the control plane, or the reply
+ * text as fallback.
  */
 export function buildIssueRunPrompt(input: IssueRunTurnContext): string {
   const sections: string[] = [
