@@ -162,6 +162,13 @@
       "when": 1794191745102,
       "tag": "0022_remove-market-community",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794192402350,
+      "tag": "0023_remove-slack",
+      "breakpoints": true
     }
   ]
 }

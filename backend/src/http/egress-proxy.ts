@@ -3,7 +3,7 @@ import { ProxyAgent, setGlobalDispatcher } from 'undici';
 /**
  * Node's fetch ignores HTTP(S)_PROXY by default, unlike browsers and curl.
  * Behind a corporate or regional proxy that breaks every provider call
- * (OpenAI/Anthropic/Slack) with a bare "fetch failed". Honoring the standard
+ * (OpenAI/Anthropic) with a bare "fetch failed". Honoring the standard
  * env vars keeps egress working wherever the host shell already does.
  */
 export function configureEgressProxy(): void {

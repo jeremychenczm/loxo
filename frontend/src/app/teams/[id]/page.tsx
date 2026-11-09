@@ -16,8 +16,6 @@ import {
 import '@xyflow/react/dist/style.css';
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { nodeTypes, setCanvasContext } from '@/components/canvas/nodes';
-import { SlackIntegrationCard } from '@/components/integrations/SlackIntegrationCard';
-import { PixelDialog } from '@/components/ui/PixelDialog';
 import { fetchAgents, type Agent } from '@/lib/agents';
 import { dslToFlow, flowToDsl, type CanvasNodeData } from '@/lib/flow-convert';
 import { fetchTeam, generateDsl, saveWorkflow, type TeamView } from '@/lib/teams';
@@ -36,7 +34,6 @@ function EditorInner() {
   const [prompt, setPrompt] = useState('');
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [slackOpen, setSlackOpen] = useState(false);
   const [showOrigin, setShowOrigin] = useState(false);
   const loadedRef = useRef(false);
 
@@ -184,12 +181,6 @@ function EditorInner() {
         >
           + Condition
         </button>
-        <button
-          onClick={() => setSlackOpen(true)}
-          className="border border-pixel-line bg-pixel-white px-3 py-1.5 font-sans text-xs text-pixel-black hover:bg-pixel-cream" style={{ boxShadow: '2px 2px 0 rgba(17,17,17,0.10)' }}
-        >
-          Slack
-        </button>
         <div className="ml-auto flex gap-2">
           <button
             onClick={() => save(true)}
@@ -274,9 +265,6 @@ function EditorInner() {
         </ReactFlow>
       </div>
 
-      <PixelDialog isOpen={slackOpen} onClose={() => setSlackOpen(false)} title="Slack integration">
-        <SlackIntegrationCard scope="team" subjectId={teamId} />
-      </PixelDialog>
     </div>
   );
 }

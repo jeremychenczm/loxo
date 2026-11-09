@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { agents, slackIntegrations, teamMembers, teams, type Team } from '../../db/schema';
+import { agents, teamMembers, teams, type Team } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
 import { removeDir } from '../../storage/file-ops';
 import { storage } from '../../storage/layout';
@@ -153,10 +153,6 @@ export async function deleteTeam(userId: string, teamId: string): Promise<void> 
     .returning({ id: teams.id });
   if (deleted.length === 0) throw notFound('Team not found');
 
-  // subjectId is polymorphic (no FK), so Slack bindings need explicit cleanup.
-  await db
-    .delete(slackIntegrations)
-    .where(and(eq(slackIntegrations.scope, 'team'), eq(slackIntegrations.subjectId, teamId)));
   removeDir(storage.teamDir(userId, teamId));
 }
 

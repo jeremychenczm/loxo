@@ -18,7 +18,6 @@ import {
 } from '@/lib/agents';
 import { fetchMachines, type MachineView } from '@/lib/machines';
 import { fetchProviders, type ProviderView } from '@/lib/providers';
-import { SlackIntegrationCard } from '@/components/integrations/SlackIntegrationCard';
 
 const VENDORS_FOR_RUNTIME: Record<string, string[]> = {
   'claude-code': ['anthropic'],
@@ -314,11 +313,6 @@ function SettingsInner() {
             ))}
           </ul>
         )}
-      </section>
-
-      <section className={sectionClass} style={sectionStyle}>
-        <h2 className="font-sans text-lg font-bold text-pixel-black">■ Slack</h2>
-        <SlackIntegrationCard scope="agent" subjectId={agentId} />
       </section>
 
       <section className={sectionClass} style={sectionStyle}>

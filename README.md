@@ -74,11 +74,10 @@ A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSo
 | **Dashboard** | Shows open issues, active runs, busy agents, daily spend, recent activity, and work that needs attention. |
 | **Issue board** | Enforces a server-side state machine. The client mirrors valid transitions, while fractional ordering makes a drag operation one `PATCH` instead of a full-column renumber. |
 | **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted issue while retaining a link to its source. |
-| **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, scoped memory, permission levels, and Slack routing. |
+| **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, scoped memory, and permission levels. |
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, issue, and captured workspace evidence. |
 | **Workshop** | Runs bounded multi-agent discussions with deterministic speaker selection, stop phrases, and a shared whiteboard that can become a versioned workflow draft. |
 | **Projects & goals** | Groups issues, repositories, workspaces, and automations while a hierarchical goal tree preserves the reason behind the work. |
-| **Slack** | Routes signed Slack events to agents and teams with constant-time signature verification, replay protection, and event deduplication. |
 
 ![Issue receipt — every issue renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/issue-receipt.png)
 
@@ -103,7 +102,6 @@ flowchart LR
     end
     DAEMON[Machine daemon<br/>user hardware]
     LLM[OpenAI and Anthropic APIs]
-    SLACK[Slack]
 
     FE -->|REST| API
     FE -->|WebSocket upgrade| WS
@@ -115,12 +113,11 @@ flowchart LR
     ENGINE --> PG
     API --> PG
     RUNNER -.->|paired machine turn| DAEMON
-    SLACK -->|signed webhooks| API
 ```
 
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
 - **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, review state, and event-sourced workflow state.
-- **Security posture:** provider keys and integration secrets use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; webhook paths derive from the master key; path checks fence workspace access.
+- **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
 - **Monorepo:** `backend/` contains about 20 domain modules, `frontend/` contains 20 App Router routes, `daemon/` hosts the machine connector, and `packages/shared/` holds shared runner and protocol types.
 
 ## Getting started
@@ -172,18 +169,17 @@ Approve the code under **Settings → Machines**, then bind a machine-backed age
 ## Testing
 
 ```bash
-cd backend && npm test    # 428 tests — API, engine, governance, and integrations
+cd backend && npm test    # 414 tests — API, engine, governance, and integrations
 cd daemon  && npm test    # 13 tests — turn relay and workdir fencing
 ```
 
-The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound review, workflow join and race regressions, and Slack signature verification.
+The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound review, and workflow join and race regressions.
 
 ## Status and roadmap
 
 Loxo is a working platform under active solo development. The core loop — issues, wakes, runs, reviews, workspaces, and memos — is implemented and tested end to end. Planned operational work includes:
 
 - **Observability** — structured traces and latency/error metrics, per-agent budget alerts and hard stops, and heartbeat checks for long-lived agents.
-- **Slack inbound** — direct conversion of inbound Slack messages into issues; routing to agents and teams already works.
 - **Approvals and triage** — a notification inbox, approval center, issue priorities, and sorting controls.
 - **Scale-out** — reporting lines for larger agent organizations, group messaging, and a shared document library.
 - **Distribution** — a desktop build, multi-tenant deployment, and a plugin system.

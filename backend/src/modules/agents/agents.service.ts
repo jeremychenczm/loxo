@@ -5,7 +5,6 @@ import {
   agents,
   machines,
   providers,
-  slackIntegrations,
   type Agent,
   type AgentGroup,
   type AgentManifest,
@@ -223,10 +222,6 @@ export async function deleteAgent(userId: string, agentId: string): Promise<void
     .returning({ id: agents.id });
   if (deleted.length === 0) throw notFound('Agent not found');
 
-  // subjectId is polymorphic (no FK), so Slack bindings need explicit cleanup.
-  await db
-    .delete(slackIntegrations)
-    .where(and(eq(slackIntegrations.scope, 'agent'), eq(slackIntegrations.subjectId, agentId)));
   removeDir(storage.agentPaths(userId, agentId).root);
 }
 

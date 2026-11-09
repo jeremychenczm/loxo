@@ -5,7 +5,6 @@ import { agentsRouter, groupsRouter } from '../modules/agents/agents.routes';
 import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
-import { integrationsRouter } from '../modules/integrations/integrations.routes';
 import { machinesRouter } from '../modules/machines/machines.routes';
 import { memosRouter } from '../modules/memory/memos.routes';
 import { workshopRouter } from '../modules/workshop/workshop.routes';
@@ -35,15 +34,7 @@ export function createApp(): express.Express {
       credentials: true,
     })
   );
-  app.use(
-    express.json({
-      limit: '1mb',
-      // Slack signature verification needs the exact bytes that were signed.
-      verify: (req, _res, buf) => {
-        (req as Request & { rawBody?: Buffer }).rawBody = buf;
-      },
-    })
-  );
+  app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -77,7 +68,6 @@ export function createApp(): express.Express {
       });
     });
   app.use('/api/workflows', workflowsRouter);
-  app.use('/api/integrations', integrationsRouter);
   app.use('/api/machines', machinesRouter);
   app.use('/api/memos', memosRouter);
 

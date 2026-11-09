@@ -399,55 +399,6 @@ export const memos = pgTable('memos', {
 
 export type Memo = typeof memos.$inferSelect;
 
-export type SlackIntegrationScope = 'agent' | 'team';
-
-/**
- * Slack Events API binding for an agent or team. Bot token and signing
- * secret are AES-256-GCM envelopes, never plaintext. `subjectId` is an agent
- * or team id depending on scope, so it carries no FK; the owning module
- * removes rows when the subject is deleted.
- */
-export const slackIntegrations = pgTable(
-  'slack_integrations',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    scope: text('scope').$type<SlackIntegrationScope>().notNull(),
-    subjectId: uuid('subject_id').notNull(),
-    botTokenEncrypted: text('bot_token_encrypted').notNull(),
-    signingSecretEncrypted: text('signing_secret_encrypted').notNull(),
-    /** Optional filter: only handle events from this Slack channel. */
-    channelId: text('channel_id'),
-    enabled: boolean('enabled').notNull().default(true),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('slack_integrations_scope_subject').on(t.scope, t.subjectId)]
-);
-
-export type SlackIntegration = typeof slackIntegrations.$inferSelect;
-
-/**
- * Maps a Slack (subject, channel, sender) session key to the conversation it
- * reuses, so a Slack thread keeps one chat history per sender.
- */
-export const slackConversationLinks = pgTable(
-  'slack_conversation_links',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    sessionKey: text('session_key').notNull(),
-    conversationId: uuid('conversation_id')
-      .notNull()
-      .references(() => conversations.id, { onDelete: 'cascade' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('slack_conversation_links_session_key').on(t.sessionKey)]
-);
-
-export type SlackConversationLink = typeof slackConversationLinks.$inferSelect;
-
 /** Synced from the manifest on save; answers "which teams use this agent". */
 export const teamMembers = pgTable('team_members', {
   id: uuid('id').primaryKey().defaultRandom(),
