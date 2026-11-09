@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db } from '../../db/client';
 import { agents, type Agent } from '../../db/schema';
-import { badRequest, notFound } from '../../http/errors';
+import { notFound } from '../../http/errors';
 import { copyDir, removeDir } from '../../storage/file-ops';
 import { storage } from '../../storage/layout';
 import type { ApiProtocol } from '../runner/api-turn';
@@ -221,13 +221,4 @@ export async function deployApiAgent(userId: string, presetId: string): Promise<
   }
 
   return agent!;
-}
-
-export function assertApiRuntimeConfigured(agent: Agent): void {
-  if (!agent.providerId) {
-    throw badRequest(
-      'provider_not_configured',
-      'Configure an OpenAI or Anthropic provider for this agent first'
-    );
-  }
 }

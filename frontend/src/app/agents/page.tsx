@@ -7,7 +7,6 @@ import { RequireAuth } from '@/components/auth/RequireAuth';
 import { PixelPortrait } from '@/components/agent/PixelPortrait';
 import { BackButton } from '@/components/ui/BackButton';
 import { avatarUrl, fetchAgents, type Agent, type Runtime } from '@/lib/agents';
-import { fetchMyListings } from '@/lib/market';
 
 const RUNTIME_LABELS: Record<Runtime, string> = {
   'claude-code': 'Claude Code',
@@ -74,7 +73,7 @@ function RosterPill({
   );
 }
 
-function BadgeCard({ agent, listed }: { agent: Agent; listed: boolean }) {
+function BadgeCard({ agent }: { agent: Agent }) {
   return (
     <div className="rounded-xl bg-white px-7 pb-7 pt-4 shadow-[0_18px_40px_-12px_rgba(17,17,17,0.25)]">
       {/* Lanyard slot. */}
@@ -106,7 +105,6 @@ function BadgeCard({ agent, listed }: { agent: Agent; listed: boolean }) {
           <div className="mt-3 flex items-center justify-between font-sans text-[10px] uppercase tracking-[0.18em] text-pixel-black/40">
             <span>
               {RUNTIME_LABELS[agent.runtime]} · {agent.status}
-              {listed ? ' · listed' : ''}
             </span>
             <Link
               href={`/agents/${agent.id}/settings`}
@@ -137,21 +135,12 @@ function BadgeCard({ agent, listed }: { agent: Agent; listed: boolean }) {
 
 function AgentsPageInner() {
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [listedIds, setListedIds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   const reload = useCallback(async () => {
-    const [agentList, listings] = await Promise.all([
-      fetchAgents().catch(() => []),
-      fetchMyListings().catch(() => []),
-    ]);
+    const agentList = await fetchAgents().catch(() => []);
     setAgents(agentList);
-    setListedIds(
-      new Set(
-        listings.filter((l) => l.status === 'active' && l.sourceAgentId).map((l) => l.sourceAgentId!)
-      )
-    );
     setSelectedId((current) => current ?? agentList[0]?.id ?? null);
     setIsLoading(false);
   }, []);
@@ -208,7 +197,7 @@ function AgentsPageInner() {
         <div className="flex flex-col gap-10 md:flex-row md:items-start">
           {selected && (
             <div className="mx-auto w-full max-w-[360px] shrink-0 md:sticky md:top-24 md:mx-0 md:w-[340px]">
-              <BadgeCard agent={selected} listed={listedIds.has(selected.id)} />
+              <BadgeCard agent={selected} />
             </div>
           )}
 

@@ -6,7 +6,6 @@ import { toHostPath } from './host-path';
  * On-disk layout:
  *
  *   <root>/
- *     marketplace/agents/<listingId>/versions/<version>/source
  *     users/<userId>/
  *       agents/<agentId>/{workspace,baseline,snapshots,state}
  *       projects/<projectId>/{workspace,worktrees/<issueId>}
@@ -14,7 +13,7 @@ import { toHostPath } from './host-path';
  *     runtime/workshop/<userId>/<agentId>/{workspace,state}
  *
  * Agent runtime state lives beside the workspace, not inside it, so
- * publishing and workspace diffing never have to filter state files out.
+ * workspace diffing never has to filter state files out.
  */
 export interface AgentPaths {
   root: string;
@@ -26,9 +25,6 @@ export interface AgentPaths {
 
 export interface StorageLayout {
   root: string;
-  marketplaceListingRoot: (listingId: string) => string;
-  marketplaceAvatarCache: () => string;
-  marketplaceSource: (listingId: string, version: string) => string;
   userRoot: (userId: string) => string;
   agentPaths: (userId: string, agentId: string) => AgentPaths;
   projectWorkspace: (userId: string, projectId: string) => string;
@@ -53,11 +49,6 @@ export function createStorageLayout(rootInput: string): StorageLayout {
 
   return {
     root,
-    // Not ensured: used for existence checks and recursive deletes.
-    marketplaceListingRoot: (listingId) => path.join(root, 'marketplace', 'agents', listingId),
-    marketplaceAvatarCache: () => ensured(path.join(root, 'marketplace', 'avatars')),
-    marketplaceSource: (listingId, version) =>
-      ensured(path.join(root, 'marketplace', 'agents', listingId, 'versions', version, 'source')),
     userRoot: (userId) => ensured(path.join(root, 'users', userId)),
     agentPaths: (userId, agentId) => {
       const agentRoot = path.join(root, 'users', userId, 'agents', agentId);

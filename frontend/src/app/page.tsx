@@ -1,28 +1,25 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AgentSprite } from '@/components/agent/AgentSprite';
-import { ModalPortal } from '@/components/ui/ModalPortal';
 import { PixelHero } from '@/components/effects/PixelHero';
 import { MonoDashboard } from '@/components/dashboard/MonoDashboard';
 import { useAuthStore } from '@/store/auth';
 import { fetchAgents, type Agent } from '@/lib/agents';
 import { fetchTeams, type TeamView } from '@/lib/teams';
 import { fetchProjects, type ProjectView } from '@/lib/projects';
-import { adoptOfficialAgent } from '@/lib/market';
 
 const HERO_SEEN_KEY = 'swarmdev.hasSeenHeroAnimation';
 
-type MobileTabKey = 'projects' | 'contacts' | 'teams' | 'discover' | 'me';
+type MobileTabKey = 'projects' | 'contacts' | 'teams' | 'me';
 
 const MOBILE_TABS: Array<{ key: MobileTabKey; label: string; accent: string }> = [
   { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow' },
   { key: 'contacts', label: 'Agents', accent: 'bg-pixel-yellow' },
   { key: 'teams', label: 'Teams', accent: 'bg-pixel-yellow' },
-  { key: 'discover', label: 'Discover', accent: 'bg-pixel-yellow' },
   { key: 'me', label: 'Me', accent: 'bg-pixel-gray' },
 ];
 
@@ -40,157 +37,6 @@ function FolderGlyph({ className = 'h-8 w-8' }: { className?: string }) {
 
 // ---------------------------------------------------------------------------
 // Official starter agent prompt (first login, zero agents)
-
-function OfficialAdoptPrompt({
-  isLoggedIn,
-  promptKey,
-  agentCount,
-  agentDataReady,
-  userName,
-  onOfficialAdopted,
-}: {
-  isLoggedIn: boolean;
-  promptKey: string | null;
-  agentCount: number;
-  agentDataReady: boolean;
-  userName?: string;
-  onOfficialAdopted: () => Promise<void> | void;
-}) {
-  const router = useRouter();
-  const defaultName = userName ? `${userName}'s Starter Agent` : 'My Starter Agent';
-  const [showPrompt, setShowPrompt] = useState(false);
-  const [adoptName, setAdoptName] = useState(defaultName);
-  const [isAdopting, setIsAdopting] = useState(false);
-  const [adoptError, setAdoptError] = useState('');
-
-  useEffect(() => {
-    setAdoptName(defaultName);
-  }, [defaultName]);
-
-  useEffect(() => {
-    if (!isLoggedIn || !promptKey || !agentDataReady || agentCount > 0) {
-      setShowPrompt(false);
-      return;
-    }
-    if (window.localStorage.getItem(promptKey)) {
-      setShowPrompt(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setShowPrompt(true), 120);
-    return () => window.clearTimeout(timer);
-  }, [agentCount, agentDataReady, isLoggedIn, promptKey]);
-
-  const markSeen = () => {
-    if (promptKey) window.localStorage.setItem(promptKey, new Date().toISOString());
-  };
-
-  const dismiss = () => {
-    markSeen();
-    setShowPrompt(false);
-    setAdoptError('');
-  };
-
-  const handleAdopt = async () => {
-    if (isAdopting) return;
-    setIsAdopting(true);
-    setAdoptError('');
-    try {
-      await adoptOfficialAgent({ name: adoptName.trim() || defaultName });
-      markSeen();
-      setShowPrompt(false);
-      await onOfficialAdopted();
-      router.replace('/agents');
-    } catch (error) {
-      setAdoptError(error instanceof Error ? error.message : 'Failed to adopt the starter agent.');
-    } finally {
-      setIsAdopting(false);
-    }
-  };
-
-  if (!showPrompt) return null;
-
-  return (
-    <ModalPortal>
-      <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto bg-pixel-black/70 p-4">
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-h-[calc(100dvh-2rem)] w-full max-w-[680px] overflow-y-auto border border-pixel-line bg-white p-4 md:p-5"
-          style={{ boxShadow: '6px 6px 0 rgba(17,17,17,0.10)' }}
-        >
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <h2 className="font-sans text-xl font-bold leading-tight text-pixel-black md:text-2xl">
-                Adopt the official starter agent
-              </h2>
-              <p className="mt-1 font-sans text-xs leading-tight text-pixel-black/60 md:text-sm">
-                Adopt an official agent first and it lands straight in your den.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={dismiss}
-              className="shrink-0 border border-pixel-line bg-pixel-white px-2 py-1 font-sans text-sm leading-none text-pixel-black"
-              aria-label="Close adopt dialog"
-            >
-              ×
-            </button>
-          </div>
-
-          <div className="mb-4 grid items-center gap-4 border border-pixel-line bg-white p-3 sm:grid-cols-[140px_1fr] md:p-4">
-            <motion.div
-              animate={{ scale: [1, 1.06, 1] }}
-              transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
-              className="mx-auto flex h-28 w-28 shrink-0 items-center justify-center border border-pixel-line bg-pixel-yellow sm:h-32 sm:w-32"
-            >
-              <span className="font-sans text-4xl text-pixel-black">SW</span>
-            </motion.div>
-            <div className="min-w-0 flex-1">
-              <label className="mb-1 block font-sans text-xs text-pixel-black/70">Agent name</label>
-              <input
-                value={adoptName}
-                onChange={(event) => setAdoptName(event.target.value)}
-                disabled={isAdopting}
-                className="w-full border border-pixel-line bg-white px-3 py-2 font-sans text-sm text-pixel-black outline-none disabled:opacity-50 md:text-base"
-                style={{ boxShadow: 'inset 2px 2px 0 rgba(17,17,17,0.10)' }}
-              />
-            </div>
-          </div>
-
-          {adoptError && (
-            <div className="mb-3 border border-pixel-red bg-pixel-red/10 p-2">
-              <p className="font-sans text-xs text-pixel-red">{adoptError}</p>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={dismiss}
-              disabled={isAdopting}
-              className="border border-pixel-line bg-pixel-white px-3 py-3 font-sans text-sm text-pixel-black disabled:opacity-50 md:text-base"
-              style={{ boxShadow: '3px 3px 0 rgba(17,17,17,0.10)' }}
-            >
-              Later
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleAdopt()}
-              disabled={isAdopting}
-              className="border border-pixel-line bg-pixel-green px-3 py-3 font-sans text-sm text-pixel-white disabled:opacity-50 md:text-base"
-              style={{ boxShadow: '3px 3px 0 rgba(17,17,17,0.10)' }}
-            >
-              {isAdopting ? 'Adopting…' : 'Adopt'}
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    </ModalPortal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Mobile home (tabbed, messenger-style)
 
 function MobilePanel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
@@ -297,11 +143,9 @@ function MobileHome({
         ? `${configuredCount}/${agents.length} providers configured`
         : activeTab === 'teams'
           ? `${teamCount} teams · group chat ready`
-          : activeTab === 'discover'
-            ? 'Market · API agents · official adopt'
-            : isLoggedIn
-              ? 'Account, providers, and your den'
-              : 'Sign in to sync your agents';
+          : isLoggedIn
+            ? 'Account, providers, and your den'
+            : 'Sign in to sync your agents';
 
   return (
     <div className="-mx-4 bg-pixel-white px-4 md:hidden">
@@ -380,7 +224,7 @@ function MobileHome({
                 <MobileLinkRow
                   href="/upload"
                   title="No agents yet"
-                  description="Upload or adopt an agent to get started"
+                  description="Import an agent workspace to get started"
                   accent="bg-pixel-yellow"
                 />
               )}
@@ -425,35 +269,6 @@ function MobileHome({
                 />
               </MobilePanel>
             </>
-          )}
-
-          {activeTab === 'discover' && (
-            <MobilePanel>
-              <div className="border-b border-pixel-line bg-pixel-black px-3 py-2 text-pixel-white">
-                <p className="font-sans text-base font-bold leading-tight">Discover</p>
-                <p className="mt-1 font-sans text-xs leading-tight text-pixel-white/80">
-                  Agent market and hosted API agents
-                </p>
-              </div>
-              <MobileLinkRow
-                href="/market"
-                title="Agent market"
-                description="Browse listings and the community"
-                accent="bg-pixel-yellow"
-              />
-              <MobileLinkRow
-                href="/market?tab=api-agents"
-                title="API agents"
-                description="Deploy hosted OpenAI/Anthropic agents"
-                accent="bg-pixel-yellow"
-              />
-              <MobileLinkRow
-                href="/community"
-                title="Community"
-                description="Posts, comments, and agent follows"
-                accent="bg-pixel-yellow"
-              />
-            </MobilePanel>
           )}
 
           {activeTab === 'me' && (
@@ -543,7 +358,6 @@ function HomePageInner() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [teams, setTeams] = useState<TeamView[]>([]);
-  const [dataReady, setDataReady] = useState(false);
   const [showHero, setShowHero] = useState(false);
   const [hasSeenHero, setHasSeenHero] = useState(false);
 
@@ -552,7 +366,6 @@ function HomePageInner() {
       setAgents([]);
       setProjects([]);
       setTeams([]);
-      setDataReady(true);
       return;
     }
     const [agentList, projectList, teamList] = await Promise.all([
@@ -567,7 +380,6 @@ function HomePageInner() {
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     );
     setTeams(teamList);
-    setDataReady(true);
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -598,15 +410,6 @@ function HomePageInner() {
       <AnimatePresence>{showHero && <PixelHero onEnter={handleEnter} />}</AnimatePresence>
 
       <MobileHome agents={agents} projects={projects} teamCount={teams.length} isLoggedIn={isLoggedIn} />
-
-      <OfficialAdoptPrompt
-        isLoggedIn={Boolean(token && user)}
-        promptKey={token && user ? `swarmdev.officialAdoptPrompt.${user.id}` : null}
-        agentCount={agents.length}
-        agentDataReady={dataReady}
-        userName={user?.username}
-        onOfficialAdopted={reload}
-      />
 
       <MonoDashboard
         agents={agents}

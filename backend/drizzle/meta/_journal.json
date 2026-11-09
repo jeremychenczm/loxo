@@ -155,6 +155,13 @@
       "when": 1784565697451,
       "tag": "0021_code-workspaces",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794191745102,
+      "tag": "0022_remove-market-community",
+      "breakpoints": true
     }
   ]
 }

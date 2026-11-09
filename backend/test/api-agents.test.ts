@@ -36,7 +36,7 @@ afterAll(() => {
 
 describe('API agent catalog', () => {
   it('lists built-in presets with featured entries first', async () => {
-    const res = await request(app).get('/api/market/api-agents').set(auth());
+    const res = await request(app).get('/api/agent-presets').set(auth());
     expect(res.status).toBe(200);
     expect(res.body.presets.length).toBeGreaterThanOrEqual(3);
     expect(res.body.presets[0].featured).toBe(true);
@@ -46,7 +46,7 @@ describe('API agent catalog', () => {
   });
 
   it('filters by search', async () => {
-    const res = await request(app).get('/api/market/api-agents?search=research').set(auth());
+    const res = await request(app).get('/api/agent-presets?search=research').set(auth());
     expect(res.body.presets).toHaveLength(1);
     expect(res.body.presets[0].name).toBe('Research Analyst');
   });
@@ -63,7 +63,7 @@ describe('API agent catalog', () => {
       { name: 'Broken: no prompt', protocol: 'anthropic', model: 'claude-sonnet-5' },
     ]);
 
-    const res = await request(app).get('/api/market/api-agents').set(auth());
+    const res = await request(app).get('/api/agent-presets').set(auth());
     expect(res.body.presets).toHaveLength(1);
     expect(res.body.presets[0].id).toBe('custom-bot');
   });
@@ -72,7 +72,7 @@ describe('API agent catalog', () => {
 describe('deploy', () => {
   it('creates an api-runtime agent with manifest defaults and a README', async () => {
     const res = await request(app)
-      .post('/api/market/api-agents/api-writing-companion/deploy')
+      .post('/api/agent-presets/api-writing-companion/deploy')
       .set(auth());
     expect(res.status).toBe(201);
 
@@ -88,7 +88,7 @@ describe('deploy', () => {
   });
 
   it('404s on unknown presets', async () => {
-    const res = await request(app).post('/api/market/api-agents/nope/deploy').set(auth());
+    const res = await request(app).post('/api/agent-presets/nope/deploy').set(auth());
     expect(res.status).toBe(404);
   });
 });
@@ -96,7 +96,7 @@ describe('deploy', () => {
 describe('chat turns for API agents', () => {
   async function deployAndConverse(): Promise<{ agentId: string; conversationId: string }> {
     const deployed = await request(app)
-      .post('/api/market/api-agents/api-research-analyst/deploy')
+      .post('/api/agent-presets/api-research-analyst/deploy')
       .set(auth());
     const agentId = deployed.body.agent.id;
     const conversation = await request(app)

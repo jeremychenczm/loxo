@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { RequireAuth } from '@/components/auth/RequireAuth';
@@ -69,12 +68,6 @@ function CreateTeamInner() {
         </PixelButton>
       </div>
 
-      <p className="mt-4 text-center font-sans text-xs text-pixel-black/40">
-        Want a ready-made crew instead?{' '}
-        <Link href="/market?tab=team-templates" className="text-pixel-blue">
-          Adopt a team template →
-        </Link>
-      </p>
     </div>
   );
 }

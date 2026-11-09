@@ -1,23 +1,19 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { BackButton } from '@/components/ui/BackButton';
 import { PixelButton } from '@/components/ui/PixelButton';
 import { PixelInput } from '@/components/ui/PixelInput';
 import { importAgentArchive, importAgentFolder, type Agent } from '@/lib/agents';
-import { publishAgent } from '@/lib/market';
 import {
   CLI_RUNTIMES,
   detectRuntimeFromPaths,
   RUNTIME_LABELS,
-  scanSensitivePaths,
   type CliRuntime,
   type DetectionResult,
-  type SensitiveFileHit,
 } from '@/lib/runtime-detect';
 
 type UploadMode = 'folder' | 'zip';
@@ -55,8 +51,6 @@ function UploadPageInner() {
   const [description, setDescription] = useState('');
   const [detection, setDetection] = useState<DetectionResult | null>(null);
   const [selectedRuntime, setSelectedRuntime] = useState<CliRuntime | null>(null);
-  const [publishToMarket, setPublishToMarket] = useState(false);
-  const [sensitiveHits, setSensitiveHits] = useState<SensitiveFileHit[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
@@ -78,7 +72,6 @@ function UploadPageInner() {
     setAgentName('');
     setDetection(null);
     setSelectedRuntime(null);
-    setSensitiveHits([]);
     setError('');
     setCreatedAgent(null);
     setProgress(0);
@@ -102,7 +95,6 @@ function UploadPageInner() {
     const result = detectRuntimeFromPaths(paths);
     setDetection(result);
     if (result.confidence === 'high' && result.detected) setSelectedRuntime(result.detected);
-    setSensitiveHits(scanSensitivePaths(paths));
   };
 
   const handleZipSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -155,11 +147,6 @@ function UploadPageInner() {
             })
           : await importAgentArchive({ ...input, archive: zipFile! });
       setProgress(80);
-
-      if (publishToMarket) {
-        const published = await publishAgent({ agentId: result.agent.id });
-        if (published.sanitization) alert(published.sanitization);
-      }
       setProgress(100);
       setCreatedAgent(result.agent);
     } catch (err) {
@@ -183,7 +170,6 @@ function UploadPageInner() {
           <h1 className="brand-large mb-2 text-pixel-black">Agent on board!</h1>
           <p className="font-sans text-sm text-pixel-black/60">
             “{createdAgent.name}” joined your den as a {RUNTIME_LABELS[createdAgent.runtime]} agent.
-            {publishToMarket ? ' A sanitized copy was published to the market.' : ''}
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <PixelButton variant="primary" onClick={() => router.push(`/agents/${createdAgent.id}/settings`)}>
@@ -328,45 +314,6 @@ function UploadPageInner() {
               <PixelInput value={description} onChange={setDescription} placeholder="What is this agent good at?" multiline rows={3} />
             </div>
 
-            <label className="flex cursor-pointer items-center gap-3 border border-pixel-line bg-pixel-cream p-3">
-              <input
-                type="checkbox"
-                checked={publishToMarket}
-                onChange={(e) => setPublishToMarket(e.target.checked)}
-                className="h-5 w-5 accent-pixel-blue"
-              />
-              <span className="font-sans text-sm text-pixel-black">
-                Also publish to the agent market
-                <span className="block text-xs text-pixel-black/55">
-                  Sensitive files are omitted and secrets redacted in the published copy.
-                </span>
-              </span>
-            </label>
-
-            <AnimatePresence>
-              {publishToMarket && sensitiveHits.length > 0 && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden border border-pixel-red bg-pixel-red/10 p-3"
-                >
-                  <p className="mb-2 font-sans text-sm font-bold text-pixel-red">
-                    {sensitiveHits.length} sensitive file(s) spotted — they will be omitted from the market copy:
-                  </p>
-                  <ul className="max-h-32 space-y-1 overflow-y-auto">
-                    {sensitiveHits.slice(0, 8).map((hit) => (
-                      <li key={hit.path} className="truncate font-sans text-xs text-pixel-black/70">
-                        {hit.path} ({hit.reason})
-                      </li>
-                    ))}
-                    {sensitiveHits.length > 8 && (
-                      <li className="font-sans text-xs text-pixel-black/50">…and {sensitiveHits.length - 8} more</li>
-                    )}
-                  </ul>
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             {error && (
               <div className="border border-pixel-red bg-pixel-red/10 p-3">
@@ -396,9 +343,6 @@ function UploadPageInner() {
         )}
       </div>
 
-      <p className="mt-4 text-center font-sans text-xs text-pixel-black/40">
-        Prefer a hosted agent instead? <Link href="/market?tab=api-agents" className="text-pixel-blue">Deploy an API agent →</Link>
-      </p>
     </div>
   );
 }

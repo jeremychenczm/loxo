@@ -78,7 +78,6 @@ A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSo
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, issue, and captured workspace evidence. |
 | **Workshop** | Runs bounded multi-agent discussions with deterministic speaker selection, stop phrases, and a shared whiteboard that can become a versioned workflow draft. |
 | **Projects & goals** | Groups issues, repositories, workspaces, and automations while a hierarchical goal tree preserves the reason behind the work. |
-| **Marketplace** | Publishes and adopts packaged agents, API presets, and team templates after server- and client-side secret scanning and workspace sanitization. |
 | **Slack** | Routes signed Slack events to agents and teams with constant-time signature verification, replay protection, and event deduplication. |
 
 ![Issue receipt — every issue renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/issue-receipt.png)
@@ -173,11 +172,11 @@ Approve the code under **Settings → Machines**, then bind a machine-backed age
 ## Testing
 
 ```bash
-cd backend && npm test    # 467 tests — API, engine, governance, and integrations
+cd backend && npm test    # 428 tests — API, engine, governance, and integrations
 cd daemon  && npm test    # 13 tests — turn relay and workdir fencing
 ```
 
-The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound review, workflow join and race regressions, Slack signature verification, and marketplace publish sanitization.
+The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound review, workflow join and race regressions, and Slack signature verification.
 
 ## Status and roadmap
 

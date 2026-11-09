@@ -90,7 +90,7 @@ export function HireBadgeCard() {
       >
         <span className="text-3xl leading-none">+</span>
         <span className="text-sm font-semibold">Hire an agent</span>
-        <span className="text-xs">Upload or adopt from the market</span>
+        <span className="text-xs">Import a workspace folder or zip</span>
       </Link>
     </div>
   );

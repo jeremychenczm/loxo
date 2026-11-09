@@ -9,7 +9,7 @@ import { MobileAppNav } from '@/components/layout/MobileAppNav';
 import { useAuthStore } from '@/store/auth';
 import { fetchProjects, deleteProject, type ProjectView } from '@/lib/projects';
 
-type SidebarIcon = 'home' | 'agents' | 'teams' | 'workshop' | 'market' | 'community' | 'projects' | 'settings';
+type SidebarIcon = 'home' | 'agents' | 'teams' | 'workshop' | 'projects' | 'settings';
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'swarmdev.sidebarWidth';
 const SIDEBAR_OPEN_STORAGE_KEY = 'swarmdev.sidebarOpen';
@@ -29,9 +29,6 @@ function SidebarIconGlyph({ icon, className = 'h-5 w-5' }: { icon: SidebarIcon; 
     teams: 'M12 2 2 7l10 5 10-5-10-5ZM2 17l10 5 10-5M2 12l10 5 10-5',
     workshop:
       'M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2Zm0 14H6l-2 2V4h16ZM7 9h10v2H7Zm0-3h10v2H7Z',
-    market: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm3.5 14.5-7 2 2-7 7-2-2 7Z',
-    community:
-      'M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3Zm-8 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3Zm0 2c-2.7 0-8 1.3-8 4v2h8.5a5.9 5.9 0 0 1-.5-2.5c0-1.4.6-2.6 1.6-3.3A13 13 0 0 0 8 13Zm8 0c-2.7 0-8 1.3-8 4v2h16v-2c0-2.7-5.3-4-8-4Z',
     projects: 'M4 5h7l2 3h7v11H4V5Zm2 5v7h12v-7H6Z',
     settings:
       'M19.4 13.5a7.8 7.8 0 0 0 0-3l2-1.5-2-3.4-2.4 1a8.7 8.7 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A8.7 8.7 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a8.7 8.7 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8.7 8.7 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.5ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z',
@@ -66,8 +63,6 @@ function TraditionalSidebar({
     { href: '/goals', label: 'Goals', icon: 'workshop' },
     { href: '/agents', label: 'My Agents', icon: 'agents' },
     { href: '/workshop', label: 'Workshop', icon: 'workshop' },
-    { href: '/market', label: 'Agent Market', icon: 'market' },
-    { href: '/community', label: 'Community', icon: 'community' },
     { href: '/settings/providers', label: 'Providers', icon: 'settings' },
     { href: '/settings/machines', label: 'Machines', icon: 'settings' },
   ];

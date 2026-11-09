@@ -138,9 +138,6 @@ function TeamsPageInner() {
             <Link href="/teams/create">
               <PixelButton variant="primary">Start from scratch</PixelButton>
             </Link>
-            <Link href="/market?tab=team-templates">
-              <PixelButton variant="secondary">Adopt a template</PixelButton>
-            </Link>
           </div>
         </div>
       ) : (

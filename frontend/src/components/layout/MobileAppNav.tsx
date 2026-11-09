@@ -3,13 +3,12 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 
-type MobileTabKey = 'projects' | 'agents' | 'teams' | 'discover' | 'me';
+type MobileTabKey = 'projects' | 'agents' | 'teams' | 'me';
 
 const MOBILE_TABS: Array<{ key: MobileTabKey; label: string; accent: string; href: string }> = [
   { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow', href: '/?mobileTab=projects' },
   { key: 'agents', label: 'Agents', accent: 'bg-pixel-yellow', href: '/?mobileTab=contacts' },
   { key: 'teams', label: 'Teams', accent: 'bg-pixel-yellow', href: '/?mobileTab=teams' },
-  { key: 'discover', label: 'Discover', accent: 'bg-pixel-yellow', href: '/?mobileTab=discover' },
   { key: 'me', label: 'Me', accent: 'bg-pixel-gray', href: '/?mobileTab=me' },
 ];
 
@@ -26,13 +25,6 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
     return (
       <svg viewBox="0 0 24 24" className={common} aria-hidden="true">
         <path fill="currentColor" d="M12 3 3 8l9 5 9-5-9-5Zm-7 9 7 4 7-4v5l-7 4-7-4v-5Z" />
-      </svg>
-    );
-  }
-  if (tab === 'discover') {
-    return (
-      <svg viewBox="0 0 24 24" className={common} aria-hidden="true">
-        <path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm3.5 14.5-7 2 2-7 7-2-2 7Z" />
       </svg>
     );
   }
@@ -54,17 +46,13 @@ const TAB_QUERY_KEYS: Record<string, MobileTabKey> = {
   projects: 'projects',
   contacts: 'agents',
   teams: 'teams',
-  discover: 'discover',
   me: 'me',
 };
 
 function activeTabForRoute(pathname: string, searchTab: string | null): MobileTabKey {
   if (pathname === '/' && searchTab && TAB_QUERY_KEYS[searchTab]) return TAB_QUERY_KEYS[searchTab]!;
   if (pathname.startsWith('/teams') || pathname.startsWith('/workshop')) return 'teams';
-  if (pathname.startsWith('/agents')) return 'agents';
-  if (pathname.startsWith('/market') || pathname.startsWith('/community') || pathname.startsWith('/upload')) {
-    return 'discover';
-  }
+  if (pathname.startsWith('/agents') || pathname.startsWith('/upload')) return 'agents';
   if (pathname.startsWith('/settings')) return 'me';
   return 'projects';
 }

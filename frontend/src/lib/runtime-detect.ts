@@ -53,34 +53,3 @@ export function detectRuntimeFromPaths(rawPaths: string[]): DetectionResult {
   if (second && second[1] === top[1]) return { detected: top[0], confidence: 'low', scores };
   return { detected: top[0], confidence: top[1] >= 2 ? 'high' : 'low', scores };
 }
-
-export interface SensitiveFileHit {
-  path: string;
-  reason: string;
-}
-
-const SENSITIVE_PATH_RULES: Array<{ reason: string; match: RegExp }> = [
-  { reason: 'environment file', match: /(^|\/)\.env($|[./])/i },
-  { reason: 'private key file', match: /(^|\/)(id_rsa|id_ed25519|id_ecdsa|.*\.(pem|key|p12|pfx))$/i },
-  {
-    reason: 'credential file',
-    match: /(^|\/)(secrets?|credentials?|tokens?|api[_-]?keys?)\.(json|ya?ml|toml|ini|env|txt)$/i,
-  },
-  { reason: 'runtime auth profile', match: /(^|\/)auth-profiles\.json$/i },
-  { reason: 'local runtime settings', match: /(^|\/)\.claude\/settings\.local\.json$/i },
-];
-
-/** Path-based preview only; the backend performs the authoritative scan on publish. */
-export function scanSensitivePaths(paths: string[]): SensitiveFileHit[] {
-  const hits: SensitiveFileHit[] = [];
-  for (const raw of paths) {
-    const path = raw.replace(/\\/g, '/');
-    for (const rule of SENSITIVE_PATH_RULES) {
-      if (rule.match.test(path)) {
-        hits.push({ path, reason: rule.reason });
-        break;
-      }
-    }
-  }
-  return hits;
-}
