@@ -4,8 +4,7 @@
  *
  *   npx tsx scripts/clone-account-agents.ts <source-email> <target-email>
  *
- * Machine-routed agents are cloned as server-executed (machines stay owned
- * by the source account); group links are dropped.
+ * Group links are dropped.
  */
 import fs from 'node:fs';
 import { and, eq } from 'drizzle-orm';
@@ -82,14 +81,14 @@ async function main() {
         model: a.model,
         avatarFile: a.avatarFile,
         status: 'idle',
-        execution: a.execution === 'machine' ? 'server' : a.execution,
+        execution: a.execution,
       })
       .returning();
 
     const from = storage.agentPaths(source.id, a.id);
     const to = storage.agentPaths(target.id, clone!.id);
     fs.cpSync(from.root, to.root, { recursive: true, force: true });
-    console.log(`agent "${a.name}" cloned (${a.runtime}${a.execution === 'machine' ? ', machine->server' : ''})`);
+    console.log(`agent "${a.name}" cloned (${a.runtime})`);
   }
 
   console.log('Done.');

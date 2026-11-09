@@ -4,7 +4,7 @@
 
 Loxo coordinates continuous work across CLI coding agents and API agents: assign issues, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 314 automated tests*
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 294 automated tests*
 
 ## Core loop
 
@@ -53,10 +53,6 @@ Both modes use the same agent model, governance rules, run ledger, and review fl
 
 Woken agents call back through six MCP tools: `get_issue`, `comment_on_issue`, `update_issue_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.
 
-### Execution on connected machines
-
-A lightweight daemon pairs a user's computer with Loxo over a reconnecting WebSocket. Pairing codes, hashed machine tokens, allowed-workdir fencing, and exponential backoff let agents use local runtimes and files while the control plane remains centralized.
-
 ## Feature tour
 
 | Surface | What it does |
@@ -78,16 +74,15 @@ flowchart LR
     end
     subgraph Server[Backend REST and WebSocket on port 4000]
         API[Express REST API]
-        WS[WebSocket gateway<br/>chat and machines]
+        WS[WebSocket gateway<br/>chat]
         WAKE[Wake admission<br/>claims, locks, FIFO]
         MCP[MCP control plane<br/>6 tools and run tokens]
         RUNNER[Agent runner<br/>5 CLI runtimes and API mode]
     end
     subgraph Data
-        PG[(Postgres 16<br/>34 tables and Drizzle ORM)]
+        PG[(Postgres 16<br/>15 tables and Drizzle ORM)]
         FS[Workspace storage<br/>git worktrees and manifests]
     end
-    DAEMON[Machine daemon<br/>user hardware]
     LLM[OpenAI and Anthropic APIs]
 
     FE -->|REST| API
@@ -97,13 +92,12 @@ flowchart LR
     RUNNER -->|spawn CLI| FS
     RUNNER -->|SSE| LLM
     API --> PG
-    RUNNER -.->|paired machine turn| DAEMON
 ```
 
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
 - **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, and review state.
 - **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
-- **Monorepo:** `backend/` contains about 20 domain modules, `frontend/` contains 20 App Router routes, `daemon/` hosts the machine connector, and `packages/shared/` holds shared runner and protocol types.
+- **Monorepo:** `backend/` contains 10 domain modules, `frontend/` contains 11 App Router routes, and `packages/shared/` holds the shared runner core.
 
 ## Getting started
 
@@ -141,21 +135,12 @@ Open `http://localhost:3000`, register an account, and then:
 2. Create an agent and a project.
 3. Create an issue, assign it, and inspect the resulting run and evidence.
 
-For code work, bind a Git repository to the project. To execute agents on another machine, start the optional daemon:
-
-```bash
-cd daemon
-npm install
-npm run dev   # prints a pairing code
-```
-
-Approve the code under **Settings → Machines**, then bind a machine-backed agent to an allowed working directory.
+For code work, bind a Git repository to the project.
 
 ## Testing
 
 ```bash
-cd backend && npm test    # 314 tests — API, runs, governance, and workspaces
-cd daemon  && npm test    # 13 tests — turn relay and workdir fencing
+cd backend && npm test    # 294 tests — API, runs, governance, and workspaces
 ```
 
 The suite covers admission and cross-surface claims, workspace capture, permission enforcement, and snapshot-bound review.
@@ -174,6 +159,5 @@ Loxo is a working platform under active solo development. The core loop — issu
 ```
 backend/          Express API, WebSocket gateway, and agent runner
 frontend/         Next.js 14 app with Tailwind and Zustand
-daemon/           Headless connector for execution on paired machines
-packages/shared/  Runner and machine-protocol types shared across processes
+packages/shared/  Runner core: CLI adapters, stream parsing, and process execution
 ```

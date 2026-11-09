@@ -62,7 +62,6 @@ function TraditionalSidebar({
     { href: '/issues', label: 'Issues', icon: 'teams' },
     { href: '/agents', label: 'My Agents', icon: 'agents' },
     { href: '/settings/providers', label: 'Providers', icon: 'settings' },
-    { href: '/settings/machines', label: 'Machines', icon: 'settings' },
   ];
   const recentProjects = projects
     .filter((p) => p.kind !== 'default')

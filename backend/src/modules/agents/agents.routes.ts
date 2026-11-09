@@ -81,9 +81,7 @@ const updateSchema = z.object({
 const configSchema = z.object({
   providerId: z.string().uuid().nullable().optional(),
   model: z.string().min(1).max(128).nullable().optional(),
-  execution: z.enum(['server', 'api', 'machine']).optional(),
-  machineId: z.string().uuid().nullable().optional(),
-  machineWorkdir: z.string().max(512).nullable().optional(),
+  execution: z.enum(['server', 'api']).optional(),
 });
 
 function parseOr400<T>(schema: z.ZodType<T>, body: unknown): T {

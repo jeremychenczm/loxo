@@ -1,5 +1,5 @@
-// Turn execution core is shared with the machine daemon (@swarmdev/shared):
-// adapter table, stream parsing, and process execution must not drift apart.
+// Turn execution core lives in @swarmdev/shared: adapter table, stream
+// parsing, and process execution.
 export {
   ADAPTERS,
   RUNTIME_CODE_CAPABILITIES,

@@ -1,8 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process';
-import type { MachineRuntime } from './machine-protocol';
 
-/** CLI runtimes execute turns as one-shot processes; identical set on server and daemon. */
-export type CliRuntime = MachineRuntime;
+/** CLI runtimes execute turns as one-shot processes. */
+export const CLI_RUNTIMES = ['claude-code', 'codex', 'opencode', 'hermes', 'openclaw'] as const;
+
+export type CliRuntime = (typeof CLI_RUNTIMES)[number];
 
 export interface ExecRequest {
   command: string;

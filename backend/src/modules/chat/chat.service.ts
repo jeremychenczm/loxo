@@ -5,7 +5,6 @@ import { getAgent } from '../agents/agents.service';
 import { claimAgentForTurn, releaseAgentAfterTurn } from '../runs/wake';
 import { getProviderCredentials } from '../providers/providers.service';
 import { runTurn, RunnerError, type TurnRequest, type TurnResult } from '../runner/runner';
-import { dispatchAgentTurn } from '../runner/dispatch';
 import { executeApiTurn, resolveApiModel, type ApiChatMessage, type ApiProtocol } from '../runner/api-turn';
 import { buildDirectChatPrompt } from '../runner/turn-context';
 import type { CliRuntime } from '../agents/runtime-detect';
@@ -154,22 +153,18 @@ export async function runChatTurn(
           history: resumable && conversation.runnerSessionRef ? undefined : history,
         });
 
-        result = await dispatchAgentTurn(
-          agent,
-          {
-            runtime: agent.runtime as CliRuntime,
-            workspace: paths.workspace,
-            stateDir: paths.state,
-            prompt,
-            model: agent.model,
-            credentials: credentials ?? undefined,
-            sessionRef: resumable ? conversation.runnerSessionRef : null,
-            signal: controller.signal,
-            onChunk: events.onChunk,
-            permission: agent.permissionLevel,
-          },
-          turnExecutor
-        );
+        result = await turnExecutor({
+          runtime: agent.runtime as CliRuntime,
+          workspace: paths.workspace,
+          stateDir: paths.state,
+          prompt,
+          model: agent.model,
+          credentials: credentials ?? undefined,
+          sessionRef: resumable ? conversation.runnerSessionRef : null,
+          signal: controller.signal,
+          onChunk: events.onChunk,
+          permission: agent.permissionLevel,
+        });
 
         if (resumable && result.sessionRef && result.sessionRef !== conversation.runnerSessionRef) {
           await setRunnerSessionRef(conversationId, result.sessionRef);

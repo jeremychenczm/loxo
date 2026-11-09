@@ -2,16 +2,6 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { verifyToken } from '../modules/auth/tokens';
-import { handleMachineFrame } from '../modules/machines/machine-channel';
-import { failTurnsForMachine } from '../modules/machines/machine-turns';
-import {
-  registerMachineSocket,
-  unregisterMachineSocket,
-} from '../modules/machines/machine-registry';
-import {
-  authenticateMachineToken,
-  touchMachineLastSeen,
-} from '../modules/machines/machines.service';
 import { handleChatFrame } from './chat-channel';
 
 export interface WsGateway {
@@ -20,13 +10,11 @@ export interface WsGateway {
 }
 
 const WS_PATH = '/ws';
-const MACHINE_WS_PATH = '/ws/machine';
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 interface TrackedSocket extends WebSocket {
   isAlive?: boolean;
   userId?: string;
-  machineId?: string;
 }
 
 /**
@@ -39,23 +27,6 @@ export function attachWsGateway(server: Server): WsGateway {
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? '/', 'http://internal');
     const token = url.searchParams.get('token') ?? '';
-
-    if (url.pathname === MACHINE_WS_PATH) {
-      void authenticateMachineToken(token)
-        .then((machine) => {
-          if (!machine) {
-            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-            socket.destroy();
-            return;
-          }
-          wss.handleUpgrade(req, socket, head, (ws) => {
-            (ws as TrackedSocket).machineId = machine.id;
-            wss.emit('connection', ws, req);
-          });
-        })
-        .catch(() => socket.destroy());
-      return;
-    }
 
     if (url.pathname !== WS_PATH) {
       socket.destroy();
@@ -75,19 +46,8 @@ export function attachWsGateway(server: Server): WsGateway {
 
   wss.on('connection', (ws: TrackedSocket) => {
     ws.isAlive = true;
-    if (ws.machineId) {
-      registerMachineSocket(ws.machineId, ws);
-      void touchMachineLastSeen(ws.machineId);
-      ws.on('close', () => {
-        unregisterMachineSocket(ws.machineId!, ws);
-        failTurnsForMachine(ws.machineId!);
-        void touchMachineLastSeen(ws.machineId!);
-      });
-    }
     ws.on('pong', () => {
       ws.isAlive = true;
-      // Piggyback presence on the heartbeat; one write per interval per machine.
-      if (ws.machineId) void touchMachineLastSeen(ws.machineId);
     });
     ws.on('message', (raw) => {
       let message: { type?: string; payload?: Record<string, unknown> };
@@ -99,16 +59,6 @@ export function attachWsGateway(server: Server): WsGateway {
       }
       if (message.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong' }));
-        return;
-      }
-      // Machine sockets get their own frame family; user channels are off-limits.
-      if (ws.machineId) {
-        if (typeof message.type === 'string' && message.type.startsWith('machine.')) {
-          void handleMachineFrame(ws, ws.machineId, {
-            type: message.type,
-            payload: message.payload,
-          });
-        }
         return;
       }
       if (typeof message.type === 'string' && message.type.startsWith('chat.')) {

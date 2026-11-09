@@ -2,7 +2,6 @@ import type { Agent, Issue, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { listComments } from '../issues/comments.service';
 import { getProviderCredentials } from '../providers/providers.service';
-import { dispatchAgentTurn } from '../runner/dispatch';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-turn';
 import { executeApiToolLoop } from '../runner/api-tool-loop';
 import { buildControlPlaneToolDefs } from './control-plane';
@@ -67,10 +66,8 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
     ? codeWorkspace.workspace.worktreePath
     : storage.projectWorkspace(run.userId, issue.projectId);
 
-  // Off-host turns cannot reach a loopback control plane; they stay on the
-  // report fallback until MCP_PUBLIC_URL points somewhere routable. The api
-  // lane gets the same tools in-process.
-  const mcpCapable = MCP_RUNTIMES.has(agent.runtime) && agent.execution !== 'machine';
+  // The api lane gets the same tools in-process.
+  const mcpCapable = MCP_RUNTIMES.has(agent.runtime);
   const hasControlPlane = agent.runtime === 'api' || mcpCapable;
 
   const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildIssueRunPrompt;
@@ -119,25 +116,21 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
 
   const before = codeWorkspace ? await snapshotBeforeRun(codeWorkspace.workspace) : null;
   try {
-    const result = await dispatchAgentTurn(
-      agent,
-      {
-        runtime: agent.runtime as CliRuntime,
-        workspace,
-        stateDir: paths.state,
-        prompt,
-        model: agent.model,
-        credentials: credentials ?? undefined,
-        sessionRef: null,
-        timeoutMs: ISSUE_RUN_TIMEOUT_MS,
-        permission,
-        mcp: controlPlane,
-        extraEnv: controlPlane
-          ? { SWARMDEV_MCP_URL: controlPlane.url, SWARMDEV_RUN_TOKEN: controlPlane.token }
-          : undefined,
-      },
-      turnExecutor
-    );
+    const result = await turnExecutor({
+      runtime: agent.runtime as CliRuntime,
+      workspace,
+      stateDir: paths.state,
+      prompt,
+      model: agent.model,
+      credentials: credentials ?? undefined,
+      sessionRef: null,
+      timeoutMs: ISSUE_RUN_TIMEOUT_MS,
+      permission,
+      mcp: controlPlane,
+      extraEnv: controlPlane
+        ? { SWARMDEV_MCP_URL: controlPlane.url, SWARMDEV_RUN_TOKEN: controlPlane.token }
+        : undefined,
+    });
     return { text: result.text, sessionRef: result.sessionRef ?? null };
   } finally {
     // Git evidence is captured on success, failure, and cancellation alike;
@@ -178,12 +171,6 @@ async function resolveCodeWorkspace(
   if (!capability || capability.codeWorkspace === 'disabled') {
     throw new RunnerError(
       `Runtime "${agent.runtime}" is not supported for code workspaces`,
-      'cli_failed'
-    );
-  }
-  if (agent.execution === 'machine') {
-    throw new RunnerError(
-      'This project repository is server-hosted; machine-executed agents cannot run its code issues yet',
       'cli_failed'
     );
   }

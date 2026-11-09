@@ -5,7 +5,6 @@ import { agentsRouter, groupsRouter } from '../modules/agents/agents.routes';
 import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
-import { machinesRouter } from '../modules/machines/machines.routes';
 import { issuesRouter } from '../modules/issues/issues.routes';
 import { projectsRouter } from '../modules/projects/projects.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
@@ -57,7 +56,6 @@ export function createApp(): express.Express {
         id: null,
       });
     });
-  app.use('/api/machines', machinesRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ code: 'not_found', message: 'Route not found' });

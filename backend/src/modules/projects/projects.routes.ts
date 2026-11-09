@@ -98,7 +98,7 @@ projectsRouter.delete('/:id', async (req: AuthedRequest, res, next) => {
   }
 });
 
-// Repository binding for code execution (server location in this milestone).
+// Repository binding for code execution.
 projectsRouter.get('/:id/repository', async (req: AuthedRequest, res, next) => {
   try {
     await getProject(req.auth!.userId, String(req.params.id)); // ownership
@@ -113,7 +113,7 @@ projectsRouter.get('/:id/repository', async (req: AuthedRequest, res, next) => {
 projectsRouter.put('/:id/repository', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
-      location: z.enum(['server', 'machine']),
+      location: z.literal('server'),
       defaultBaseRef: z.string().trim().min(1).max(200).optional(),
       branchPrefix: z.string().trim().min(1).max(60).optional(),
       cleanupPolicy: z.enum(['manual', 'after_merge']).optional(),

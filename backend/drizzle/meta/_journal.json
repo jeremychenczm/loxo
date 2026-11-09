@@ -183,6 +183,13 @@
       "when": 1794193464402,
       "tag": "0025_remove-goals-memos",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794193862253,
+      "tag": "0026_remove-machines",
+      "breakpoints": true
     }
   ]
 }

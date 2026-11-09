@@ -5,7 +5,6 @@ import { db, pool } from '../src/db/client';
 import {
   executionWorkspaces,
   issueReviews,
-  machines,
   projectRepositories,
   runChangeSnapshots,
   runs,
@@ -112,32 +111,11 @@ describe('execution workspace constraints', () => {
 });
 
 describe('project repository constraints', () => {
-  it('rejects a machine repository without machine id and root path', async () => {
-    expect(
-      await sqlState(
-        db.insert(projectRepositories).values({ userId, projectId, location: 'machine' })
-      )
-    ).toBe('23514');
-  });
-
-  it('binds at most one repository per project and blocks machine deletion while bound', async () => {
-    const machine = one(
-      await db
-        .insert(machines)
-        .values({ userId, name: 'Fixture machine', tokenHash: 'fixture-token-hash' })
-        .returning()
-    );
-
+  it('binds at most one repository per project with default settings', async () => {
     const binding = one(
       await db
         .insert(projectRepositories)
-        .values({
-          userId,
-          projectId,
-          location: 'machine',
-          machineId: machine.id,
-          rootPath: 'C:/work/fixture-repo',
-        })
+        .values({ userId, projectId, location: 'server' })
         .returning()
     );
     expect(binding.defaultBaseRef).toBe('main');
@@ -150,10 +128,7 @@ describe('project repository constraints', () => {
       )
     ).toBe('23505');
 
-    expect(await sqlState(db.delete(machines).where(eq(machines.id, machine.id)))).toBe('23503');
-
     await db.delete(projectRepositories).where(eq(projectRepositories.id, binding.id));
-    await db.delete(machines).where(eq(machines.id, machine.id));
   });
 });
 

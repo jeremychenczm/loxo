@@ -39,11 +39,8 @@ function rethrowGitError(err: unknown): never {
   throw err;
 }
 
-/** Server repositories live in the project workspace; machine roots arrive with Gate B. */
+/** Server repositories live in the project workspace. */
 function repositoryRoot(userId: string, repository: ProjectRepository): string {
-  if (repository.location !== 'server') {
-    throw badRequest('machine_unsupported', 'Machine repositories are not available yet');
-  }
   return storage.projectWorkspace(userId, repository.projectId);
 }
 
@@ -62,7 +59,7 @@ export async function getProjectRepository(
 }
 
 export interface BindRepositoryInput {
-  location: 'server' | 'machine';
+  location: 'server';
   defaultBaseRef?: string;
   branchPrefix?: string;
   cleanupPolicy?: 'manual' | 'after_merge';
@@ -81,9 +78,6 @@ export async function bindProjectRepository(
   if (!project) throw notFound('Project not found');
   if (project.kind === 'default') {
     throw badRequest('default_project', 'The default project cannot enable code execution');
-  }
-  if (input.location !== 'server') {
-    throw badRequest('machine_unsupported', 'Machine repositories arrive with the machine workspace milestone');
   }
 
   const baseRef = input.defaultBaseRef?.trim() || 'main';
