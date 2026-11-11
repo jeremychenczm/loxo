@@ -20,7 +20,7 @@ import { storage } from '../../storage/layout';
 import { addSystemTurn } from '../tasks/turns.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
-import { taskBranchName } from './branch-name';
+import { workspaceBranchName, workspaceLeaf } from './branch-name';
 import { localGitDriver } from './local-git-driver';
 import {
   GitDriverError,
@@ -29,9 +29,6 @@ import {
 } from './workspace.types';
 
 const TERMINALS = [...WORKSPACE_TERMINAL_STATUSES];
-
-/** Every managed branch lives under this namespace in the user's repository. */
-export const MANAGED_BRANCH_PREFIX = 'loxo';
 
 /** Translates driver failures into client-visible errors at the API boundary. */
 export function rethrowGitError(err: unknown): never {
@@ -148,7 +145,7 @@ export async function prepareTaskWorkspace(
 
   let row = await getTaskWorkspace(userId, task.id);
   if (!row) {
-    const branchName = taskBranchName(MANAGED_BRANCH_PREFIX, task.number, task.id);
+    const branchName = workspaceBranchName(task.number, null);
     const info = await localGitDriver
       .inspectRepository({ rootPath: root, baseRef: repository.defaultBranch })
       .catch(rethrowGitError);
@@ -160,7 +157,7 @@ export async function prepareTaskWorkspace(
           taskId: task.id,
           repositoryId: repository.id,
           kind: 'integration',
-          worktreePath: path.join(worktreesRoot, task.id),
+          worktreePath: path.join(worktreesRoot, workspaceLeaf(task.id, 'integration', null)),
           branchName,
           baseRef: repository.defaultBranch,
           baseCommit: info.baseCommit,
@@ -184,7 +181,7 @@ export async function prepareTaskWorkspace(
     const prepared = await localGitDriver.prepareWorkspace({
       repositoryRoot: root,
       worktreesRoot,
-      taskId: task.id,
+      leaf: workspaceLeaf(task.id, 'integration', null),
       branchName: row.branchName,
       baseRef: row.baseRef,
       baseCommit: row.baseCommit,

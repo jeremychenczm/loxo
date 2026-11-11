@@ -11,7 +11,7 @@ import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 import { storage } from '../src/storage/layout';
-import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
+import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
 const app = createApp();
 const T = 30_000;
@@ -22,6 +22,7 @@ let workerId = '';
 let inspectorId = '';
 let repositoryId = '';
 let sandbox = '';
+let repoDir = '';
 
 interface SeenTurn {
   workspace: string;
@@ -101,6 +102,7 @@ afterEach(async () => {
 describe('repository registration', () => {
   it('registers a local repository and inspects it', { timeout: T }, async () => {
     const dir = await initFixtureRepo(path.join(sandbox, 'ledgerlite'));
+    repoDir = dir;
     const created = await request(app).post('/api/repositories').set(auth()).send({ rootPath: dir });
     expect(created.status).toBe(201);
     expect(created.body.repository.defaultBranch).toBe('main');
@@ -119,6 +121,12 @@ describe('repository registration', () => {
 
 describe('runs in isolated task workspaces', () => {
   it('runs the worker in a worktree and captures its changes', { timeout: T }, async () => {
+    const primary = async () => ({
+      head: await git(repoDir, 'rev-parse', 'HEAD'),
+      branch: await git(repoDir, 'symbolic-ref', '--short', 'HEAD'),
+      status: await git(repoDir, '--no-optional-locks', 'status', '--porcelain=v1', '--untracked-files=all'),
+    });
+    const before = await primary();
     const task = await createTaskIn('Add ledger export');
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'feature.txt'), 'export ledger\n');
@@ -126,12 +134,12 @@ describe('runs in isolated task workspaces', () => {
     await wake(workerId, task.id, 'manual');
 
     const turn = seen[seen.length - 1]!;
-    expect(turn.workspace).toBe(path.join(storage.worktreesRoot(userId), task.id));
+    expect(turn.workspace).toBe(path.join(storage.worktreesRoot(userId), task.id, 'integration'));
     expect(turn.permission).toBe('edit');
 
     const ws = await workspaceOf(task.id);
     expect(ws?.status).toBe('dirty');
-    expect(ws?.branchName).toBe(`loxo/task-${task.number}-${task.id.replace(/-/g, '').slice(0, 6)}`);
+    expect(ws?.branchName).toBe(`loxo/t${task.number}/integration`);
 
     const changes = await request(app).get(`/api/tasks/${task.id}/changes`).set(auth());
     expect(changes.status).toBe(200);
@@ -144,6 +152,9 @@ describe('runs in isolated task workspaces', () => {
       .from(turns)
       .where(and(eq(turns.taskId, task.id), eq(turns.kind, 'system')));
     expect(timeline.some((t) => t.content.includes('Code changes captured'))).toBe(true);
+    // The run happened entirely beside the user's checkout.
+    expect(await primary()).toEqual(before);
+    expect(fs.existsSync(path.join(repoDir, 'feature.txt'))).toBe(false);
   });
 
   it('reuses the same worktree for rework and for the reviewer', { timeout: T }, async () => {

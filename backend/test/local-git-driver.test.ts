@@ -1,12 +1,16 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  isManagedBranch,
   isSafeRefName,
-  taskBranchName,
+  memberSlug,
+  workspaceBranchName,
+  workspaceLeaf,
 } from '../src/modules/code-workspaces/branch-name';
 import { localGitDriver } from '../src/modules/code-workspaces/local-git-driver';
 import {
@@ -61,7 +65,7 @@ async function makeWorkspace(taskId = 'task-a', branch = 'swarmdev/task-1-abc123
   const result = await localGitDriver.prepareWorkspace({
     repositoryRoot: repo,
     worktreesRoot,
-    taskId,
+    leaf: taskId,
     branchName: branch,
     baseRef: 'main',
   });
@@ -105,9 +109,21 @@ describe('ref and branch names', () => {
     }
   });
 
-  it('builds the task branch name from prefix, number, and short id', () => {
-    const name = taskBranchName('swarmdev', 42, 'a17c92f3-0000-4000-8000-000000000000');
-    expect(name).toBe('swarmdev/task-42-a17c92');
+  it('names managed branches and worktree leaves per task and member', () => {
+    const member = memberSlug('Ada Lovelace (Reviewer)!', 'a17c92f3-0000-4000-8000-000000000000');
+    expect(member).toBe('ada-lovelace-reviewer-a17c92');
+    expect(memberSlug('***', 'b0b0b0b0-0000-4000-8000-000000000000')).toBe('b0b0b0');
+    expect(workspaceBranchName(42, null)).toBe('loxo/t42/integration');
+    expect(workspaceBranchName(42, member)).toBe(`loxo/t42/${member}`);
+    expect(workspaceLeaf('task-uuid', 'integration', null)).toBe('task-uuid/integration');
+    expect(workspaceLeaf('task-uuid', 'member', member)).toBe(`task-uuid/member-${member}`);
+  });
+
+  it('treats only loxo/ branches as managed', () => {
+    expect(isManagedBranch('loxo/t1/integration')).toBe(true);
+    for (const other of ['main', 'feature/loxo', 'loxo', 'loxo/../main', '-loxo/x']) {
+      expect(isManagedBranch(other), other).toBe(false);
+    }
   });
 });
 
@@ -176,7 +192,7 @@ describe('prepareWorkspace', () => {
     const again = await localGitDriver.prepareWorkspace({
       repositoryRoot: ws.repo,
       worktreesRoot: ws.worktreesRoot,
-      taskId: 'task-a',
+      leaf: 'task-a',
       branchName: ws.branch,
       baseRef: 'main',
       baseCommit: ws.result.baseCommit,
@@ -192,7 +208,7 @@ describe('prepareWorkspace', () => {
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot: `${repo}-worktrees`,
-      taskId: 'task-a',
+      leaf: 'task-a',
       branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
@@ -206,7 +222,7 @@ describe('prepareWorkspace', () => {
     const second = await localGitDriver.prepareWorkspace({
       repositoryRoot: ws.repo,
       worktreesRoot: ws.worktreesRoot,
-      taskId: 'task-b',
+      leaf: 'task-b',
       branchName: 'swarmdev/task-2-def456',
       baseRef: 'main',
     });
@@ -222,7 +238,7 @@ describe('prepareWorkspace', () => {
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot: `${repo}-worktrees`,
-      taskId: 'task-9',
+      leaf: 'task-9',
       branchName: 'swarmdev/task-9-stray',
       baseRef: 'main',
     });
@@ -237,7 +253,7 @@ describe('prepareWorkspace', () => {
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot,
-      taskId: 'task-a',
+      leaf: 'task-a',
       branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
@@ -253,7 +269,7 @@ describe('prepareWorkspace', () => {
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot,
-      taskId: 'task-a',
+      leaf: 'task-a',
       branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
@@ -630,5 +646,125 @@ describe('reconcileWorkspace', () => {
     });
     expect(result.state).toBe('error');
     expect(result.error).toMatch(/base commit/i);
+  });
+});
+
+/** Everything a user could notice about their primary checkout, read without side effects. */
+async function primaryCheckoutState(repo: string) {
+  const files: Record<string, string> = {};
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === '.git') continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else files[path.relative(repo, full)] = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+    }
+  };
+  walk(repo);
+  const quietGit = (...args: string[]) => git(repo, '--no-optional-locks', ...args);
+  return {
+    head: await quietGit('rev-parse', 'HEAD'),
+    branch: await quietGit('symbolic-ref', '--short', 'HEAD'),
+    status: await quietGit('status', '--porcelain=v1', '--untracked-files=all'),
+    index: crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, '.git', 'index'))).digest('hex'),
+    config: fs.readFileSync(path.join(repo, '.git', 'config'), 'utf8'),
+    files,
+  };
+}
+
+async function refList(repo: string): Promise<string[]> {
+  const out = await git(repo, 'for-each-ref', '--format=%(refname) %(objectname)');
+  return out.split('\n').filter(Boolean).sort();
+}
+
+describe('several worktrees on a user repository', () => {
+  it('adds and removes task worktrees without touching the primary checkout', { timeout: 60_000 }, async () => {
+    const repo = await initRepo();
+    // The user is mid-work: an unstaged edit, a staged file, and an untracked one.
+    write(repo, 'README.md', '# my unsaved edit\n');
+    write(repo, 'staged.txt', 'staged\n');
+    await git(repo, 'add', 'staged.txt');
+    write(repo, 'scratch.txt', 'untracked\n');
+
+    const before = await primaryCheckoutState(repo);
+    const refsBefore = await refList(repo);
+    const base = await git(repo, 'rev-parse', 'main');
+    const worktreesRoot = `${repo}-loxo`;
+
+    const specs = [
+      { leaf: 't7/integration', branchName: 'loxo/t7/integration' },
+      { leaf: 't7/member-ada', branchName: 'loxo/t7/ada' },
+      { leaf: 't7/member-grace', branchName: 'loxo/t7/grace' },
+      { leaf: 't7/review-linus', branchName: null },
+    ];
+    const prepared = [];
+    for (const spec of specs) {
+      const result = await localGitDriver.prepareWorkspace({
+        repositoryRoot: repo,
+        worktreesRoot,
+        baseRef: 'main',
+        baseCommit: base,
+        ...spec,
+      });
+      expect(result.state, spec.leaf).toBe('ready');
+      expect(result.worktreePath).toBe(path.join(worktreesRoot, ...spec.leaf.split('/')));
+      prepared.push({ ...spec, path: result.worktreePath });
+    }
+
+    // Members work on their own branches; the review checkout sits detached at the base.
+    write(prepared[1]!.path, 'api.ts', 'export const api = 1;\n');
+    await git(prepared[1]!.path, 'add', '.');
+    await git(prepared[1]!.path, 'commit', '-m', 'api package');
+    write(prepared[2]!.path, 'ui.ts', 'export const ui = 1;\n');
+    expect(await git(prepared[1]!.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('loxo/t7/ada');
+    expect(await git(prepared[3]!.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
+    expect(await git(prepared[3]!.path, 'rev-parse', 'HEAD')).toBe(base);
+    expect(fs.existsSync(path.join(prepared[2]!.path, 'api.ts'))).toBe(false);
+
+    const again = await localGitDriver.prepareWorkspace({
+      repositoryRoot: repo,
+      worktreesRoot,
+      baseRef: 'main',
+      baseCommit: base,
+      ...specs[3]!,
+    });
+    expect(again.reused).toBe(true);
+
+    expect(await primaryCheckoutState(repo)).toEqual(before);
+    const refsDuring = await refList(repo);
+    const added = refsDuring.filter((r) => !refsBefore.includes(r)).map((r) => r.split(' ')[0]);
+    expect(added.sort()).toEqual([
+      'refs/heads/loxo/t7/ada',
+      'refs/heads/loxo/t7/grace',
+      'refs/heads/loxo/t7/integration',
+    ]);
+    expect(refsDuring.filter((r) => !r.startsWith('refs/heads/loxo/'))).toEqual(refsBefore);
+
+    for (const ws of prepared) {
+      await localGitDriver.removeWorkspace({
+        repositoryRoot: repo,
+        worktreePath: ws.path,
+        allowDirty: true,
+        ...(ws.branchName ? { deleteBranch: ws.branchName } : {}),
+      });
+      expect(fs.existsSync(ws.path)).toBe(false);
+    }
+
+    expect(await primaryCheckoutState(repo)).toEqual(before);
+    expect(await refList(repo)).toEqual(refsBefore);
+    const listed = await git(repo, 'worktree', 'list', '--porcelain');
+    expect(listed.split('\n').filter((l) => l.startsWith('worktree '))).toHaveLength(1);
+  });
+
+  it('never deletes a branch outside the managed namespace', { timeout: T }, async () => {
+    const ws = await makeWorkspace('task-guard', 'loxo/t8/integration');
+    await expect(
+      localGitDriver.removeWorkspace({
+        repositoryRoot: ws.repo,
+        worktreePath: ws.result.worktreePath,
+        deleteBranch: 'main',
+      })
+    ).rejects.toMatchObject({ code: 'unmanaged_branch' });
+    expect(await git(ws.repo, 'rev-parse', '--verify', 'refs/heads/main')).toMatch(/^[0-9a-f]{40}$/);
   });
 });

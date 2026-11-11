@@ -2,6 +2,7 @@ import type { ChangeSummary } from '../../db/schema';
 
 export type GitDriverErrorCode =
   | 'not_a_repository'
+  | 'unmanaged_branch'
   | 'base_ref_not_branch'
   | 'invalid_ref'
   | 'dirty_workspace'
@@ -39,10 +40,12 @@ export interface RepositoryInfo {
 
 export interface PrepareWorkspaceInput {
   repositoryRoot: string;
-  /** Managed root for task worktrees; the driver generates the leaf path. */
+  /** Managed root for task worktrees; the leaf must stay inside it. */
   worktreesRoot: string;
-  taskId: string;
-  branchName: string;
+  /** Relative path under worktreesRoot, e.g. `<taskId>/integration`. */
+  leaf: string;
+  /** Null checks out a detached HEAD at the base, for read-only review checkouts. */
+  branchName: string | null;
   baseRef: string;
   /**
    * Immutable creation point recorded when the workspace was first prepared.
@@ -58,7 +61,7 @@ export type ObservedWorkspaceState = 'ready' | 'dirty' | 'missing' | 'error';
 export interface WorkspaceObservation {
   state: ObservedWorkspaceState;
   worktreePath: string;
-  branchName: string;
+  branchName: string | null;
   headCommit: string | null;
   /** Cumulative changes exist relative to the workspace base commit. */
   hasChanges: boolean;
@@ -79,6 +82,7 @@ export interface ReconcileWorkspaceInput {
 }
 
 export interface ReconcileWorkspaceResult extends WorkspaceObservation {
+  branchName: string;
   /** The worktree was re-attached from its surviving branch after a crash or out-of-band deletion. */
   recovered: boolean;
 }
@@ -174,6 +178,8 @@ export interface RemoveWorkspaceInput {
   worktreePath: string;
   /** Explicit confirmation that uncommitted changes may be discarded. */
   allowDirty?: boolean;
+  /** Also delete this branch once the worktree is gone; only loxo/ branches qualify. */
+  deleteBranch?: string;
 }
 
 /**

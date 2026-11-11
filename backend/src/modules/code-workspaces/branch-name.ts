@@ -32,7 +32,41 @@ export function assertCommitId(commit: string): string {
   return commit;
 }
 
-export function taskBranchName(prefix: string, taskNumber: number, taskId: string): string {
-  const shortId = taskId.replace(/-/g, '').slice(0, 6).toLowerCase();
-  return assertSafeRefName(`${prefix}/task-${taskNumber}-${shortId}`);
+/** Every branch Loxo creates lives under this namespace; nothing outside it is ever deleted. */
+export const MANAGED_BRANCH_PREFIX = 'loxo';
+
+export function isManagedBranch(branch: string): boolean {
+  return isSafeRefName(branch) && branch.startsWith(`${MANAGED_BRANCH_PREFIX}/`);
+}
+
+export function assertManagedBranch(branch: string): string {
+  if (!isManagedBranch(branch)) {
+    throw new GitDriverError(
+      'unmanaged_branch',
+      `Refusing to touch ${JSON.stringify(branch)}: only ${MANAGED_BRANCH_PREFIX}/ branches are managed`
+    );
+  }
+  return branch;
+}
+
+/** Ref-safe, human-readable member label: slugged name plus a short id for uniqueness. */
+export function memberSlug(name: string, agentId: string): string {
+  const base = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24)
+    .replace(/-+$/g, '');
+  const shortId = agentId.replace(/-/g, '').slice(0, 6).toLowerCase();
+  return base ? `${base}-${shortId}` : shortId;
+}
+
+/** `loxo/t<n>/integration` for the task branch, `loxo/t<n>/<member>` for a member's. */
+export function workspaceBranchName(taskNumber: number, member: string | null): string {
+  return assertSafeRefName(`${MANAGED_BRANCH_PREFIX}/t${taskNumber}/${member ?? 'integration'}`);
+}
+
+/** Worktree leaf under the managed root: `<taskId>/integration` or `<taskId>/<kind>-<member>`. */
+export function workspaceLeaf(taskId: string, kind: string, member: string | null): string {
+  return kind === 'integration' || !member ? `${taskId}/integration` : `${taskId}/${kind}-${member}`;
 }

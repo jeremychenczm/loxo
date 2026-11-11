@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { resolveInside } from '../../storage/path-safety';
-import { assertCommitId, assertSafeRefName } from './branch-name';
+import { assertCommitId, assertManagedBranch, assertSafeRefName } from './branch-name';
 import { buildChangeSummary, computeChangeFingerprint } from './change-capture';
 import {
   parseNameStatusZ,
@@ -54,7 +54,9 @@ async function runGit(cwd: string, args: string[]): Promise<Buffer> {
       maxBuffer: GIT_MAX_BUFFER,
       windowsHide: true,
       encoding: 'buffer',
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      // No optional locks: read-only commands such as status must not refresh the
+      // user's index as a side effect.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
     });
     return stdout;
   } catch (err) {
@@ -189,7 +191,7 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
   }
 
   async prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceResult> {
-    const branchName = assertSafeRefName(input.branchName);
+    const branchName = input.branchName === null ? null : assertSafeRefName(input.branchName);
     const baseRef = assertSafeRefName(input.baseRef);
     const resolvedBase = await branchCommit(input.repositoryRoot, baseRef);
     if (resolvedBase === null) {
@@ -199,8 +201,8 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       );
     }
     const baseCommit = input.baseCommit ?? resolvedBase;
-    const worktreePath = resolveInside(input.worktreesRoot, input.taskId);
-    fs.mkdirSync(input.worktreesRoot, { recursive: true });
+    const worktreePath = resolveInside(input.worktreesRoot, input.leaf);
+    fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
     const fail = (error: string): PrepareWorkspaceResult => ({
       state: 'error',
@@ -217,12 +219,13 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       text(await runGit(input.repositoryRoot, ['worktree', 'list', '--porcelain']))
     );
     const registered = worktrees.find((w) => normalizePath(w.path) === normalizePath(worktreePath));
-    const existingBranchHead = await branchCommit(input.repositoryRoot, branchName);
+    const existingBranchHead =
+      branchName === null ? null : await branchCommit(input.repositoryRoot, branchName);
 
     if (registered) {
       if (registered.branch !== branchName) {
         return fail(
-          `Worktree path is registered to branch "${registered.branch ?? '(detached)'}", expected "${branchName}"`
+          `Worktree path is registered to branch "${registered.branch ?? '(detached)'}", expected "${branchName ?? '(detached)'}"`
         );
       }
       if (!fs.existsSync(worktreePath)) {
@@ -243,7 +246,11 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       fs.rmdirSync(worktreePath);
     }
 
-    await runGit(input.repositoryRoot, ['worktree', 'add', '-b', branchName, worktreePath, baseCommit]);
+    const addArgs =
+      branchName === null
+        ? ['worktree', 'add', '--detach', worktreePath, baseCommit]
+        : ['worktree', 'add', '-b', branchName, worktreePath, baseCommit];
+    await runGit(input.repositoryRoot, addArgs);
     return {
       state: 'ready',
       worktreePath,
@@ -472,6 +479,12 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       await runGit(input.repositoryRoot, args);
     }
     await runGit(input.repositoryRoot, ['worktree', 'prune']);
+    if (input.deleteBranch) {
+      const branch = assertManagedBranch(input.deleteBranch);
+      if ((await branchCommit(input.repositoryRoot, branch)) !== null) {
+        await runGit(input.repositoryRoot, ['branch', '-D', branch]);
+      }
+    }
   }
 
   async reconcileWorkspace(input: ReconcileWorkspaceInput): Promise<ReconcileWorkspaceResult> {
@@ -544,12 +557,12 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
     }
 
     const observed = await this.observeWorktree(worktreePath, branchName, baseCommit);
-    return { ...observed, recovered };
+    return { ...observed, branchName, recovered };
   }
 
   private async observeWorktree(
     worktreePath: string,
-    branchName: string,
+    branchName: string | null,
     baseCommit: string
   ): Promise<WorkspaceObservation> {
     const head = line(await runGit(worktreePath, ['rev-parse', 'HEAD']));
