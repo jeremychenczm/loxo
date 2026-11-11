@@ -6,6 +6,7 @@ import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { crewsRouter } from '../modules/crews/crews.routes';
+import { humanRequestsRouter } from '../modules/human-requests/human-requests.routes';
 import { tasksRouter } from '../modules/tasks/tasks.routes';
 import { repositoriesRouter } from '../modules/repositories/repositories.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
@@ -43,6 +44,7 @@ export function createApp(): express.Express {
   app.use('/api/repositories', repositoriesRouter);
   app.use('/api/tasks', tasksRouter);
   app.use('/api/runs', runsRouter);
+  app.use('/api/human-requests', humanRequestsRouter);
 
   // Agent control plane; authenticated by per-run tokens, not user JWTs.
   app
