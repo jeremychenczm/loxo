@@ -24,9 +24,46 @@ export interface ApiToolLoopRequest {
   model: string;
   system?: string;
   prompt: string;
+  /** Earlier turns of the same session, oldest first. */
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   tools: ApiToolDefinition[];
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Fires around each tool execution, for event streaming. */
+  onToolCall?: (call: ToolCallNotice) => void;
+}
+
+export type ToolCallNotice =
+  | { phase: 'start'; id: string; name: string; args: unknown }
+  | { phase: 'end'; id: string; name: string; result: string; isError: boolean };
+
+/** Running token totals across the rounds of one turn. */
+class UsageTally {
+  input = 0;
+  output = 0;
+  seen = false;
+
+  add(input: unknown, output: unknown): void {
+    if (typeof input === 'number' || typeof output === 'number') this.seen = true;
+    if (typeof input === 'number') this.input += input;
+    if (typeof output === 'number') this.output += output;
+  }
+
+  result(): { inputTokens: number; outputTokens: number } | undefined {
+    return this.seen ? { inputTokens: this.input, outputTokens: this.output } : undefined;
+  }
+}
+
+async function runTool(
+  request: ApiToolLoopRequest,
+  id: string,
+  name: string,
+  args: unknown
+): Promise<{ text: string; isError: boolean }> {
+  request.onToolCall?.({ phase: 'start', id, name, args });
+  const result = await executeTool(request.tools, name, args);
+  request.onToolCall?.({ phase: 'end', id, name, result: result.text, isError: result.isError });
+  return result;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -118,8 +155,9 @@ async function runOpenAiLoop(request: ApiToolLoopRequest, started: number): Prom
 
   const messages: Array<Record<string, unknown>> = [
     ...(request.system ? [{ role: 'system', content: request.system }] : []),
-    ...normalizeApiMessages([{ role: 'user', content: request.prompt }]),
+    ...normalizeApiMessages([...(request.history ?? []), { role: 'user', content: request.prompt }]),
   ];
+  const usage = new UsageTally();
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const payload = await postJson(request, url, headers, {
@@ -127,6 +165,8 @@ async function runOpenAiLoop(request: ApiToolLoopRequest, started: number): Prom
       messages,
       tools: toolSpecs,
     });
+    const reported = payload.usage as { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
+    usage.add(reported?.prompt_tokens, reported?.completion_tokens);
     const message = (payload.choices as Array<{ message?: Record<string, unknown> }>)?.[0]
       ?.message;
     if (!message) throw new RunnerError('API returned no message', 'bad_output');
@@ -134,7 +174,7 @@ async function runOpenAiLoop(request: ApiToolLoopRequest, started: number): Prom
     const toolCalls = (message.tool_calls as OpenAiToolCall[] | undefined) ?? [];
     if (toolCalls.length === 0) {
       const text = typeof message.content === 'string' ? message.content : '';
-      return { text, durationMs: Date.now() - started };
+      return { text, durationMs: Date.now() - started, usage: usage.result() };
     }
 
     messages.push(message);
@@ -149,7 +189,7 @@ async function runOpenAiLoop(request: ApiToolLoopRequest, started: number): Prom
       const result =
         args === null
           ? { text: 'invalid_arguments: expected a JSON object', isError: true }
-          : await executeTool(request.tools, call.function.name, args);
+          : await runTool(request, call.id, call.function.name, args);
       messages.push({ role: 'tool', tool_call_id: call.id, content: result.text });
     }
   }
@@ -174,8 +214,10 @@ async function runAnthropicLoop(request: ApiToolLoopRequest, started: number): P
   }));
 
   const messages: Array<Record<string, unknown>> = normalizeApiMessages([
+    ...(request.history ?? []),
     { role: 'user', content: request.prompt },
   ]).map((m) => ({ ...m }));
+  const usage = new UsageTally();
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const payload = await postJson(request, url, headers, {
@@ -185,6 +227,8 @@ async function runAnthropicLoop(request: ApiToolLoopRequest, started: number): P
       messages,
       tools: toolSpecs,
     });
+    const reported = payload.usage as { input_tokens?: unknown; output_tokens?: unknown } | undefined;
+    usage.add(reported?.input_tokens, reported?.output_tokens);
 
     const content = (payload.content as AnthropicContentBlock[] | undefined) ?? [];
     const toolUses = content.filter((block) => block.type === 'tool_use');
@@ -193,13 +237,13 @@ async function runAnthropicLoop(request: ApiToolLoopRequest, started: number): P
         .filter((block) => block.type === 'text' && typeof block.text === 'string')
         .map((block) => block.text)
         .join('');
-      return { text, durationMs: Date.now() - started };
+      return { text, durationMs: Date.now() - started, usage: usage.result() };
     }
 
     messages.push({ role: 'assistant', content });
     const results = [];
     for (const use of toolUses) {
-      const result = await executeTool(request.tools, use.name ?? '', use.input ?? {});
+      const result = await runTool(request, use.id ?? '', use.name ?? '', use.input ?? {});
       results.push({
         type: 'tool_result',
         tool_use_id: use.id,

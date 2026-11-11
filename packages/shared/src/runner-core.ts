@@ -204,6 +204,8 @@ export interface TurnResult {
   text: string;
   sessionRef?: string;
   durationMs: number;
+  /** Summed over every request the turn made, when the provider reports it. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export type RunnerErrorKind = 'timeout' | 'aborted' | 'cli_failed' | 'api_failed' | 'bad_output';
