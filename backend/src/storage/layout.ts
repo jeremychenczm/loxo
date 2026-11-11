@@ -8,7 +8,7 @@ import { toHostPath } from './host-path';
  *   <root>/
  *     users/<userId>/
  *       agents/<agentId>/{workspace,baseline,snapshots,state}
- *       projects/<projectId>/{workspace,worktrees/<issueId>}
+ *       projects/<projectId>/{workspace,worktrees/<taskId>}
  *
  * Agent runtime state lives beside the workspace, not inside it, so
  * workspace diffing never has to filter state files out.
@@ -53,7 +53,7 @@ export function createStorageLayout(rootInput: string): StorageLayout {
     },
     projectWorkspace: (userId, projectId) =>
       ensured(path.join(root, 'users', userId, 'projects', projectId, 'workspace')),
-    // Managed issue worktrees live beside the workspace, never inside the repository.
+    // Managed task worktrees live beside the workspace, never inside the repository.
     projectWorktreesRoot: (userId, projectId) =>
       ensured(path.join(root, 'users', userId, 'projects', projectId, 'worktrees')),
     projectCodeArtifacts: (userId, projectId, runId) =>

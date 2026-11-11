@@ -11,8 +11,8 @@ import {
   openConversation,
   renameConversation,
 } from './conversations.service';
-import { draftIssueFromConversation } from './issue-draft.service';
-import { fileIssueFromConversation } from './issue-filing.service';
+import { draftTaskFromConversation } from './task-draft.service';
+import { fileTaskFromConversation } from './task-filing.service';
 
 export const conversationsRouter = Router();
 conversationsRouter.use(requireAuth);
@@ -75,7 +75,7 @@ conversationsRouter.get('/:id/messages', async (req: AuthedRequest, res, next) =
 
 // Draft only — nothing is persisted until the user confirms the conversion.
 // An explicit range overrides the topic-window heuristic.
-conversationsRouter.post('/:id/draft-issue', async (req: AuthedRequest, res, next) => {
+conversationsRouter.post('/:id/draft-task', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       fromMessageId: z.string().uuid().optional(),
@@ -84,7 +84,7 @@ conversationsRouter.post('/:id/draft-issue', async (req: AuthedRequest, res, nex
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) throw badRequest('invalid_input', 'Range must be message ids');
     res.json({
-      draft: await draftIssueFromConversation(req.auth!.userId, String(req.params.id), parsed.data),
+      draft: await draftTaskFromConversation(req.auth!.userId, String(req.params.id), parsed.data),
     });
   } catch (error) {
     next(error);
@@ -92,21 +92,21 @@ conversationsRouter.post('/:id/draft-issue', async (req: AuthedRequest, res, nex
 });
 
 // Files the user-confirmed draft; the draft endpoint above never persists.
-conversationsRouter.post('/:id/file-issue', async (req: AuthedRequest, res, next) => {
+conversationsRouter.post('/:id/file-task', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       title: z.string().trim().min(1).max(300),
-      description: z.string().max(10_000).optional(),
+      brief: z.string().max(10_000).optional(),
       projectId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'title is required');
-    const issue = await fileIssueFromConversation(
+    const task = await fileTaskFromConversation(
       req.auth!.userId,
       String(req.params.id),
       parsed.data
     );
-    res.status(201).json({ issue });
+    res.status(201).json({ task });
   } catch (error) {
     next(error);
   }

@@ -6,10 +6,10 @@ import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, issueComments, runChangeSnapshots, runs } from '../src/db/schema';
+import { agents, taskComments, runChangeSnapshots, runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { createReview } from '../src/modules/issues/reviews.service';
-import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
+import { createReview } from '../src/modules/tasks/reviews.service';
+import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 import { storage } from '../src/storage/layout';
@@ -51,19 +51,19 @@ async function initProjectRepo(): Promise<string> {
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-async function createIssueIn(title: string): Promise<{ id: string; issueNumber: number }> {
-  const res = await request(app).post('/api/issues').set(auth()).send({ title, projectId });
+async function createTaskIn(title: string): Promise<{ id: string; number: number }> {
+  const res = await request(app).post('/api/tasks').set(auth()).send({ title, projectId });
   expect(res.status).toBe(201);
-  return res.body.issue;
+  return res.body.task;
 }
 
-async function wake(agentId: string, issueId: string, trigger: 'manual' | 'review') {
-  await requestWake(userId, { agentId, issueId, trigger });
+async function wake(agentId: string, taskId: string, trigger: 'manual' | 'review') {
+  await requestWake(userId, { agentId, taskId, trigger });
   await drainRunsForTests();
 }
 
-async function workspaceOf(issueId: string) {
-  const res = await request(app).get(`/api/issues/${issueId}/workspace`).set(auth());
+async function workspaceOf(taskId: string) {
+  const res = await request(app).get(`/api/tasks/${taskId}/workspace`).set(auth());
   expect(res.status).toBe(200);
   return res.body.workspace as {
     id: string;
@@ -76,7 +76,7 @@ async function workspaceOf(issueId: string) {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setIssueTurnExecutorForTests(async (req) => {
+  setTaskTurnExecutorForTests(async (req) => {
     seen.push({
       workspace: req.workspace,
       permission: req.permission,
@@ -111,7 +111,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setIssueTurnExecutorForTests(null);
+  setTaskTurnExecutorForTests(null);
 });
 
 afterEach(async () => {
@@ -130,12 +130,12 @@ describe('project repository binding', () => {
   });
 
   it('rejects code execution on the default project', { timeout: T }, async () => {
-    const fallbackIssue = await request(app)
-      .post('/api/issues')
+    const fallbackTask = await request(app)
+      .post('/api/tasks')
       .set(auth())
       .send({ title: 'Default project fixture' });
     const res = await request(app)
-      .put(`/api/projects/${fallbackIssue.body.issue.projectId}/repository`)
+      .put(`/api/projects/${fallbackTask.body.task.projectId}/repository`)
       .set(auth())
       .send({ location: 'server' });
     expect(res.status).toBe(400);
@@ -161,24 +161,24 @@ describe('project repository binding', () => {
   });
 });
 
-describe('runs in isolated issue workspaces', () => {
+describe('runs in isolated task workspaces', () => {
   it('runs the worker in a worktree and captures its changes', { timeout: T }, async () => {
-    const issue = await createIssueIn('Add ledger export');
+    const task = await createTaskIn('Add ledger export');
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'feature.txt'), 'export ledger\n');
     };
-    await wake(workerId, issue.id, 'manual');
+    await wake(workerId, task.id, 'manual');
 
     const turn = seen[seen.length - 1]!;
-    expect(turn.workspace).toContain(path.join('worktrees', issue.id));
+    expect(turn.workspace).toContain(path.join('worktrees', task.id));
     expect(turn.workspace).not.toBe(storage.projectWorkspace(userId, projectId));
     expect(turn.permission).toBe('edit');
 
-    const ws = await workspaceOf(issue.id);
+    const ws = await workspaceOf(task.id);
     expect(ws?.status).toBe('dirty');
-    expect(ws?.branchName).toBe(`swarmdev/issue-${issue.issueNumber}-${issue.id.replace(/-/g, '').slice(0, 6)}`);
+    expect(ws?.branchName).toBe(`swarmdev/task-${task.number}-${task.id.replace(/-/g, '').slice(0, 6)}`);
 
-    const changes = await request(app).get(`/api/issues/${issue.id}/changes`).set(auth());
+    const changes = await request(app).get(`/api/tasks/${task.id}/changes`).set(auth());
     expect(changes.status).toBe(200);
     expect(changes.body.snapshot.changedFiles).toBe(1);
     expect(changes.body.snapshot.afterSummaryJson.untracked).toEqual(['feature.txt']);
@@ -186,36 +186,36 @@ describe('runs in isolated issue workspaces', () => {
 
     const timeline = await db
       .select()
-      .from(issueComments)
-      .where(and(eq(issueComments.issueId, issue.id), eq(issueComments.authorType, 'system')));
+      .from(taskComments)
+      .where(and(eq(taskComments.taskId, task.id), eq(taskComments.authorType, 'system')));
     expect(timeline.some((c) => c.body.includes('Code changes captured'))).toBe(true);
   });
 
   it('reuses the same worktree for rework and for the reviewer', { timeout: T }, async () => {
-    const issue = await createIssueIn('Rework reuse');
+    const task = await createTaskIn('Rework reuse');
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'draft.txt'), 'v1\n');
     };
-    await wake(workerId, issue.id, 'manual');
+    await wake(workerId, task.id, 'manual');
     const firstPath = seen[seen.length - 1]!.workspace;
 
     let sawPreviousWork = false;
     onTurn = (req) => {
       sawPreviousWork = fs.existsSync(path.join(req.workspace, 'draft.txt'));
     };
-    await wake(workerId, issue.id, 'manual');
+    await wake(workerId, task.id, 'manual');
     expect(seen[seen.length - 1]!.workspace).toBe(firstPath);
     expect(sawPreviousWork).toBe(true);
 
-    await wake(inspectorId, issue.id, 'review');
+    await wake(inspectorId, task.id, 'review');
     const reviewTurn = seen[seen.length - 1]!;
     expect(reviewTurn.workspace).toBe(firstPath);
     expect(reviewTurn.permission).toBe('read_only');
   });
 
-  it('keeps concurrent issues in separate worktrees', { timeout: T }, async () => {
-    const a = await createIssueIn('Iso A');
-    const b = await createIssueIn('Iso B');
+  it('keeps concurrent tasks in separate worktrees', { timeout: T }, async () => {
+    const a = await createTaskIn('Iso A');
+    const b = await createTaskIn('Iso B');
     await wake(workerId, a.id, 'manual');
     const pathA = seen[seen.length - 1]!.workspace;
     await wake(workerId, b.id, 'manual');
@@ -224,14 +224,14 @@ describe('runs in isolated issue workspaces', () => {
   });
 
   it('captures evidence from failed runs and keeps the workspace', { timeout: T }, async () => {
-    const issue = await createIssueIn('Failing run');
+    const task = await createTaskIn('Failing run');
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'partial.txt'), 'half done\n');
       throw new Error('runtime exploded');
     };
-    await wake(workerId, issue.id, 'manual');
+    await wake(workerId, task.id, 'manual');
 
-    const [run] = await db.select().from(runs).where(eq(runs.issueId, issue.id));
+    const [run] = await db.select().from(runs).where(eq(runs.taskId, task.id));
     expect(run!.status).toBe('failed');
     const [snapshot] = await db
       .select()
@@ -239,21 +239,21 @@ describe('runs in isolated issue workspaces', () => {
       .where(eq(runChangeSnapshots.runId, run!.id));
     expect(snapshot).toBeDefined();
     expect(snapshot!.changedFiles).toBe(1);
-    expect((await workspaceOf(issue.id))?.status).toBe('dirty');
+    expect((await workspaceOf(task.id))?.status).toBe('dirty');
   });
 
   it('flags a read-only run that mutated tracked files', { timeout: T }, async () => {
-    const issue = await createIssueIn('Read-only violation');
-    await wake(workerId, issue.id, 'manual'); // prepare workspace with a clean run
+    const task = await createTaskIn('Read-only violation');
+    await wake(workerId, task.id, 'manual'); // prepare workspace with a clean run
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'README.md'), '# tampered\n');
     };
-    await wake(inspectorId, issue.id, 'review');
+    await wake(inspectorId, task.id, 'review');
 
     const reviewRun = await db
       .select()
       .from(runs)
-      .where(and(eq(runs.issueId, issue.id), eq(runs.trigger, 'review')));
+      .where(and(eq(runs.taskId, task.id), eq(runs.trigger, 'review')));
     const [snapshot] = await db
       .select()
       .from(runChangeSnapshots)
@@ -262,8 +262,8 @@ describe('runs in isolated issue workspaces', () => {
 
     const timeline = await db
       .select()
-      .from(issueComments)
-      .where(and(eq(issueComments.issueId, issue.id), eq(issueComments.authorType, 'system')));
+      .from(taskComments)
+      .where(and(eq(taskComments.taskId, task.id), eq(taskComments.authorType, 'system')));
     expect(timeline.some((c) => c.body.includes('Read-only policy violation'))).toBe(true);
   });
 
@@ -272,52 +272,52 @@ describe('runs in isolated issue workspaces', () => {
       .post('/api/agents')
       .set(auth())
       .send({ name: 'API Writer', runtime: 'api' });
-    const issue = await createIssueIn('API worker rejection');
-    await wake(apiAgent.body.agent.id, issue.id, 'manual');
+    const task = await createTaskIn('API worker rejection');
+    await wake(apiAgent.body.agent.id, task.id, 'manual');
 
-    const [run] = await db.select().from(runs).where(eq(runs.issueId, issue.id));
+    const [run] = await db.select().from(runs).where(eq(runs.taskId, task.id));
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('API-hosted');
-    expect(await workspaceOf(issue.id)).toBeNull();
+    expect(await workspaceOf(task.id)).toBeNull();
   });
 });
 
 describe('review binding and lifecycle guards', () => {
-  it('binds human approval to the captured snapshot and keeps the issue in review', { timeout: T }, async () => {
-    const issue = await createIssueIn('Approval binding');
+  it('binds human approval to the captured snapshot and keeps the task in review', { timeout: T }, async () => {
+    const task = await createTaskIn('Approval binding');
     onTurn = (req) => {
       fs.writeFileSync(path.join(req.workspace, 'work.txt'), 'done\n');
     };
-    await wake(workerId, issue.id, 'manual');
+    await wake(workerId, task.id, 'manual');
 
     for (const status of ['todo', 'in_progress', 'in_review']) {
       const res = await request(app)
-        .post(`/api/issues/${issue.id}/move`)
+        .post(`/api/tasks/${task.id}/move`)
         .set(auth())
         .send({ status });
       expect(res.status).toBe(200);
     }
     await drainRunsForTests();
 
-    const review = await createReview(userId, issue.id, {
+    const review = await createReview(userId, task.id, {
       decision: 'approved',
       body: 'Looks correct against the captured diff.',
       reviewer: { userId },
     });
     expect(review.changeSnapshotId).not.toBeNull();
 
-    const after = await request(app).get(`/api/issues/${issue.id}`).set(auth());
-    expect(after.body.issue.status).toBe('in_review');
-    expect(after.body.issue.closedAt ?? null).toBeNull();
+    const after = await request(app).get(`/api/tasks/${task.id}`).set(auth());
+    expect(after.body.task.status).toBe('in_review');
+    expect(after.body.task.closedAt ?? null).toBeNull();
   });
 
-  it('blocks issue and project deletion while workspaces are active', { timeout: T }, async () => {
-    const issue = await createIssueIn('Deletion guard');
-    await wake(workerId, issue.id, 'manual');
+  it('blocks task and project deletion while workspaces are active', { timeout: T }, async () => {
+    const task = await createTaskIn('Deletion guard');
+    await wake(workerId, task.id, 'manual');
 
-    const delIssue = await request(app).delete(`/api/issues/${issue.id}`).set(auth());
-    expect(delIssue.status).toBe(409);
-    expect(delIssue.body.code).toBe('workspace_active');
+    const delTask = await request(app).delete(`/api/tasks/${task.id}`).set(auth());
+    expect(delTask.status).toBe(409);
+    expect(delTask.body.code).toBe('workspace_active');
 
     const delProject = await request(app).delete(`/api/projects/${projectId}`).set(auth());
     expect(delProject.status).toBe(409);
@@ -328,36 +328,36 @@ describe('review binding and lifecycle guards', () => {
 
   it('leaves non-code projects on the legacy approval path', { timeout: T }, async () => {
     const res = await request(app)
-      .post('/api/issues')
+      .post('/api/tasks')
       .set(auth())
       .send({ title: 'Legacy approval' });
-    const issue = res.body.issue as { id: string };
+    const task = res.body.task as { id: string };
     for (const status of ['todo', 'in_progress', 'in_review']) {
-      await request(app).post(`/api/issues/${issue.id}/move`).set(auth()).send({ status });
+      await request(app).post(`/api/tasks/${task.id}/move`).set(auth()).send({ status });
     }
     await drainRunsForTests();
 
-    const review = await createReview(userId, issue.id, {
+    const review = await createReview(userId, task.id, {
       decision: 'approved',
       body: 'Ship it.',
       reviewer: { userId },
     });
     expect(review.changeSnapshotId).toBeNull();
 
-    const after = await request(app).get(`/api/issues/${issue.id}`).set(auth());
-    expect(after.body.issue.status).toBe('done');
+    const after = await request(app).get(`/api/tasks/${task.id}`).set(auth());
+    expect(after.body.task.status).toBe('done');
   });
 });
 
 describe('workspace diagnostics', () => {
   it('reconciles a worktree deleted out of band', { timeout: T }, async () => {
-    const issue = await createIssueIn('Reconcile recovery');
-    await wake(workerId, issue.id, 'manual');
-    const ws = await workspaceOf(issue.id);
+    const task = await createTaskIn('Reconcile recovery');
+    await wake(workerId, task.id, 'manual');
+    const ws = await workspaceOf(task.id);
     fs.rmSync(ws!.worktreePath, { recursive: true, force: true, maxRetries: 5 });
 
     const res = await request(app)
-      .post(`/api/issues/${issue.id}/workspace/reconcile`)
+      .post(`/api/tasks/${task.id}/workspace/reconcile`)
       .set(auth());
     expect(res.status).toBe(200);
     expect(['ready', 'dirty']).toContain(res.body.workspace.status);

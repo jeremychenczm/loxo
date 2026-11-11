@@ -199,7 +199,7 @@ export class LocalGitWorkspaceDriver implements ExecutionWorkspaceDriver {
       );
     }
     const baseCommit = input.baseCommit ?? resolvedBase;
-    const worktreePath = resolveInside(input.worktreesRoot, input.issueId);
+    const worktreePath = resolveInside(input.worktreesRoot, input.taskId);
     fs.mkdirSync(input.worktreesRoot, { recursive: true });
 
     const fail = (error: string): PrepareWorkspaceResult => ({
@@ -405,7 +405,7 @@ export class LocalGitWorkspaceDriver implements ExecutionWorkspaceDriver {
   }
 
   /**
-   * Merges the issue branch into the registered primary checkout. The caller
+   * Merges the task branch into the registered primary checkout. The caller
    * verifies preconditions and holds the repository merge lock; this method
    * re-verifies the checkout immediately before mutating it.
    */

@@ -1,6 +1,6 @@
 import { apiFetch } from './api';
 
-export type IssueStatus =
+export type TaskStatus =
   | 'backlog'
   | 'todo'
   | 'in_progress'
@@ -9,13 +9,13 @@ export type IssueStatus =
   | 'done'
   | 'cancelled';
 
-export interface Issue {
+export interface Task {
   id: string;
   projectId: string;
-  issueNumber: number;
+  number: number;
   title: string;
-  description: string;
-  status: IssueStatus;
+  brief: string;
+  status: TaskStatus;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   reviewerAgentId: string | null;
@@ -26,9 +26,9 @@ export interface Issue {
   closedAt: string | null;
 }
 
-export interface IssueComment {
+export interface TaskComment {
   id: string;
-  issueId: string;
+  taskId: string;
   authorType: 'human' | 'agent';
   authorUserId: string | null;
   authorAgentId: string | null;
@@ -38,9 +38,9 @@ export interface IssueComment {
 
 export type ReviewDecision = 'approved' | 'changes_requested';
 
-export interface IssueReview {
+export interface TaskReview {
   id: string;
-  issueId: string;
+  taskId: string;
   reviewerType: 'human' | 'agent';
   reviewerUserId: string | null;
   reviewerAgentId: string | null;
@@ -50,7 +50,7 @@ export interface IssueReview {
   createdAt: string;
 }
 
-export type Board = Record<IssueStatus, Issue[]>;
+export type Board = Record<TaskStatus, Task[]>;
 
 export interface AssignmentPatch {
   agentId?: string | null;
@@ -59,75 +59,75 @@ export interface AssignmentPatch {
 
 export function fetchBoard(projectId?: string) {
   const query = projectId ? `?projectId=${projectId}` : '';
-  return apiFetch<{ board: Board }>(`/api/issues/board${query}`);
+  return apiFetch<{ board: Board }>(`/api/tasks/board${query}`);
 }
 
-export function fetchIssues(filter: { projectId?: string; status?: IssueStatus } = {}) {
+export function fetchTasks(filter: { projectId?: string; status?: TaskStatus } = {}) {
   const params = new URLSearchParams();
   if (filter.projectId) params.set('projectId', filter.projectId);
   if (filter.status) params.set('status', filter.status);
   const query = params.toString();
-  return apiFetch<{ issues: Issue[] }>(`/api/issues${query ? `?${query}` : ''}`);
+  return apiFetch<{ tasks: Task[] }>(`/api/tasks${query ? `?${query}` : ''}`);
 }
 
-export function fetchIssue(id: string) {
-  return apiFetch<{ issue: Issue }>(`/api/issues/${id}`);
+export function fetchTask(id: string) {
+  return apiFetch<{ task: Task }>(`/api/tasks/${id}`);
 }
 
-export function createIssue(input: {
+export function createTask(input: {
   title: string;
-  description?: string;
+  brief?: string;
   projectId?: string;
 }) {
-  return apiFetch<{ issue: Issue }>('/api/issues', {
+  return apiFetch<{ task: Task }>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
-export function updateIssue(
+export function updateTask(
   id: string,
   input: {
     title?: string;
-    description?: string;
+    brief?: string;
     assignee?: AssignmentPatch | null;
     reviewer?: AssignmentPatch | null;
   }
 ) {
-  return apiFetch<{ issue: Issue }>(`/api/issues/${id}`, {
+  return apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
-export function moveIssue(id: string, input: { status: IssueStatus; boardOrder?: number }) {
-  return apiFetch<{ issue: Issue }>(`/api/issues/${id}/move`, {
+export function moveTask(id: string, input: { status: TaskStatus; boardOrder?: number }) {
+  return apiFetch<{ task: Task }>(`/api/tasks/${id}/move`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
-export function deleteIssue(id: string) {
-  return apiFetch<{ ok: boolean }>(`/api/issues/${id}`, { method: 'DELETE' });
+export function deleteTask(id: string) {
+  return apiFetch<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' });
 }
 
-export function fetchComments(issueId: string) {
-  return apiFetch<{ comments: IssueComment[] }>(`/api/issues/${issueId}/comments`);
+export function fetchComments(taskId: string) {
+  return apiFetch<{ comments: TaskComment[] }>(`/api/tasks/${taskId}/comments`);
 }
 
-export function addComment(issueId: string, body: string) {
-  return apiFetch<{ comment: IssueComment }>(`/api/issues/${issueId}/comments`, {
+export function addComment(taskId: string, body: string) {
+  return apiFetch<{ comment: TaskComment }>(`/api/tasks/${taskId}/comments`, {
     method: 'POST',
     body: JSON.stringify({ body }),
   });
 }
 
-export function fetchReviews(issueId: string) {
-  return apiFetch<{ reviews: IssueReview[] }>(`/api/issues/${issueId}/reviews`);
+export function fetchReviews(taskId: string) {
+  return apiFetch<{ reviews: TaskReview[] }>(`/api/tasks/${taskId}/reviews`);
 }
 
-export function submitReview(issueId: string, input: { decision: ReviewDecision; body: string }) {
-  return apiFetch<{ review: IssueReview }>(`/api/issues/${issueId}/reviews`, {
+export function submitReview(taskId: string, input: { decision: ReviewDecision; body: string }) {
+  return apiFetch<{ review: TaskReview }>(`/api/tasks/${taskId}/reviews`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -137,7 +137,7 @@ export function submitReview(issueId: string, input: { decision: ReviewDecision;
  * Client-side mirror of the server transition table, used only to preview
  * legal drop targets while dragging. The server remains the authority.
  */
-export const CLIENT_TRANSITIONS: Record<IssueStatus, readonly IssueStatus[]> = {
+export const CLIENT_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   backlog: ['todo', 'cancelled'],
   todo: ['in_progress', 'backlog', 'cancelled'],
   in_progress: ['in_review', 'blocked', 'cancelled'],
@@ -148,7 +148,7 @@ export const CLIENT_TRANSITIONS: Record<IssueStatus, readonly IssueStatus[]> = {
 };
 
 export const STATUS_META: Record<
-  IssueStatus,
+  TaskStatus,
   { label: string; swatch: string; text: string }
 > = {
   backlog: { label: 'Backlog', swatch: 'bg-pixel-gray', text: 'text-pixel-gray' },

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useAuthStore } from '@/store/auth';
 
 const SECTIONS = [
-  { href: '/issues', title: 'Issues', description: 'Assign work to agents and review what they deliver.' },
+  { href: '/tasks', title: 'Tasks', description: 'Assign work to agents and review what they deliver.' },
   { href: '/agents', title: 'Agents', description: 'Import coding agents and chat with them one on one.' },
   { href: '/projects', title: 'Projects', description: 'Workspaces and repositories your agents work in.' },
   { href: '/settings/providers', title: 'Providers', description: 'Model credentials your agents run on.' },

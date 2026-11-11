@@ -5,16 +5,16 @@ import { z } from 'zod';
 import { HttpError } from '../../http/errors';
 import {
   askBlocker,
-  commentOnIssue,
-  getIssueSnapshot,
+  commentOnTask,
+  getTaskSnapshot,
   resolveRunContext,
   submitResult,
   submitReviewVerdict,
-  updateIssueStatus,
+  updateTaskStatus,
   type RunToolContext,
 } from './control-plane';
 
-const ISSUE_STATUS = z.enum([
+const TASK_STATUS = z.enum([
   'backlog',
   'todo',
   'in_progress',
@@ -48,23 +48,23 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
   const server = new McpServer({ name: 'swarmdev-control-plane', version: '1.0.0' });
 
   server.registerTool(
-    'get_issue',
+    'get_task',
     {
-      description: 'Read the issue this run was woken for: title, description, status, and timeline.',
+      description: 'Read the task this run was woken for: title, brief, status, and timeline.',
       inputSchema: {},
     },
-    async () => guarded(async () => text(await getIssueSnapshot(ctx)))
+    async () => guarded(async () => text(await getTaskSnapshot(ctx)))
   );
 
   server.registerTool(
-    'comment_on_issue',
+    'comment_on_task',
     {
-      description: 'Post a progress note to the issue timeline as yourself.',
+      description: 'Post a progress note to the task timeline as yourself.',
       inputSchema: { body: z.string().min(1).max(20000) },
     },
     async ({ body }) =>
       guarded(async () => {
-        await commentOnIssue(ctx, body);
+        await commentOnTask(ctx, body);
         return text('Comment posted');
       })
   );
@@ -74,7 +74,7 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
       'submit_review',
       {
         description:
-          'Deliver your review verdict. approved records a recommendation (a human closes the issue); changes_requested reopens work with your feedback.',
+          'Deliver your review verdict. approved records a recommendation (a human closes the task); changes_requested reopens work with your feedback.',
         inputSchema: {
           decision: z.enum(['approved', 'changes_requested']),
           feedback: z.string().min(1).max(20000),
@@ -87,16 +87,16 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
   }
 
   server.registerTool(
-    'update_issue_status',
+    'update_task_status',
     {
       description:
-        'Move the issue to a new status. Transitions follow the board rules; illegal moves are rejected.',
-      inputSchema: { status: ISSUE_STATUS },
+        'Move the task to a new status. Transitions follow the board rules; illegal moves are rejected.',
+      inputSchema: { status: TASK_STATUS },
     },
     async ({ status }) =>
       guarded(async () => {
-        const issue = await updateIssueStatus(ctx, status);
-        return text({ status: issue.status });
+        const task = await updateTaskStatus(ctx, status);
+        return text({ status: task.status });
       })
   );
 
@@ -104,13 +104,13 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
     'ask_blocker',
     {
       description:
-        'You are stuck and need a human decision. Posts the question to the timeline and marks the issue blocked.',
+        'You are stuck and need a human decision. Posts the question to the timeline and marks the task blocked.',
       inputSchema: { question: z.string().min(1).max(4000) },
     },
     async ({ question }) =>
       guarded(async () => {
-        const issue = await askBlocker(ctx, question);
-        return text({ status: issue.status });
+        const task = await askBlocker(ctx, question);
+        return text({ status: task.status });
       })
   );
 
@@ -118,13 +118,13 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
     'submit_result',
     {
       description:
-        'You finished the work. Posts your result summary to the timeline and hands the issue to review.',
+        'You finished the work. Posts your result summary to the timeline and hands the task to review.',
       inputSchema: { summary: z.string().min(1).max(20000) },
     },
     async ({ summary }) =>
       guarded(async () => {
-        const issue = await submitResult(ctx, summary);
-        return text({ status: issue.status });
+        const task = await submitResult(ctx, summary);
+        return text({ status: task.status });
       })
   );
 

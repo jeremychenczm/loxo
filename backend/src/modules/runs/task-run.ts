@@ -1,6 +1,6 @@
-import type { Agent, Issue, Run } from '../../db/schema';
+import type { Agent, Task, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
-import { listComments } from '../issues/comments.service';
+import { listComments } from '../tasks/comments.service';
 import { getProviderCredentials } from '../providers/providers.service';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-turn';
 import { executeApiToolLoop } from '../runner/api-tool-loop';
@@ -20,13 +20,13 @@ import {
   snapshotBeforeRun,
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
-import { addSystemComment } from '../issues/comments.service';
-import { buildIssueRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
+import { addSystemComment } from '../tasks/comments.service';
+import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
 import type { CliRuntime } from '../agents/runtime-detect';
 import { config } from '../../config';
-import { issueRunToken } from './run-token';
+import { mintRunToken } from './run-token';
 
-const ISSUE_RUN_TIMEOUT_MS = 15 * 60_000;
+const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
 /** Runtimes that can mount the platform MCP server for the turn. */
 const MCP_RUNTIMES: ReadonlySet<string> = new Set(['claude-code']);
@@ -35,48 +35,48 @@ type TurnExecutor = (request: TurnRequest) => Promise<TurnResult>;
 let turnExecutor: TurnExecutor = runTurn;
 
 /** Test seam: swap the CLI executor without spawning real processes. */
-export function setIssueTurnExecutorForTests(executor: TurnExecutor | null): void {
+export function setTaskTurnExecutorForTests(executor: TurnExecutor | null): void {
   turnExecutor = executor ?? runTurn;
 }
 
-export interface IssueTurnOutcome {
+export interface TaskTurnOutcome {
   text: string;
   sessionRef: string | null;
 }
 
 /**
- * One agent turn against an issue: build the prompt from the issue context
+ * One agent turn against a task: build the prompt from the task context
  * and run it in the project workspace. Locking, run-state transitions, and
  * the timeline comment are the wake service's job, not this function's.
  */
-export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Promise<IssueTurnOutcome> {
+export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promise<TaskTurnOutcome> {
   const credentials = agent.providerId
     ? await getProviderCredentials(run.userId, agent.providerId)
     : null;
 
-  const comments = (await listComments(run.userId, issue.id)).map((c) => ({
+  const comments = (await listComments(run.userId, task.id)).map((c) => ({
     author: c.authorType,
     body: c.body,
   }));
 
-  // A repository binding switches the run into the issue's isolated worktree;
+  // A repository binding switches the run into the task's isolated worktree;
   // without one the legacy shared project workspace remains in effect.
-  const codeWorkspace = await resolveCodeWorkspace(run, agent, issue);
+  const codeWorkspace = await resolveCodeWorkspace(run, agent, task);
   const workspace = codeWorkspace
     ? codeWorkspace.workspace.worktreePath
-    : storage.projectWorkspace(run.userId, issue.projectId);
+    : storage.projectWorkspace(run.userId, task.projectId);
 
   // The api lane gets the same tools in-process.
   const mcpCapable = MCP_RUNTIMES.has(agent.runtime);
   const hasControlPlane = agent.runtime === 'api' || mcpCapable;
 
-  const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildIssueRunPrompt;
+  const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildTaskRunPrompt;
   const prompt = buildPrompt({
     agent,
-    issueNumber: issue.issueNumber,
-    title: issue.title,
-    description: issue.description,
-    status: issue.status,
+    taskNumber: task.number,
+    title: task.title,
+    brief: task.brief,
+    status: task.status,
     reason: run.reason,
     comments,
     workspace,
@@ -98,15 +98,15 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
       system:
         agent.manifest.api?.systemPrompt ?? `You are ${agent.name}. ${agent.description}`.trim(),
       prompt,
-      tools: buildControlPlaneToolDefs({ run, agent, issue }),
-      timeoutMs: ISSUE_RUN_TIMEOUT_MS,
+      tools: buildControlPlaneToolDefs({ run, agent, task }),
+      timeoutMs: TASK_RUN_TIMEOUT_MS,
     });
     return { text: result.text, sessionRef: null };
   }
 
   const paths = storage.agentPaths(run.userId, agent.id);
   const controlPlane = mcpCapable
-    ? { url: config.mcpUrl(), token: issueRunToken(run.id) }
+    ? { url: config.mcpUrl(), token: mintRunToken(run.id) }
     : undefined;
   // The agent level is a ceiling: review turns are always forced to read-only.
   const permission =
@@ -124,7 +124,7 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
       model: agent.model,
       credentials: credentials ?? undefined,
       sessionRef: null,
-      timeoutMs: ISSUE_RUN_TIMEOUT_MS,
+      timeoutMs: TASK_RUN_TIMEOUT_MS,
       permission,
       mcp: controlPlane,
       extraEnv: controlPlane
@@ -136,7 +136,7 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
     // Git evidence is captured on success, failure, and cancellation alike;
     // a capture problem is logged, never allowed to mask the run outcome.
     if (codeWorkspace && before) {
-      await settleRunCapture(run, issue, codeWorkspace, before, permission).catch((err) => {
+      await settleRunCapture(run, task, codeWorkspace, before, permission).catch((err) => {
         console.error(`Run ${run.id} change capture failed:`, err);
       });
     }
@@ -150,9 +150,9 @@ export async function executeIssueTurn(run: Run, agent: Agent, issue: Issue): Pr
 async function resolveCodeWorkspace(
   run: Run,
   agent: Agent,
-  issue: Issue
+  task: Task
 ): Promise<ResolvedWorkspace | null> {
-  const repository = await getProjectRepository(run.userId, issue.projectId);
+  const repository = await getProjectRepository(run.userId, task.projectId);
   if (!repository) return null;
 
   if (agent.runtime === 'api') {
@@ -174,12 +174,12 @@ async function resolveCodeWorkspace(
       'cli_failed'
     );
   }
-  return resolveExecutionWorkspace(run.userId, issue);
+  return resolveExecutionWorkspace(run.userId, task);
 }
 
 async function settleRunCapture(
   run: Run,
-  issue: Issue,
+  task: Task,
   codeWorkspace: ResolvedWorkspace,
   before: Awaited<ReturnType<typeof snapshotBeforeRun>>,
   permission: 'read_only' | 'edit' | 'full'
@@ -194,13 +194,13 @@ async function settleRunCapture(
   if (policyViolation) {
     await addSystemComment(
       run.userId,
-      issue.id,
+      task.id,
       `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
     );
   } else if (snapshot.changedFiles > 0) {
     await addSystemComment(
       run.userId,
-      issue.id,
+      task.id,
       `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`
     );
   }

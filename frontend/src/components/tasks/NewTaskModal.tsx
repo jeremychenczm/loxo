@@ -2,29 +2,29 @@
 
 import { useEffect, useState } from 'react';
 import type { ProjectView } from '@/lib/projects';
-import { createIssue, type Issue } from '@/lib/issues';
-import { BracketButton, PAPER, Rule, TornEdge } from './receipt-parts';
+import { createTask, type Task } from '@/lib/tasks';
+import { BracketButton, PAPER, Rule, TornEdge } from './task-detail-parts';
 
-interface NewTicketModalProps {
+interface NewTaskModalProps {
   projects: ProjectView[];
   /** Preselected project, e.g. the board's active filter. */
   initialProjectId?: string;
   onClose: () => void;
-  onCreated: (issue: Issue) => void;
+  onCreated: (task: Task) => void;
 }
 
 const FIELD =
   'w-full border border-dashed border-pixel-gray/60 bg-transparent p-2 font-pixel text-sm text-pixel-black focus:border-pixel-black focus:outline-none';
 
-export function NewTicketModal({
+export function NewTaskModal({
   projects,
   initialProjectId,
   onClose,
   onCreated,
-}: NewTicketModalProps) {
+}: NewTaskModalProps) {
   const defaultProject = projects.find((p) => p.kind === 'default');
   const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [brief, setBrief] = useState('');
   const [projectId, setProjectId] = useState(initialProjectId ?? defaultProject?.id ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -41,12 +41,12 @@ export function NewTicketModal({
     setSubmitting(true);
     setError('');
     try {
-      const { issue } = await createIssue({
+      const { task } = await createTask({
         title: trimmed,
-        ...(description.trim() ? { description: description.trim() } : {}),
+        ...(brief.trim() ? { brief: brief.trim() } : {}),
         ...(projectId ? { projectId } : {}),
       });
-      onCreated(issue);
+      onCreated(task);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Create failed');
       setSubmitting(false);
@@ -95,11 +95,11 @@ export function NewTicketModal({
           />
 
           <p className="mb-1 mt-3 font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
-            Description
+            Brief
           </p>
           <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
             rows={3}
             placeholder="(optional)"
             className={`${FIELD} resize-y`}

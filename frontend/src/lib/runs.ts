@@ -7,7 +7,7 @@ export interface Run {
   id: string;
   agentId: string | null;
   agentName: string;
-  issueId: string | null;
+  taskId: string | null;
   trigger: RunTrigger;
   status: RunStatus;
   reason: string;
@@ -22,17 +22,17 @@ export interface Run {
 
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running'];
 
-export function fetchRuns(filter: { issueId?: string; agentId?: string } = {}) {
+export function fetchRuns(filter: { taskId?: string; agentId?: string } = {}) {
   const params = new URLSearchParams();
-  if (filter.issueId) params.set('issueId', filter.issueId);
+  if (filter.taskId) params.set('taskId', filter.taskId);
   if (filter.agentId) params.set('agentId', filter.agentId);
   const query = params.toString();
   return apiFetch<{ runs: Run[] }>(`/api/runs${query ? `?${query}` : ''}`);
 }
 
-export function wakeIssue(issueId: string, reason?: string) {
+export function wakeTask(taskId: string, reason?: string) {
   return apiFetch<{ run: Run; admitted: 'started' | 'queued' | 'merged' }>(
-    `/api/issues/${issueId}/wake`,
+    `/api/tasks/${taskId}/wake`,
     { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) }
   );
 }

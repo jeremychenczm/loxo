@@ -10,7 +10,7 @@ runsRouter.use(requireAuth);
 runsRouter.get('/', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
-      issueId: z.string().uuid().optional(),
+      taskId: z.string().uuid().optional(),
       agentId: z.string().uuid().optional(),
       status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']).optional(),
     });

@@ -4,7 +4,7 @@ import { providers } from '../../db/schema';
 import { openSecret } from '../../crypto/secretbox';
 
 /**
- * Platform-side clerical LLM calls (chat-to-issue drafts): pick the user's provider, run one prompt, hand back parsed JSON.
+ * Platform-side clerical LLM calls (chat-to-task drafts): pick the user's provider, run one prompt, hand back parsed JSON.
  * Callers own prompts, validation, and fallback behavior.
  */
 

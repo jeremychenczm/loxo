@@ -65,7 +65,7 @@ const FALLBACK_PRESETS: ApiAgentPreset[] = [
     id: 'api-code-reviewer',
     name: 'Code Review Helper',
     description:
-      'Reviews diffs and snippets for correctness issues and suggests focused improvements.',
+      'Reviews diffs and snippets for correctness tasks and suggests focused improvements.',
     protocol: 'anthropic',
     model: 'claude-sonnet-5',
     systemPrompt:

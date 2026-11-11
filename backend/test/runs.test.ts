@@ -3,14 +3,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import {
-  acquireIssueLock,
+  acquireTaskLock,
   claimRun,
   createQueuedRun,
   finishRun,
   getRun,
   listRuns,
-  nextQueuedRunForIssue,
-  releaseIssueLock,
+  nextQueuedRunForTask,
+  releaseTaskLock,
 } from '../src/modules/runs/runs.service';
 
 const app = createApp();
@@ -18,7 +18,7 @@ let token = '';
 let userId = '';
 let otherUserId = '';
 let agentId = '';
-let issueId = '';
+let taskId = '';
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
@@ -43,18 +43,18 @@ beforeAll(async () => {
     .send({ name: 'Run worker', runtime: 'api' });
   agentId = agent.body.agent.id;
 
-  const issue = await request(app)
-    .post('/api/issues')
+  const task = await request(app)
+    .post('/api/tasks')
     .set({ Authorization: `Bearer ${token}` })
     .send({ title: 'Lock target' });
-  issueId = issue.body.issue.id;
+  taskId = task.body.task.id;
 });
 
-function queueRun(overrides: { issueId?: string | null; reason?: string } = {}) {
+function queueRun(overrides: { taskId?: string | null; reason?: string } = {}) {
   return createQueuedRun(userId, {
     agentId,
     agentName: 'Run worker',
-    issueId: overrides.issueId === undefined ? issueId : overrides.issueId,
+    taskId: overrides.taskId === undefined ? taskId : overrides.taskId,
     trigger: 'assignment',
     reason: overrides.reason,
   });
@@ -106,45 +106,45 @@ describe('runs service', () => {
     expect(await claimRun(run.id)).toBeUndefined();
   });
 
-  it('grants the issue lock to exactly one concurrent contender', async () => {
+  it('grants the task lock to exactly one concurrent contender', async () => {
     const contenders = await Promise.all(Array.from({ length: 8 }, () => queueRun()));
-    const results = await Promise.all(contenders.map((run) => acquireIssueLock(issueId, run.id)));
+    const results = await Promise.all(contenders.map((run) => acquireTaskLock(taskId, run.id)));
     expect(results.filter(Boolean)).toHaveLength(1);
 
     const winner = contenders[results.findIndex(Boolean)]!;
 
     // A non-holder release is a no-op; the winner's release frees the lock.
     const loser = contenders[(results.findIndex(Boolean) + 1) % contenders.length]!;
-    await releaseIssueLock(issueId, loser.id);
-    expect(await acquireIssueLock(issueId, loser.id)).toBe(false);
+    await releaseTaskLock(taskId, loser.id);
+    expect(await acquireTaskLock(taskId, loser.id)).toBe(false);
 
-    await releaseIssueLock(issueId, winner.id);
-    expect(await acquireIssueLock(issueId, loser.id)).toBe(true);
-    await releaseIssueLock(issueId, loser.id);
+    await releaseTaskLock(taskId, winner.id);
+    expect(await acquireTaskLock(taskId, loser.id)).toBe(true);
+    await releaseTaskLock(taskId, loser.id);
   });
 
   it('promotes queued runs oldest-first', async () => {
-    const issue = await request(app)
-      .post('/api/issues')
+    const task = await request(app)
+      .post('/api/tasks')
       .set({ Authorization: `Bearer ${token}` })
       .send({ title: 'Promotion order' });
-    const first = await queueRun({ issueId: issue.body.issue.id });
-    const second = await queueRun({ issueId: issue.body.issue.id });
+    const first = await queueRun({ taskId: task.body.task.id });
+    const second = await queueRun({ taskId: task.body.task.id });
 
-    expect((await nextQueuedRunForIssue(issue.body.issue.id))?.id).toBe(first.id);
+    expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(first.id);
 
     await finishRun(first.id, { status: 'cancelled' });
-    expect((await nextQueuedRunForIssue(issue.body.issue.id))?.id).toBe(second.id);
+    expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(second.id);
 
     await finishRun(second.id, { status: 'cancelled' });
-    expect(await nextQueuedRunForIssue(issue.body.issue.id)).toBeUndefined();
+    expect(await nextQueuedRunForTask(task.body.task.id)).toBeUndefined();
   });
 
   it('scopes reads to the owning user', async () => {
     const run = await queueRun();
     await expect(getRun(otherUserId, run.id)).rejects.toMatchObject({ status: 404 });
 
-    const mine = await listRuns(userId, { issueId });
+    const mine = await listRuns(userId, { taskId });
     expect(mine.some((r) => r.id === run.id)).toBe(true);
     expect(await listRuns(otherUserId, {})).toHaveLength(0);
   });

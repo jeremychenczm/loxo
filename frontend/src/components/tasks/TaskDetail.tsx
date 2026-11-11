@@ -3,24 +3,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth';
 import type { Agent } from '@/lib/agents';
-import { BracketButton, CircularStamp, PAPER, Rule, TornEdge } from './receipt-parts';
+import { BracketButton, CircularStamp, PAPER, Rule, TornEdge } from './task-detail-parts';
 import {
   CLIENT_TRANSITIONS,
   STATUS_META,
   addComment,
-  deleteIssue,
+  deleteTask,
   fetchComments,
-  fetchIssue,
+  fetchTask,
   fetchReviews,
-  moveIssue,
+  moveTask,
   submitReview,
-  updateIssue,
-  type Issue,
-  type IssueComment,
-  type IssueReview,
-  type IssueStatus,
-} from '@/lib/issues';
-import { ACTIVE_RUN_STATUSES, fetchRuns, wakeIssue, type Run, type RunStatus } from '@/lib/runs';
+  updateTask,
+  type Task,
+  type TaskComment,
+  type TaskReview,
+  type TaskStatus,
+} from '@/lib/tasks';
+import { ACTIVE_RUN_STATUSES, fetchRuns, wakeTask, type Run, type RunStatus } from '@/lib/runs';
 
 const RUN_STATUS_TEXT: Record<RunStatus, string> = {
   queued: 'text-pixel-gray',
@@ -47,8 +47,8 @@ function commentTone(body: string): string {
   return 'text-pixel-black';
 }
 
-interface IssueReceiptProps {
-  issueId: string;
+interface TaskDetailProps {
+  taskId: string;
   /** Play the thermal-printer feed entrance (used right after creation). */
   printEntrance?: boolean;
   projectName?: string;
@@ -70,7 +70,7 @@ function principalValue(agentId: string | null, userId: string | null): string {
   return '';
 }
 
-/** Deterministic pseudo-barcode drawn from the issue id. */
+/** Deterministic pseudo-barcode drawn from the task id. */
 function Barcode({ seed }: { seed: string }) {
   const bars = seed
     .replace(/-/g, '')
@@ -90,7 +90,7 @@ function Barcode({ seed }: { seed: string }) {
   );
 }
 
-/** Receipt key-value row: label, dotted leader, right-aligned value. */
+/** Ticket key-value row: label, dotted leader, right-aligned value. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-end gap-1">
@@ -104,22 +104,22 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 const VALUE_SELECT =
   'max-w-[55%] cursor-pointer appearance-none border-b border-transparent bg-transparent text-right font-pixel text-sm text-pixel-black hover:border-pixel-black focus:border-pixel-black focus:outline-none';
 
-export function IssueReceipt({
-  issueId,
+export function TaskDetail({
+  taskId,
   printEntrance = false,
   projectName,
   agents,
   onClose,
   onChanged,
-}: IssueReceiptProps) {
+}: TaskDetailProps) {
   const me = useAuthStore((s) => s.user);
-  const [issue, setIssue] = useState<Issue | null>(null);
-  const [comments, setComments] = useState<IssueComment[]>([]);
+  const [task, setTask] = useState<Task | null>(null);
+  const [comments, setComments] = useState<TaskComment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [reviews, setReviews] = useState<IssueReview[]>([]);
+  const [reviews, setReviews] = useState<TaskReview[]>([]);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [brief, setBrief] = useState('');
   const [draft, setDraft] = useState('');
   const [verdictNote, setVerdictNote] = useState('');
   const [error, setError] = useState('');
@@ -133,26 +133,26 @@ export function IssueReceipt({
   }, [printEntrance]);
 
   const load = useCallback(async () => {
-    const [{ issue: fetched }, { comments: timeline }, { runs: ledger }, { reviews: verdicts }] =
+    const [{ task: fetched }, { comments: timeline }, { runs: ledger }, { reviews: verdicts }] =
       await Promise.all([
-        fetchIssue(issueId),
-        fetchComments(issueId),
-        fetchRuns({ issueId }),
-        fetchReviews(issueId),
+        fetchTask(taskId),
+        fetchComments(taskId),
+        fetchRuns({ taskId }),
+        fetchReviews(taskId),
       ]);
-    setIssue(fetched);
+    setTask(fetched);
     setTitle(fetched.title);
-    setDescription(fetched.description);
+    setBrief(fetched.brief);
     setComments(timeline);
     setRuns(ledger);
     setReviews(verdicts);
-  }, [issueId]);
+  }, [taskId]);
 
   useEffect(() => {
     load().catch((err) => setError(err instanceof Error ? err.message : 'Load failed'));
   }, [load]);
 
-  // Live runs settle asynchronously; keep the receipt fresh while one is
+  // Live runs settle asynchronously; keep the ticket fresh while one is
   // hot, and let the board behind track the agent-driven moves too.
   useEffect(() => {
     if (!runs.some((r) => ACTIVE_RUN_STATUSES.includes(r.status))) return;
@@ -184,7 +184,7 @@ export function IssueReceipt({
     [load, onChanged]
   );
 
-  if (!issue) {
+  if (!task) {
     return (
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-pixel-black/40" onClick={onClose} />
@@ -204,27 +204,27 @@ export function IssueReceipt({
 
   const feeding = printEntrance && !fed;
 
-  const meta = STATUS_META[issue.status];
-  const legalMoves = CLIENT_TRANSITIONS[issue.status].filter((s) => s !== 'cancelled');
-  const canCancel = CLIENT_TRANSITIONS[issue.status].includes('cancelled');
+  const meta = STATUS_META[task.status];
+  const legalMoves = CLIENT_TRANSITIONS[task.status].filter((s) => s !== 'cancelled');
+  const canCancel = CLIENT_TRANSITIONS[task.status].includes('cancelled');
   const agentName = (id: string | null) => agents.find((a) => a.id === id)?.name ?? 'agent';
-  const orderNo = `ORD-${String(issue.issueNumber).padStart(4, '0')}`;
+  const orderNo = `ORD-${String(task.number).padStart(4, '0')}`;
   const agentRejections = reviews.filter(
     (r) => r.reviewerType === 'agent' && r.decision === 'changes_requested'
   ).length;
 
   const saveTitle = () => {
     const next = title.trim();
-    if (!next || next === issue.title) {
-      setTitle(issue.title);
+    if (!next || next === task.title) {
+      setTitle(task.title);
       return;
     }
-    void mutate(() => updateIssue(issue.id, { title: next }));
+    void mutate(() => updateTask(task.id, { title: next }));
   };
 
-  const saveDescription = () => {
-    if (description === issue.description) return;
-    void mutate(() => updateIssue(issue.id, { description }));
+  const saveBrief = () => {
+    if (brief === task.brief) return;
+    void mutate(() => updateTask(task.id, { brief }));
   };
 
   const changePrincipal = (slot: 'assignee' | 'reviewer', value: string) => {
@@ -234,18 +234,18 @@ export function IssueReceipt({
         : value.startsWith('agent:')
           ? { agentId: value.slice(6) }
           : { userId: value.slice(5) };
-    void mutate(() => updateIssue(issue.id, { [slot]: patch }));
+    void mutate(() => updateTask(task.id, { [slot]: patch }));
   };
 
   const postComment = () => {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
-    void mutate(() => addComment(issue.id, body));
+    void mutate(() => addComment(task.id, body));
   };
 
   const wakeAssignee = () => {
-    void mutate(() => wakeIssue(issue.id));
+    void mutate(() => wakeTask(task.id));
   };
 
   // Approve stands alone; requesting changes needs a written reason the
@@ -254,20 +254,20 @@ export function IssueReceipt({
     const body = verdictNote.trim() || (decision === 'approved' ? 'Approved.' : '');
     if (!body) return;
     setVerdictNote('');
-    void mutate(() => submitReview(issue.id, { decision, body }));
+    void mutate(() => submitReview(task.id, { decision, body }));
   };
 
-  const cancelIssue = () => {
+  const cancelTask = () => {
     if (window.confirm(`Cancel ${orderNo}? This cannot be undone.`)) {
-      void mutate(() => moveIssue(issue.id, { status: 'cancelled' }));
+      void mutate(() => moveTask(task.id, { status: 'cancelled' }));
     }
   };
 
-  const removeIssue = async () => {
+  const removeTask = async () => {
     if (!window.confirm(`Delete ${orderNo} and its activity permanently?`)) return;
     setError('');
     try {
-      await deleteIssue(issue.id);
+      await deleteTask(task.id);
       onChanged();
       onClose();
     } catch (err) {
@@ -306,7 +306,7 @@ export function IssueReceipt({
                 * work order *
               </p>
               <p className="mt-1 font-pixel text-[10px] text-pixel-gray">
-                {orderNo} · {formatTime(issue.createdAt)}
+                {orderNo} · {formatTime(task.createdAt)}
               </p>
             </div>
             <div
@@ -314,21 +314,21 @@ export function IssueReceipt({
             >
               <CircularStamp
                 label={meta.label}
-                date={formatTime(issue.updatedAt).slice(0, 5)}
+                date={formatTime(task.updatedAt).slice(0, 5)}
                 orderNo={orderNo}
-                seed={issue.id}
+                seed={task.id}
               />
               {legalMoves.length > 0 && (
                 <select
-                  value={issue.status}
+                  value={task.status}
                   onChange={(e) =>
-                    e.target.value !== issue.status &&
-                    void mutate(() => moveIssue(issue.id, { status: e.target.value as IssueStatus }))
+                    e.target.value !== task.status &&
+                    void mutate(() => moveTask(task.id, { status: e.target.value as TaskStatus }))
                   }
-                  aria-label="Issue status"
+                  aria-label="Task status"
                   className="absolute inset-0 cursor-pointer opacity-0"
                 >
-                  <option value={issue.status}>{meta.label}</option>
+                  <option value={task.status}>{meta.label}</option>
                   {legalMoves.map((s) => (
                     <option key={s} value={s}>
                       {`-> ${STATUS_META[s].label}`}
@@ -367,7 +367,7 @@ export function IssueReceipt({
             </Row>
             <Row label="Assignee">
               <select
-                value={principalValue(issue.assigneeAgentId, issue.assigneeUserId)}
+                value={principalValue(task.assigneeAgentId, task.assigneeUserId)}
                 onChange={(e) => changePrincipal('assignee', e.target.value)}
                 className={VALUE_SELECT}
               >
@@ -382,7 +382,7 @@ export function IssueReceipt({
             </Row>
             <Row label="Reviewer">
               <select
-                value={principalValue(issue.reviewerAgentId, issue.reviewerUserId)}
+                value={principalValue(task.reviewerAgentId, task.reviewerUserId)}
                 onChange={(e) => changePrincipal('reviewer', e.target.value)}
                 className={VALUE_SELECT}
               >
@@ -399,14 +399,14 @@ export function IssueReceipt({
 
           <Rule dashed />
 
-          {/* Description */}
+          {/* Brief */}
           <p className="mb-1 font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
-            Description
+            Brief
           </p>
           <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={saveDescription}
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            onBlur={saveBrief}
             rows={3}
             placeholder="(none)"
             className="w-full resize-y border border-transparent bg-transparent font-pixel text-sm leading-relaxed text-pixel-black hover:border-pixel-gray/40 focus:border-pixel-black focus:outline-none"
@@ -454,7 +454,7 @@ export function IssueReceipt({
             <p className="font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
               Runs
             </p>
-            {issue.assigneeAgentId && (
+            {task.assigneeAgentId && (
               <BracketButton
                 onClick={wakeAssignee}
                 disabled={runs.some((r) => ACTIVE_RUN_STATUSES.includes(r.status))}
@@ -552,7 +552,7 @@ export function IssueReceipt({
               <p className="font-pixel text-xs text-pixel-gray">(no verdicts yet)</p>
             )}
           </div>
-          {issue.status === 'in_review' && (
+          {task.status === 'in_review' && (
             <div className="mt-2">
               {agentRejections >= REVIEW_CYCLE_CAP && (
                 <p className="mb-1 font-pixel text-[10px] uppercase text-pixel-red">
@@ -584,16 +584,16 @@ export function IssueReceipt({
           {/* Danger + footer */}
           <div className="flex justify-center gap-4">
             {canCancel && (
-              <BracketButton onClick={cancelIssue}>CANCEL ISSUE</BracketButton>
+              <BracketButton onClick={cancelTask}>CANCEL TASK</BracketButton>
             )}
-            <BracketButton danger onClick={() => void removeIssue()}>
+            <BracketButton danger onClick={() => void removeTask()}>
               DELETE
             </BracketButton>
           </div>
 
           <Rule />
 
-          <Barcode seed={issue.id} />
+          <Barcode seed={task.id} />
           <p className="mt-1 text-center font-pixel text-[10px] tracking-[0.25em] text-pixel-gray">
             {orderNo}
           </p>

@@ -104,7 +104,7 @@ export function stopTurn(conversationId: string): boolean {
 /**
  * One chat turn: persist the user message, run the agent CLI, persist the
  * reply (or a system error message). Exactly one turn per conversation may
- * be in flight, and the agent claim is shared with issue runs — a busy
+ * be in flight, and the agent claim is shared with task runs — a busy
  * agent rejects the turn instead of running two things at once.
  */
 export async function runChatTurn(

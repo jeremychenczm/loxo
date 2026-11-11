@@ -32,7 +32,7 @@ export function assertCommitId(commit: string): string {
   return commit;
 }
 
-export function issueBranchName(prefix: string, issueNumber: number, issueId: string): string {
-  const shortId = issueId.replace(/-/g, '').slice(0, 6).toLowerCase();
-  return assertSafeRefName(`${prefix}/issue-${issueNumber}-${shortId}`);
+export function taskBranchName(prefix: string, taskNumber: number, taskId: string): string {
+  const shortId = taskId.replace(/-/g, '').slice(0, 6).toLowerCase();
+  return assertSafeRefName(`${prefix}/task-${taskNumber}-${shortId}`);
 }

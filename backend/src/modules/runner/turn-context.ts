@@ -58,14 +58,14 @@ export function collectSkillIndex(workspace: string): SkillEntry[] {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const MAX_ISSUE_COMMENTS = 10;
-const MAX_ISSUE_COMMENT_CHARS = 400;
+const MAX_TASK_COMMENTS = 10;
+const MAX_TASK_COMMENT_CHARS = 400;
 
-export interface IssueRunTurnContext {
+export interface TaskRunTurnContext {
   agent: Pick<Agent, 'name' | 'description'>;
-  issueNumber: number;
+  taskNumber: number;
   title: string;
-  description: string;
+  brief: string;
   status: string;
   /** Why the agent was woken (assignment, manual nudge, ...). */
   reason: string;
@@ -79,32 +79,32 @@ export interface IssueRunTurnContext {
 }
 
 /**
- * Issue-run prompt. The run is non-interactive and the work report lands on
- * the issue timeline — via submit_result on the control plane, or the reply
+ * Task-run prompt. The run is non-interactive and the work report lands on
+ * the task timeline — via submit_result on the control plane, or the reply
  * text as fallback.
  */
-export function buildIssueRunPrompt(input: IssueRunTurnContext): string {
+export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
   const sections: string[] = [
     '[AGENT_RUNTIME_CONTEXT]',
-    'You are the agent described below, executing one run against an issue assigned to you on the Loxo platform.',
+    'You are the agent described below, executing one run against a task assigned to you on the Loxo platform.',
     `Agent: ${input.agent.name}`,
     input.agent.description ? `Description: ${sanitizeInjected(input.agent.description)}` : '',
     [
-      `Issue #${input.issueNumber}: ${sanitizeInjected(input.title)}`,
+      `Task #${input.taskNumber}: ${sanitizeInjected(input.title)}`,
       `Status: ${input.status}`,
-      input.description ? `Description: ${sanitizeInjected(input.description)}` : '',
+      input.brief ? `Brief: ${sanitizeInjected(input.brief)}` : '',
     ]
       .filter(Boolean)
       .join('\n'),
     `Wake reason: ${sanitizeInjected(input.reason)}`,
     input.comments.length > 0
       ? [
-          'Recent issue timeline (oldest first):',
+          'Recent task timeline (oldest first):',
           ...input.comments
-            .slice(-MAX_ISSUE_COMMENTS)
+            .slice(-MAX_TASK_COMMENTS)
             .map(
               (c) =>
-                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_ISSUE_COMMENT_CHARS))}`
+                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TASK_COMMENT_CHARS))}`
             ),
         ].join('\n')
       : '',
@@ -112,11 +112,11 @@ export function buildIssueRunPrompt(input: IssueRunTurnContext): string {
     input.controlPlane === 'mcp'
       ? [
           'Platform control-plane tools for this run:',
-          '- get_issue: re-read the issue and its timeline.',
-          '- comment_on_issue: post a progress note.',
-          '- update_issue_status: move the issue on the board (legal transitions only).',
-          '- ask_blocker: you are stuck and need a human decision; marks the issue blocked.',
-          '- submit_result: you finished; posts your work report and hands the issue to review.',
+          '- get_task: re-read the task and its timeline.',
+          '- comment_on_task: post a progress note.',
+          '- update_task_status: move the task on the board (legal transitions only).',
+          '- ask_blocker: you are stuck and need a human decision; marks the task blocked.',
+          '- submit_result: you finished; posts your work report and hands the task to review.',
         ].join('\n')
       : '',
     [
@@ -125,7 +125,7 @@ export function buildIssueRunPrompt(input: IssueRunTurnContext): string {
       '- Do the actual work in the project workspace. No placeholders and no descriptions of work you did not do.',
       input.controlPlane === 'mcp'
         ? '- Finish by calling submit_result with a concise work report, or ask_blocker if you cannot proceed. If you post nothing through the control plane, your final reply text lands on the timeline as a fallback.'
-        : '- Your final reply is posted verbatim to the issue timeline as your comment: make it a concise work report.',
+        : '- Your final reply is posted verbatim to the task timeline as your comment: make it a concise work report.',
       '- State the paths of files you created or changed in your report.',
     ].join('\n'),
     'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
@@ -145,28 +145,28 @@ export function buildIssueRunPrompt(input: IssueRunTurnContext): string {
  * Review-run prompt. The reviewer judges submitted work: inspect the real
  * files, never modify them, and deliver a verdict through submit_review.
  */
-export function buildReviewRunPrompt(input: IssueRunTurnContext): string {
+export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
   const sections: string[] = [
     '[AGENT_RUNTIME_CONTEXT]',
-    'You are the agent described below, acting as the REVIEWER for an issue on the Loxo platform. Work has been submitted; your job is to judge it.',
+    'You are the agent described below, acting as the REVIEWER for a task on the Loxo platform. Work has been submitted; your job is to judge it.',
     `Agent: ${input.agent.name}`,
     input.agent.description ? `Description: ${sanitizeInjected(input.agent.description)}` : '',
     [
-      `Issue #${input.issueNumber}: ${sanitizeInjected(input.title)}`,
+      `Task #${input.taskNumber}: ${sanitizeInjected(input.title)}`,
       `Status: ${input.status}`,
-      input.description ? `Description: ${sanitizeInjected(input.description)}` : '',
+      input.brief ? `Brief: ${sanitizeInjected(input.brief)}` : '',
     ]
       .filter(Boolean)
       .join('\n'),
     `Wake reason: ${sanitizeInjected(input.reason)}`,
     input.comments.length > 0
       ? [
-          'Issue timeline (oldest first — the work reports you are reviewing are here):',
+          'Task timeline (oldest first — the work reports you are reviewing are here):',
           ...input.comments
-            .slice(-MAX_ISSUE_COMMENTS)
+            .slice(-MAX_TASK_COMMENTS)
             .map(
               (c) =>
-                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_ISSUE_COMMENT_CHARS))}`
+                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TASK_COMMENT_CHARS))}`
             ),
         ].join('\n')
       : '',
@@ -174,9 +174,9 @@ export function buildReviewRunPrompt(input: IssueRunTurnContext): string {
     input.controlPlane === 'mcp'
       ? [
           'Reviewer control-plane tools for this run:',
-          '- get_issue: re-read the issue and its timeline.',
-          '- comment_on_issue: post a review note.',
-          '- submit_review: deliver your verdict — approved (recorded as a recommendation; a human closes the issue) or changes_requested (reopens work with your feedback).',
+          '- get_task: re-read the task and its timeline.',
+          '- comment_on_task: post a review note.',
+          '- submit_review: deliver your verdict — approved (recorded as a recommendation; a human closes the task) or changes_requested (reopens work with your feedback).',
         ].join('\n')
       : '',
     [

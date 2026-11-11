@@ -4,71 +4,71 @@ import { badRequest } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
 import { requestWake } from '../runs/wake';
 import {
-  abandonIssueWorkspace,
-  finalizeIssueWorkspace,
-  getIssueChanges,
-  getIssueWorkspace,
-  prepareIssueWorkspace,
-  reconcileIssueWorkspace,
+  abandonTaskWorkspace,
+  finalizeTaskWorkspace,
+  getTaskChanges,
+  getTaskWorkspace,
+  prepareTaskWorkspace,
+  reconcileTaskWorkspace,
 } from '../code-workspaces/workspace.service';
 import { addHumanComment, listComments } from './comments.service';
 import { createReview, listReviews } from './reviews.service';
 import {
-  createIssue,
-  deleteIssue,
+  createTask,
+  deleteTask,
   getBoard,
-  getIssue,
-  listIssues,
-  moveIssue,
-  updateIssue,
-} from './issues.service';
+  getTask,
+  listTasks,
+  moveTask,
+  updateTask,
+} from './tasks.service';
 
-export const issuesRouter = Router();
-issuesRouter.use(requireAuth);
+export const tasksRouter = Router();
+tasksRouter.use(requireAuth);
 
 // Code workspace state and evidence. Preparation normally happens at run
 // admission; the manual endpoints exist for diagnosis and recovery.
-issuesRouter.get('/:id/workspace', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/workspace', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
-    res.json({ workspace: await getIssueWorkspace(req.auth!.userId, String(req.params.id)) });
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
+    res.json({ workspace: await getTaskWorkspace(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.post('/:id/workspace/prepare', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/workspace/prepare', async (req: AuthedRequest, res, next) => {
   try {
-    const issue = await getIssue(req.auth!.userId, String(req.params.id));
-    res.json({ workspace: await prepareIssueWorkspace(req.auth!.userId, issue) });
+    const task = await getTask(req.auth!.userId, String(req.params.id));
+    res.json({ workspace: await prepareTaskWorkspace(req.auth!.userId, task) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.post('/:id/workspace/reconcile', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/workspace/reconcile', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
-    res.json({ workspace: await reconcileIssueWorkspace(req.auth!.userId, String(req.params.id)) });
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
+    res.json({ workspace: await reconcileTaskWorkspace(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.get('/:id/changes', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/changes', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
-    res.json(await getIssueChanges(req.auth!.userId, String(req.params.id)));
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
+    res.json(await getTaskChanges(req.auth!.userId, String(req.params.id)));
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.post('/:id/workspace/merge', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/workspace/merge', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
     res.json(
-      await finalizeIssueWorkspace(req.auth!.userId, String(req.params.id), {
+      await finalizeTaskWorkspace(req.auth!.userId, String(req.params.id), {
         action: 'merge',
         confirmCheckpoint: req.body?.confirmCheckpoint === true,
       })
@@ -78,11 +78,11 @@ issuesRouter.post('/:id/workspace/merge', async (req: AuthedRequest, res, next) 
   }
 });
 
-issuesRouter.post('/:id/workspace/keep-branch', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/workspace/keep-branch', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
     res.json(
-      await finalizeIssueWorkspace(req.auth!.userId, String(req.params.id), {
+      await finalizeTaskWorkspace(req.auth!.userId, String(req.params.id), {
         action: 'keep_branch',
         confirmCheckpoint: req.body?.confirmCheckpoint === true,
       })
@@ -92,11 +92,11 @@ issuesRouter.post('/:id/workspace/keep-branch', async (req: AuthedRequest, res, 
   }
 });
 
-issuesRouter.post('/:id/workspace/abandon', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/workspace/abandon', async (req: AuthedRequest, res, next) => {
   try {
-    await getIssue(req.auth!.userId, String(req.params.id)); // ownership
+    await getTask(req.auth!.userId, String(req.params.id)); // ownership
     res.json(
-      await abandonIssueWorkspace(req.auth!.userId, String(req.params.id), {
+      await abandonTaskWorkspace(req.auth!.userId, String(req.params.id), {
         confirmDiscard: req.body?.confirmDiscard === true,
       })
     );
@@ -105,7 +105,7 @@ issuesRouter.post('/:id/workspace/abandon', async (req: AuthedRequest, res, next
   }
 });
 
-const issueStatus = z.enum([
+const taskStatus = z.enum([
   'backlog',
   'todo',
   'in_progress',
@@ -122,22 +122,22 @@ const assignmentPatch = z
   })
   .nullable();
 
-issuesRouter.get('/', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       projectId: z.string().uuid().optional(),
-      status: issueStatus.optional(),
+      status: taskStatus.optional(),
       assigneeAgentId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.query);
-    if (!parsed.success) throw badRequest('invalid_input', 'Invalid issue filter');
-    res.json({ issues: await listIssues(req.auth!.userId, parsed.data) });
+    if (!parsed.success) throw badRequest('invalid_input', 'Invalid task filter');
+    res.json({ tasks: await listTasks(req.auth!.userId, parsed.data) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.get('/board', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/board', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({ projectId: z.string().uuid().optional() });
     const parsed = schema.safeParse(req.query);
@@ -148,75 +148,75 @@ issuesRouter.get('/board', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.post('/', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       title: z.string().trim().min(1).max(300),
-      description: z.string().max(10000).optional(),
+      brief: z.string().max(10000).optional(),
       projectId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
-    if (!parsed.success) throw badRequest('invalid_input', 'Issue title is required');
-    res.status(201).json({ issue: await createIssue(req.auth!.userId, parsed.data) });
+    if (!parsed.success) throw badRequest('invalid_input', 'Task title is required');
+    res.status(201).json({ task: await createTask(req.auth!.userId, parsed.data) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.get('/:id', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id', async (req: AuthedRequest, res, next) => {
   try {
-    res.json({ issue: await getIssue(req.auth!.userId, String(req.params.id)) });
+    res.json({ task: await getTask(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.patch('/:id', async (req: AuthedRequest, res, next) => {
+tasksRouter.patch('/:id', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       title: z.string().trim().min(1).max(300).optional(),
-      description: z.string().max(10000).optional(),
+      brief: z.string().max(10000).optional(),
       assignee: assignmentPatch.optional(),
       reviewer: assignmentPatch.optional(),
     });
     const parsed = schema.safeParse(req.body);
-    if (!parsed.success) throw badRequest('invalid_input', 'Invalid issue update');
-    res.json({ issue: await updateIssue(req.auth!.userId, String(req.params.id), parsed.data) });
+    if (!parsed.success) throw badRequest('invalid_input', 'Invalid task update');
+    res.json({ task: await updateTask(req.auth!.userId, String(req.params.id), parsed.data) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.post('/:id/move', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/move', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
-      status: issueStatus,
+      status: taskStatus,
       boardOrder: z.number().finite().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid move');
-    res.json({ issue: await moveIssue(req.auth!.userId, String(req.params.id), parsed.data) });
+    res.json({ task: await moveTask(req.auth!.userId, String(req.params.id), parsed.data) });
   } catch (error) {
     next(error);
   }
 });
 
-issuesRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({ reason: z.string().trim().max(2000).optional() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid wake request');
 
-    const issue = await getIssue(req.auth!.userId, String(req.params.id));
-    if (!issue.assigneeAgentId) {
-      throw badRequest('no_agent_assignee', 'Assign an agent to this issue first');
+    const task = await getTask(req.auth!.userId, String(req.params.id));
+    if (!task.assigneeAgentId) {
+      throw badRequest('no_agent_assignee', 'Assign an agent to this task first');
     }
     const decision = await requestWake(req.auth!.userId, {
-      agentId: issue.assigneeAgentId,
-      issueId: issue.id,
+      agentId: task.assigneeAgentId,
+      taskId: task.id,
       trigger: 'manual',
       reason:
-        parsed.data.reason ?? `Manual wake on issue #${issue.issueNumber}: ${issue.title}`,
+        parsed.data.reason ?? `Manual wake on task #${task.number}: ${task.title}`,
     });
     res.status(202).json({ run: decision.run, admitted: decision.admitted });
   } catch (error) {
@@ -224,7 +224,7 @@ issuesRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.get('/:id/comments', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/comments', async (req: AuthedRequest, res, next) => {
   try {
     res.json({ comments: await listComments(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
@@ -232,7 +232,7 @@ issuesRouter.get('/:id/comments', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.post('/:id/comments', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/comments', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({ body: z.string().trim().min(1).max(20000) });
     const parsed = schema.safeParse(req.body);
@@ -245,7 +245,7 @@ issuesRouter.post('/:id/comments', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.get('/:id/reviews', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/reviews', async (req: AuthedRequest, res, next) => {
   try {
     res.json({ reviews: await listReviews(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
@@ -253,7 +253,7 @@ issuesRouter.get('/:id/reviews', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.post('/:id/reviews', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/reviews', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       decision: z.enum(['approved', 'changes_requested']),
@@ -272,9 +272,9 @@ issuesRouter.post('/:id/reviews', async (req: AuthedRequest, res, next) => {
   }
 });
 
-issuesRouter.delete('/:id', async (req: AuthedRequest, res, next) => {
+tasksRouter.delete('/:id', async (req: AuthedRequest, res, next) => {
   try {
-    await deleteIssue(req.auth!.userId, String(req.params.id));
+    await deleteTask(req.auth!.userId, String(req.params.id));
     res.json({ ok: true });
   } catch (error) {
     next(error);

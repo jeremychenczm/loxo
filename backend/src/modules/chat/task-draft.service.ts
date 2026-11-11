@@ -14,11 +14,11 @@ export const TOPIC_MAX_MESSAGES = 100;
 
 const DRAFT_TIMEOUT_MS = 30_000;
 const TITLE_MAX = 300;
-const DESCRIPTION_MAX = 10_000;
+const BRIEF_MAX = 10_000;
 
-export interface IssueDraft {
+export interface TaskDraft {
   title: string;
-  description: string;
+  brief: string;
   source: 'anthropic' | 'openai' | 'fallback';
   warnings: string[];
   /** Messages the draft was based on, so the client can show and adjust the slice. */
@@ -36,7 +36,7 @@ type WindowMessage = Pick<Message, 'role' | 'content' | 'createdAt'>;
  * Current topic segment. Threads are perpetual, so "the task being discussed"
  * is bounded by silence gaps, not message counts: walk back from the newest
  * message and stop at a gap. A segment thinner than TOPIC_MIN_MESSAGES keeps
- * walking across the gap so a terse follow-up ("file that as an issue")
+ * walking across the gap so a terse follow-up ("file that as a task")
  * still carries its context. Char and count caps bound the prompt.
  */
 export function sliceTopicWindow<T extends WindowMessage>(history: T[]): T[] {
@@ -86,9 +86,9 @@ export function sliceExplicitRange<T extends WindowMessage & { id: string }>(
 const DRAFT_SYSTEM_PROMPT = [
   'You turn a chat transcript between a user and their AI teammate into a work-order draft.',
   'The transcript may span several topics; extract only the task most recently under discussion and ignore earlier unrelated topics.',
-  'Output only a JSON object, no markdown fences: {"title": string, "description": string}.',
+  'Output only a JSON object, no markdown fences: {"title": string, "brief": string}.',
   'Title: one imperative line, at most 120 characters.',
-  'Description: the task as actionable instructions — goal, concrete requirements, constraints, and acceptance hints mentioned in the chat. Do not invent details the chat does not support.',
+  'Brief: the task as actionable instructions — goal, concrete requirements, constraints, and acceptance hints mentioned in the chat. Do not invent details the chat does not support.',
   'Write in the language the chat itself uses.',
 ].join('\n');
 
@@ -103,10 +103,10 @@ function renderTranscript(agentName: string, window: WindowMessage[]): string {
 }
 
 /** Deterministic draft when no provider is configured or the model call fails. */
-export function fallbackIssueDraft(
+export function fallbackTaskDraft(
   agentName: string,
   window: WindowMessage[]
-): { title: string; description: string } {
+): { title: string; brief: string } {
   const lastUser = [...window].reverse().find((m) => m.role === 'user');
   const firstLine = (lastUser?.content ?? '').split('\n')[0]!.trim() || 'Task from chat';
   const title = firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
@@ -114,23 +114,23 @@ export function fallbackIssueDraft(
   const excerpt = transcript.length > 4000 ? transcript.slice(-4000) : transcript;
   return {
     title,
-    description: `Drafted from a chat conversation.\n\nTranscript excerpt:\n${excerpt}`,
+    brief: `Drafted from a chat conversation.\n\nTranscript excerpt:\n${excerpt}`,
   };
 }
 
-function normalizeDraft(json: unknown): { title: string; description: string } {
+function normalizeDraft(json: unknown): { title: string; brief: string } {
   const obj = (json ?? {}) as Record<string, unknown>;
   const title = typeof obj.title === 'string' ? obj.title.trim() : '';
-  const description = typeof obj.description === 'string' ? obj.description.trim() : '';
+  const brief = typeof obj.brief === 'string' ? obj.brief.trim() : '';
   if (!title) throw new Error('Draft has no title');
-  return { title: title.slice(0, TITLE_MAX), description: description.slice(0, DESCRIPTION_MAX) };
+  return { title: title.slice(0, TITLE_MAX), brief: brief.slice(0, BRIEF_MAX) };
 }
 
-export async function draftIssueFromConversation(
+export async function draftTaskFromConversation(
   userId: string,
   conversationId: string,
   range?: DraftRange
-): Promise<IssueDraft> {
+): Promise<TaskDraft> {
   const conversation = await getConversation(userId, conversationId);
   const [agent] = await db
     .select({ name: agents.name })
@@ -143,7 +143,7 @@ export async function draftIssueFromConversation(
     (m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim() && !m.meta.error
   );
   if (history.length === 0) {
-    throw badRequest('empty_conversation', 'Nothing to convert into an issue yet');
+    throw badRequest('empty_conversation', 'Nothing to convert into a task yet');
   }
 
   const explicit = Boolean(range?.fromMessageId || range?.toMessageId);
@@ -185,5 +185,5 @@ export async function draftIssueFromConversation(
     warnings.push('No anthropic/openai provider configured; drafted from the transcript directly');
   }
 
-  return { ...fallbackIssueDraft(agentName, window), source: 'fallback', warnings, window: windowInfo };
+  return { ...fallbackTaskDraft(agentName, window), source: 'fallback', warnings, window: windowInfo };
 }

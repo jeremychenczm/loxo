@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   isSafeRefName,
-  issueBranchName,
+  taskBranchName,
 } from '../src/modules/code-workspaces/branch-name';
 import { localGitDriver } from '../src/modules/code-workspaces/local-git-driver';
 import {
@@ -55,13 +55,13 @@ interface Workspace {
   result: PrepareWorkspaceResult;
 }
 
-async function makeWorkspace(issueId = 'issue-a', branch = 'swarmdev/issue-1-abc123'): Promise<Workspace> {
+async function makeWorkspace(taskId = 'task-a', branch = 'swarmdev/task-1-abc123'): Promise<Workspace> {
   const repo = await initRepo();
   const worktreesRoot = `${repo}-worktrees`;
   const result = await localGitDriver.prepareWorkspace({
     repositoryRoot: repo,
     worktreesRoot,
-    issueId,
+    taskId,
     branchName: branch,
     baseRef: 'main',
   });
@@ -96,7 +96,7 @@ describe('ref and branch names', () => {
   it('accepts ordinary branch names', () => {
     expect(isSafeRefName('main')).toBe(true);
     expect(isSafeRefName('feature/login-form')).toBe(true);
-    expect(isSafeRefName('swarmdev/issue-42-a17c92')).toBe(true);
+    expect(isSafeRefName('swarmdev/task-42-a17c92')).toBe(true);
   });
 
   it('rejects names Git or a shell could misread', () => {
@@ -105,9 +105,9 @@ describe('ref and branch names', () => {
     }
   });
 
-  it('builds the issue branch name from prefix, number, and short id', () => {
-    const name = issueBranchName('swarmdev', 42, 'a17c92f3-0000-4000-8000-000000000000');
-    expect(name).toBe('swarmdev/issue-42-a17c92');
+  it('builds the task branch name from prefix, number, and short id', () => {
+    const name = taskBranchName('swarmdev', 42, 'a17c92f3-0000-4000-8000-000000000000');
+    expect(name).toBe('swarmdev/task-42-a17c92');
   });
 });
 
@@ -163,7 +163,7 @@ describe('inspectRepository', () => {
 });
 
 describe('prepareWorkspace', () => {
-  it('creates an isolated worktree on the issue branch', { timeout: T }, async () => {
+  it('creates an isolated worktree on the task branch', { timeout: T }, async () => {
     const ws = await makeWorkspace();
     expect(ws.result.reused).toBe(false);
     expect(ws.result.headCommit).toBe(ws.result.baseCommit);
@@ -176,7 +176,7 @@ describe('prepareWorkspace', () => {
     const again = await localGitDriver.prepareWorkspace({
       repositoryRoot: ws.repo,
       worktreesRoot: ws.worktreesRoot,
-      issueId: 'issue-a',
+      taskId: 'task-a',
       branchName: ws.branch,
       baseRef: 'main',
       baseCommit: ws.result.baseCommit,
@@ -192,8 +192,8 @@ describe('prepareWorkspace', () => {
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot: `${repo}-worktrees`,
-      issueId: 'issue-a',
-      branchName: 'swarmdev/issue-1-abc123',
+      taskId: 'task-a',
+      branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
     expect(result.state).toBe('ready');
@@ -201,13 +201,13 @@ describe('prepareWorkspace', () => {
     expect(content).toBe('# fixture\n');
   });
 
-  it('keeps concurrent issues in separate worktrees', { timeout: T }, async () => {
+  it('keeps concurrent tasks in separate worktrees', { timeout: T }, async () => {
     const ws = await makeWorkspace();
     const second = await localGitDriver.prepareWorkspace({
       repositoryRoot: ws.repo,
       worktreesRoot: ws.worktreesRoot,
-      issueId: 'issue-b',
-      branchName: 'swarmdev/issue-2-def456',
+      taskId: 'task-b',
+      branchName: 'swarmdev/task-2-def456',
       baseRef: 'main',
     });
     expect(second.state).toBe('ready');
@@ -218,12 +218,12 @@ describe('prepareWorkspace', () => {
 
   it('reports an existing branch without a worktree as needing reconciliation', { timeout: T }, async () => {
     const repo = await initRepo();
-    await git(repo, 'branch', 'swarmdev/issue-9-stray');
+    await git(repo, 'branch', 'swarmdev/task-9-stray');
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot: `${repo}-worktrees`,
-      issueId: 'issue-9',
-      branchName: 'swarmdev/issue-9-stray',
+      taskId: 'task-9',
+      branchName: 'swarmdev/task-9-stray',
       baseRef: 'main',
     });
     expect(result.state).toBe('error');
@@ -233,28 +233,28 @@ describe('prepareWorkspace', () => {
   it('refuses to overwrite an unrelated occupied directory', { timeout: T }, async () => {
     const repo = await initRepo();
     const worktreesRoot = `${repo}-worktrees`;
-    write(path.join(worktreesRoot, 'issue-a'), 'keep.txt', 'not ours\n');
+    write(path.join(worktreesRoot, 'task-a'), 'keep.txt', 'not ours\n');
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot,
-      issueId: 'issue-a',
-      branchName: 'swarmdev/issue-1-abc123',
+      taskId: 'task-a',
+      branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
     expect(result.state).toBe('error');
     expect(result.error).toMatch(/unrelated/i);
-    expect(fs.readFileSync(path.join(worktreesRoot, 'issue-a', 'keep.txt'), 'utf8')).toBe('not ours\n');
+    expect(fs.readFileSync(path.join(worktreesRoot, 'task-a', 'keep.txt'), 'utf8')).toBe('not ours\n');
   });
 
   it('adopts an empty directory left at the worktree path', { timeout: T }, async () => {
     const repo = await initRepo();
     const worktreesRoot = `${repo}-worktrees`;
-    fs.mkdirSync(path.join(worktreesRoot, 'issue-a'), { recursive: true });
+    fs.mkdirSync(path.join(worktreesRoot, 'task-a'), { recursive: true });
     const result = await localGitDriver.prepareWorkspace({
       repositoryRoot: repo,
       worktreesRoot,
-      issueId: 'issue-a',
-      branchName: 'swarmdev/issue-1-abc123',
+      taskId: 'task-a',
+      branchName: 'swarmdev/task-1-abc123',
       baseRef: 'main',
     });
     expect(result.state).toBe('ready');
@@ -435,7 +435,7 @@ describe('change capture', () => {
       beforeHead: ws.result.baseCommit,
       baseCommit: ws.result.baseCommit,
     });
-    await commitAll(wt, 'Issue #1: checkpoint');
+    await commitAll(wt, 'Task #1: checkpoint');
     const afterCheckpoint = await localGitDriver.captureChanges({
       worktreePath: wt,
       beforeHead: ws.result.baseCommit,
@@ -474,7 +474,7 @@ describe('base drift', () => {
     write(ws.repo, 'README.md', '# fixture\nmainline change\n');
     await commitAll(ws.repo, 'advance main');
     write(ws.result.worktreePath, 'src/app.ts', 'export const app = 9;\n');
-    await commitAll(ws.result.worktreePath, 'issue work');
+    await commitAll(ws.result.worktreePath, 'task work');
 
     const drift = await localGitDriver.reportBaseDrift({
       repositoryRoot: ws.repo,

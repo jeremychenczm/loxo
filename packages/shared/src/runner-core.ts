@@ -386,9 +386,9 @@ export const ADAPTERS: Record<CliRuntime, RuntimeAdapter> = {
           '--strict-mcp-config'
         );
         allowedTools.push(
-          'mcp__swarmdev__get_issue',
-          'mcp__swarmdev__comment_on_issue',
-          'mcp__swarmdev__update_issue_status',
+          'mcp__swarmdev__get_task',
+          'mcp__swarmdev__comment_on_task',
+          'mcp__swarmdev__update_task_status',
           'mcp__swarmdev__ask_blocker',
           'mcp__swarmdev__submit_result'
         );

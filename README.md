@@ -2,14 +2,14 @@
 
 **A control plane for persistent AI agent teams.**
 
-Loxo coordinates continuous work across CLI coding agents and API agents: assign issues, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
+Loxo coordinates continuous work across CLI coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
 *TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 294 automated tests*
 
 ## Core loop
 
 ```
-Issue ──> Assign (wake) ──> Run ──> Review ──> Done
+Task ──> Assign (wake) ──> Run ──> Review ──> Done
             ▲                         │
             └── rejection re-wakes ───┘
 ```
@@ -22,21 +22,21 @@ Every task has an owner, every run leaves evidence, and every completion passes 
 
 Agent-authored summaries provide context, but the platform collects the proof.
 
-- **Isolated git workspaces** — each issue runs in its own git worktree and branch. After every run, including failures and cancellations, Loxo captures the diff, patch, file summary, and change fingerprint.
-- **Permission ceilings** — workspace access is enforced as read-only, edit, or full. Review turns are always read-only; tracked-file mutations become visible policy violations on the issue timeline.
+- **Isolated git workspaces** — each task runs in its own git worktree and branch. After every run, including failures and cancellations, Loxo captures the diff, patch, file summary, and change fingerprint.
+- **Permission ceilings** — workspace access is enforced as read-only, edit, or full. Review turns are always read-only; tracked-file mutations become visible policy violations on the task timeline.
 - **Snapshot-pinned approvals** — approvals bind to the exact captured change snapshot. If the workspace changes afterward, the approval becomes stale and cannot authorize a merge.
 
 ### Concurrency enforced by the system
 
 Agents are concurrent OS processes, so correctness cannot depend on caller discipline.
 
-- **One admission surface** handles assignment, chat mention, manual wake, and review rejection. It merges duplicate triggers, claims the agent, locks the issue, or queues the request FIFO.
-- **Atomic cross-surface claims** use a conditional `UPDATE … RETURNING`, preventing chat and issue runs from executing the same agent simultaneously.
-- **Schema-backed issue locks** prevent duplicate execution of one issue across every trigger path.
+- **One admission surface** handles assignment, chat mention, manual wake, and review rejection. It merges duplicate triggers, claims the agent, locks the task, or queues the request FIFO.
+- **Atomic cross-surface claims** use a conditional `UPDATE … RETURNING`, preventing chat and task runs from executing the same agent simultaneously.
+- **Schema-backed task locks** prevent duplicate execution of one task across every trigger path.
 
 ### Human authority at the final boundary
 
-Reviewer agents can reject work, reopen the issue, and re-wake the assignee. Their approvals only recommend completion; a human decides whether the issue closes. A three-cycle fuse stops automated rejection loops and escalates them for human review.
+Reviewer agents can reject work, reopen the task, and re-wake the assignee. Their approvals only recommend completion; a human decides whether the task closes. A three-cycle fuse stops automated rejection loops and escalates them for human review.
 
 ## Execution model
 
@@ -47,23 +47,23 @@ Loxo supports five CLI coding runtimes — Claude Code, Codex, OpenCode, Hermes,
 - **CLI agents** handle code, files, and commands in isolated workspaces.
 - **API agents** handle triage, drafting, and summarization through an in-process tool loop.
 
-Both modes use the same agent model, governance rules, run ledger, and review flow. Runtime detection uses local markers and confidence scoring, while adapter boundaries absorb capability differences.
+Both modes use the same agent model, governance rules, run history, and review flow. Runtime detection uses local markers and confidence scoring, while adapter boundaries absorb capability differences.
 
 ### MCP control plane
 
-Woken agents call back through six MCP tools: `get_issue`, `comment_on_issue`, `update_issue_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.
+Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.
 
 ## Feature tour
 
 | Surface | What it does |
 |---|---|
-| **Issue board** | Enforces a server-side state machine. The client mirrors valid transitions, while fractional ordering makes a drag operation one `PATCH` instead of a full-column renumber. |
-| **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted issue while retaining a link to its source. |
+| **Task board** | Enforces a server-side state machine. The client mirrors valid transitions, while fractional ordering makes a drag operation one `PATCH` instead of a full-column renumber. |
+| **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted task while retaining a link to its source. |
 | **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, and permission levels. |
-| **Runs** | Records every wake-up with its transcript, status, token usage, cost, issue, and captured workspace evidence. |
-| **Projects** | Groups issues, repositories, and workspaces. |
+| **Runs** | Records every wake-up with its transcript, status, token usage, cost, task, and captured workspace evidence. |
+| **Projects** | Groups tasks, repositories, and workspaces. |
 
-![Issue receipt — every issue renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/issue-receipt.png)
+![Task detail — every task renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/task-detail.png)
 
 ## Architecture
 
@@ -130,7 +130,7 @@ Open `http://localhost:3000`, register an account, and then:
 
 1. Configure a provider or verify a local CLI runtime.
 2. Create an agent and a project.
-3. Create an issue, assign it, and inspect the resulting run and evidence.
+3. Create a task, assign it, and inspect the resulting run and evidence.
 
 For code work, bind a Git repository to the project.
 
@@ -145,10 +145,10 @@ The suite covers admission and cross-surface claims, workspace capture, permissi
 
 ## Status and roadmap
 
-Loxo is a working platform under active solo development. The core loop — issues, wakes, runs, reviews, and workspaces — is implemented and tested end to end. Planned operational work includes:
+Loxo is a working platform under active solo development. The core loop — tasks, wakes, runs, reviews, and workspaces — is implemented and tested end to end. Planned operational work includes:
 
 - **Observability** — structured traces and latency/error metrics, per-agent budget alerts and hard stops, and heartbeat checks for long-lived agents.
-- **Approvals and triage** — a notification inbox, approval center, issue priorities, and sorting controls.
+- **Approvals and triage** — a notification inbox, approval center, task priorities, and sorting controls.
 - **Scale-out** — reporting lines for larger agent organizations, group messaging, and a shared document library.
 - **Distribution** — a desktop build, multi-tenant deployment, and a plugin system.
 

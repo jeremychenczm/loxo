@@ -59,7 +59,7 @@ function TraditionalSidebar({
 }) {
   const navItems: Array<{ href: string; label: string; icon: SidebarIcon; exact?: boolean }> = [
     { href: '/', label: 'Home', icon: 'home', exact: true },
-    { href: '/issues', label: 'Issues', icon: 'teams' },
+    { href: '/tasks', label: 'Tasks', icon: 'teams' },
     { href: '/agents', label: 'My Agents', icon: 'agents' },
     { href: '/settings/providers', label: 'Providers', icon: 'settings' },
   ];

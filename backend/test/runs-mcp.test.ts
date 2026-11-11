@@ -2,8 +2,8 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
-import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
-import { issueRunToken } from '../src/modules/runs/run-token';
+import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
+import { mintRunToken } from '../src/modules/runs/run-token';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 
@@ -41,7 +41,7 @@ function gatedExecutor() {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setIssueTurnExecutorForTests((req) => executorImpl(req));
+  setTaskTurnExecutorForTests((req) => executorImpl(req));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'mcp@example.com',
@@ -58,7 +58,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setIssueTurnExecutorForTests(null);
+  setTaskTurnExecutorForTests(null);
 });
 
 afterEach(async () => {
@@ -70,22 +70,22 @@ afterEach(async () => {
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-/** Creates an issue, wakes the agent, and parks the run in `running`. */
+/** Creates a task, wakes the agent, and parks the run in `running`. */
 async function startHeldRun(title: string) {
   const gated = gatedExecutor();
-  const created = await request(app).post('/api/issues').set(auth()).send({ title });
-  const issue = created.body.issue as { id: string; issueNumber: number };
-  await request(app).post(`/api/issues/${issue.id}/move`).set(auth()).send({ status: 'todo' });
+  const created = await request(app).post('/api/tasks').set(auth()).send({ title });
+  const task = created.body.task as { id: string; number: number };
+  await request(app).post(`/api/tasks/${task.id}/move`).set(auth()).send({ status: 'todo' });
   await request(app)
-    .patch(`/api/issues/${issue.id}`)
+    .patch(`/api/tasks/${task.id}`)
     .set(auth())
     .send({ assignee: { agentId } });
   await gated.invoked;
 
-  const runs = await request(app).get(`/api/runs?issueId=${issue.id}`).set(auth());
+  const runs = await request(app).get(`/api/runs?taskId=${task.id}`).set(auth());
   const run = runs.body.runs[0] as { id: string; status: string };
   expect(run.status).toBe('running');
-  return { issue, run, release: gated.release };
+  return { task, run, release: gated.release };
 }
 
 let callId = 0;
@@ -114,30 +114,30 @@ function toolText(res: request.Response): string {
 describe('MCP control plane', () => {
   it('lists the five control-plane tools', async () => {
     const held = await startHeldRun('Tool listing');
-    const res = await mcpCall(issueRunToken(held.run.id), 'tools/list');
+    const res = await mcpCall(mintRunToken(held.run.id), 'tools/list');
     expect(res.status).toBe(200);
     const names = res.body.result.tools.map((t: { name: string }) => t.name).sort();
     expect(names).toEqual([
       'ask_blocker',
-      'comment_on_issue',
-      'get_issue',
+      'comment_on_task',
+      'get_task',
       'submit_result',
-      'update_issue_status',
+      'update_task_status',
     ]);
   });
 
-  it('reads the issue snapshot through get_issue', async () => {
+  it('reads the task snapshot through get_task', async () => {
     const held = await startHeldRun('Snapshot target');
-    const res = await callTool(issueRunToken(held.run.id), 'get_issue');
+    const res = await callTool(mintRunToken(held.run.id), 'get_task');
     const snapshot = JSON.parse(toolText(res));
-    expect(snapshot.issueNumber).toBe(held.issue.issueNumber);
+    expect(snapshot.taskNumber).toBe(held.task.number);
     expect(snapshot.title).toBe('Snapshot target');
     expect(snapshot.status).toBe('todo');
   });
 
-  it('posts progress through comment_on_issue and suppresses the fallback report', async () => {
+  it('posts progress through comment_on_task and suppresses the fallback report', async () => {
     const held = await startHeldRun('Progress notes');
-    const res = await callTool(issueRunToken(held.run.id), 'comment_on_issue', {
+    const res = await callTool(mintRunToken(held.run.id), 'comment_on_task', {
       body: 'halfway there',
     });
     expect(toolText(res)).toBe('Comment posted');
@@ -146,7 +146,7 @@ describe('MCP control plane', () => {
     await drainRunsForTests();
 
     const comments = await request(app)
-      .get(`/api/issues/${held.issue.id}/comments`)
+      .get(`/api/tasks/${held.task.id}/comments`)
       .set(auth());
     const agentComments = comments.body.comments.filter(
       (c: { authorType: string }) => c.authorType === 'agent'
@@ -156,23 +156,23 @@ describe('MCP control plane', () => {
     expect(agentComments[0].body).toBe('halfway there');
   });
 
-  it('moves the issue through update_issue_status and rejects illegal transitions', async () => {
+  it('moves the task through update_task_status and rejects illegal transitions', async () => {
     const held = await startHeldRun('Status moves');
-    const runToken = issueRunToken(held.run.id);
+    const runToken = mintRunToken(held.run.id);
 
-    const ok = await callTool(runToken, 'update_issue_status', { status: 'in_progress' });
+    const ok = await callTool(runToken, 'update_task_status', { status: 'in_progress' });
     expect(JSON.parse(toolText(ok)).status).toBe('in_progress');
 
-    const bad = await callTool(runToken, 'update_issue_status', { status: 'backlog' });
+    const bad = await callTool(runToken, 'update_task_status', { status: 'backlog' });
     expect(bad.status).toBe(200);
     expect(bad.body.result.isError).toBe(true);
     expect(bad.body.result.content[0].text).toContain('invalid_transition');
   });
 
-  it('ask_blocker posts the question and blocks the issue', async () => {
+  it('ask_blocker posts the question and blocks the task', async () => {
     const held = await startHeldRun('Stuck run');
-    const runToken = issueRunToken(held.run.id);
-    await callTool(runToken, 'update_issue_status', { status: 'in_progress' });
+    const runToken = mintRunToken(held.run.id);
+    await callTool(runToken, 'update_task_status', { status: 'in_progress' });
 
     const res = await callTool(runToken, 'ask_blocker', {
       question: 'Which region should this deploy to?',
@@ -180,40 +180,40 @@ describe('MCP control plane', () => {
     expect(JSON.parse(toolText(res)).status).toBe('blocked');
 
     const comments = await request(app)
-      .get(`/api/issues/${held.issue.id}/comments`)
+      .get(`/api/tasks/${held.task.id}/comments`)
       .set(auth());
     const bodies = comments.body.comments.map((c: { body: string }) => c.body);
     expect(bodies).toContain('[BLOCKER] Which region should this deploy to?');
   });
 
-  it('submit_result posts the report and hands the issue to review', async () => {
+  it('submit_result posts the report and hands the task to review', async () => {
     const held = await startHeldRun('Finished work');
-    const runToken = issueRunToken(held.run.id);
-    await callTool(runToken, 'update_issue_status', { status: 'in_progress' });
+    const runToken = mintRunToken(held.run.id);
+    await callTool(runToken, 'update_task_status', { status: 'in_progress' });
 
     const res = await callTool(runToken, 'submit_result', {
       summary: 'Implemented and verified. Changed: src/widget.ts',
     });
     expect(JSON.parse(toolText(res)).status).toBe('in_review');
 
-    const detail = await request(app).get(`/api/issues/${held.issue.id}`).set(auth());
-    expect(detail.body.issue.status).toBe('in_review');
+    const detail = await request(app).get(`/api/tasks/${held.task.id}`).set(auth());
+    expect(detail.body.task.status).toBe('in_review');
   });
 
   it('rejects forged, malformed, and settled-run tokens', async () => {
     const held = await startHeldRun('Token gauntlet');
-    const good = issueRunToken(held.run.id);
+    const good = mintRunToken(held.run.id);
 
     const forged = `${good.slice(0, -4)}AAAA`;
-    expect((await callTool(forged, 'get_issue')).status).toBe(401);
-    expect((await callTool('garbage', 'get_issue')).status).toBe(401);
-    expect((await callTool('', 'get_issue')).status).toBe(401);
+    expect((await callTool(forged, 'get_task')).status).toBe(401);
+    expect((await callTool('garbage', 'get_task')).status).toBe(401);
+    expect((await callTool('', 'get_task')).status).toBe(401);
 
     held.release();
     await drainRunsForTests();
 
     // Same, correctly signed token — but the run has settled.
-    const res = await callTool(good, 'get_issue');
+    const res = await callTool(good, 'get_task');
     expect(res.status).toBe(401);
     expect(res.body.error.message).toBe('Run is not active');
   });

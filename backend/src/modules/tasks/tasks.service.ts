@@ -2,54 +2,54 @@ import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
-  issues,
+  tasks,
   projects,
   users,
-  type Issue,
-  type IssueStatus,
+  type Task,
+  type TaskStatus,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { hasActiveWorkspaces } from '../code-workspaces/workspace.service';
 import { getOrCreateDefaultProject } from '../projects/projects.service';
 import { requestWake } from '../runs/wake';
-import { isTransitionAllowed, TERMINAL_STATUSES } from './issue-transitions';
+import { isTransitionAllowed, TERMINAL_STATUSES } from './task-transitions';
 import { countAgentRejections, REVIEW_CYCLE_CAP } from './reviews.service';
 
 /** Statuses where an agent assignee is expected to act; backlog means "not ready yet". */
-const WAKE_STATUSES: IssueStatus[] = ['todo', 'in_progress'];
+const WAKE_STATUSES: TaskStatus[] = ['todo', 'in_progress'];
 
 /**
  * Reviewer wake on entering review. Skipped when the reviewer is also the
  * assignee (self-review is noise) and once the automated-cycle fuse has
- * blown — after that, reviews on this issue are human-only.
+ * blown — after that, reviews on this task are human-only.
  */
-async function wakeReviewerAgent(issue: Issue): Promise<void> {
-  if (!issue.reviewerAgentId || issue.reviewerAgentId === issue.assigneeAgentId) return;
+async function wakeReviewerAgent(task: Task): Promise<void> {
+  if (!task.reviewerAgentId || task.reviewerAgentId === task.assigneeAgentId) return;
   try {
-    if ((await countAgentRejections(issue.id)) >= REVIEW_CYCLE_CAP) return;
-    await requestWake(issue.userId, {
-      agentId: issue.reviewerAgentId,
-      issueId: issue.id,
+    if ((await countAgentRejections(task.id)) >= REVIEW_CYCLE_CAP) return;
+    await requestWake(task.userId, {
+      agentId: task.reviewerAgentId,
+      taskId: task.id,
       trigger: 'review',
-      reason: `Review requested on issue #${issue.issueNumber}: ${issue.title}`,
+      reason: `Review requested on task #${task.number}: ${task.title}`,
     });
   } catch (error) {
-    console.error(`Reviewer wake for issue ${issue.id} failed:`, error);
+    console.error(`Reviewer wake for task ${task.id} failed:`, error);
   }
 }
 
 /** Wake-ups are post-commit side effects; a failed wake never fails the write. */
-async function wakeAssignedAgent(issue: Issue, reason: string): Promise<void> {
-  if (!issue.assigneeAgentId || !WAKE_STATUSES.includes(issue.status)) return;
+async function wakeAssignedAgent(task: Task, reason: string): Promise<void> {
+  if (!task.assigneeAgentId || !WAKE_STATUSES.includes(task.status)) return;
   try {
-    await requestWake(issue.userId, {
-      agentId: issue.assigneeAgentId,
-      issueId: issue.id,
+    await requestWake(task.userId, {
+      agentId: task.assigneeAgentId,
+      taskId: task.id,
       trigger: 'assignment',
       reason,
     });
   } catch (error) {
-    console.error(`Wake for issue ${issue.id} failed:`, error);
+    console.error(`Wake for task ${task.id} failed:`, error);
   }
 }
 
@@ -59,13 +59,13 @@ export interface AssignmentPatch {
   userId?: string | null;
 }
 
-async function findIssue(userId: string, issueId: string): Promise<Issue | undefined> {
-  const [issue] = await db
+async function findTask(userId: string, taskId: string): Promise<Task | undefined> {
+  const [task] = await db
     .select()
-    .from(issues)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .limit(1);
-  return issue;
+  return task;
 }
 
 async function assertOwnedProject(userId: string, projectId: string): Promise<void> {
@@ -87,11 +87,11 @@ async function assertOwnedAgent(userId: string, agentId: string): Promise<void> 
 }
 
 /** Bottom of the column: current max order + 1 within (user, status). */
-async function nextBoardOrder(userId: string, status: IssueStatus): Promise<number> {
+async function nextBoardOrder(userId: string, status: TaskStatus): Promise<number> {
   const [row] = await db
-    .select({ max: sql<number | null>`max(${issues.boardOrder})` })
-    .from(issues)
-    .where(and(eq(issues.userId, userId), eq(issues.status, status)));
+    .select({ max: sql<number | null>`max(${tasks.boardOrder})` })
+    .from(tasks)
+    .where(and(eq(tasks.userId, userId), eq(tasks.status, status)));
   return (row?.max ?? 0) + 1;
 }
 
@@ -120,17 +120,17 @@ async function resolvePrincipal(
   return { agentId: null, userId: null };
 }
 
-export async function createIssue(
+export async function createTask(
   userId: string,
   input: {
     title: string;
-    description?: string;
+    brief?: string;
     projectId?: string;
     assignee?: AssignmentPatch;
     /** Validated by the caller; not exposed through the HTTP create route. */
     sourceConversationId?: string;
   }
-): Promise<Issue> {
+): Promise<Task> {
   let projectId = input.projectId;
   if (projectId) {
     await assertOwnedProject(userId, projectId);
@@ -148,57 +148,57 @@ export async function createIssue(
   return db.transaction(async (tx) => {
     const [counter] = await tx
       .update(users)
-      .set({ issueCounter: sql`${users.issueCounter} + 1` })
+      .set({ taskCounter: sql`${users.taskCounter} + 1` })
       .where(eq(users.id, userId))
-      .returning({ value: users.issueCounter });
+      .returning({ value: users.taskCounter });
 
-    const [issue] = await tx
-      .insert(issues)
+    const [task] = await tx
+      .insert(tasks)
       .values({
         userId,
         projectId: projectId!,
-        issueNumber: counter!.value,
+        number: counter!.value,
         title: input.title,
-        description: input.description ?? '',
+        brief: input.brief ?? '',
         assigneeAgentId: assignee.agentId,
         assigneeUserId: assignee.userId,
         sourceConversationId: input.sourceConversationId ?? null,
         boardOrder,
       })
       .returning();
-    return issue!;
+    return task!;
   });
 }
 
-export async function listIssues(
+export async function listTasks(
   userId: string,
-  filter: { projectId?: string; status?: IssueStatus; assigneeAgentId?: string }
-): Promise<Issue[]> {
-  const conditions = [eq(issues.userId, userId)];
-  if (filter.projectId) conditions.push(eq(issues.projectId, filter.projectId));
-  if (filter.status) conditions.push(eq(issues.status, filter.status));
-  if (filter.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filter.assigneeAgentId));
+  filter: { projectId?: string; status?: TaskStatus; assigneeAgentId?: string }
+): Promise<Task[]> {
+  const conditions = [eq(tasks.userId, userId)];
+  if (filter.projectId) conditions.push(eq(tasks.projectId, filter.projectId));
+  if (filter.status) conditions.push(eq(tasks.status, filter.status));
+  if (filter.assigneeAgentId) conditions.push(eq(tasks.assigneeAgentId, filter.assigneeAgentId));
   return db
     .select()
-    .from(issues)
+    .from(tasks)
     .where(and(...conditions))
-    .orderBy(desc(issues.createdAt));
+    .orderBy(desc(tasks.createdAt));
 }
 
 /** Kanban payload: every status bucket present, cards ordered by boardOrder. */
 export async function getBoard(
   userId: string,
   projectId?: string
-): Promise<Record<IssueStatus, Issue[]>> {
-  const conditions = [eq(issues.userId, userId)];
-  if (projectId) conditions.push(eq(issues.projectId, projectId));
+): Promise<Record<TaskStatus, Task[]>> {
+  const conditions = [eq(tasks.userId, userId)];
+  if (projectId) conditions.push(eq(tasks.projectId, projectId));
   const rows = await db
     .select()
-    .from(issues)
+    .from(tasks)
     .where(and(...conditions))
-    .orderBy(asc(issues.boardOrder));
+    .orderBy(asc(tasks.boardOrder));
 
-  const board: Record<IssueStatus, Issue[]> = {
+  const board: Record<TaskStatus, Task[]> = {
     backlog: [],
     todo: [],
     in_progress: [],
@@ -211,28 +211,28 @@ export async function getBoard(
   return board;
 }
 
-export async function getIssue(userId: string, issueId: string): Promise<Issue> {
-  const issue = await findIssue(userId, issueId);
-  if (!issue) throw notFound('Issue not found');
-  return issue;
+export async function getTask(userId: string, taskId: string): Promise<Task> {
+  const task = await findTask(userId, taskId);
+  if (!task) throw notFound('Task not found');
+  return task;
 }
 
-export async function updateIssue(
+export async function updateTask(
   userId: string,
-  issueId: string,
+  taskId: string,
   input: {
     title?: string;
-    description?: string;
+    brief?: string;
     assignee?: AssignmentPatch | null;
     reviewer?: AssignmentPatch | null;
   }
-): Promise<Issue> {
-  const existing = await findIssue(userId, issueId);
-  if (!existing) throw notFound('Issue not found');
+): Promise<Task> {
+  const existing = await findTask(userId, taskId);
+  if (!existing) throw notFound('Task not found');
 
-  const patch: Partial<typeof issues.$inferInsert> = {
+  const patch: Partial<typeof tasks.$inferInsert> = {
     ...(input.title !== undefined ? { title: input.title } : {}),
-    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.brief !== undefined ? { brief: input.brief } : {}),
     updatedAt: new Date(),
   };
 
@@ -248,15 +248,15 @@ export async function updateIssue(
   }
 
   const [updated] = await db
-    .update(issues)
+    .update(tasks)
     .set(patch)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning();
 
   if (updated!.assigneeAgentId && updated!.assigneeAgentId !== existing.assigneeAgentId) {
     await wakeAssignedAgent(
       updated!,
-      `You were assigned issue #${updated!.issueNumber}: ${updated!.title}`
+      `You were assigned task #${updated!.number}: ${updated!.title}`
     );
   }
   return updated!;
@@ -267,19 +267,19 @@ export async function updateIssue(
  * pure reorders and skip transition validation; cross-status calls go
  * through the transition table like every other write path.
  */
-export async function moveIssue(
+export async function moveTask(
   userId: string,
-  issueId: string,
-  input: { status: IssueStatus; boardOrder?: number }
-): Promise<Issue> {
-  const existing = await findIssue(userId, issueId);
-  if (!existing) throw notFound('Issue not found');
+  taskId: string,
+  input: { status: TaskStatus; boardOrder?: number }
+): Promise<Task> {
+  const existing = await findTask(userId, taskId);
+  if (!existing) throw notFound('Task not found');
 
   const changingStatus = input.status !== existing.status;
   if (changingStatus && !isTransitionAllowed(existing.status, input.status)) {
     throw badRequest(
       'invalid_transition',
-      `Cannot move an issue from ${existing.status} to ${input.status}`
+      `Cannot move a task from ${existing.status} to ${input.status}`
     );
   }
 
@@ -287,14 +287,14 @@ export async function moveIssue(
   const closesNow = changingStatus && TERMINAL_STATUSES.includes(input.status);
 
   const [updated] = await db
-    .update(issues)
+    .update(tasks)
     .set({
       status: input.status,
       boardOrder,
       ...(closesNow ? { closedAt: new Date() } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning();
 
   const enteredWakeStatus =
@@ -304,7 +304,7 @@ export async function moveIssue(
   if (enteredWakeStatus) {
     await wakeAssignedAgent(
       updated!,
-      `Issue #${updated!.issueNumber} moved to ${input.status}: ${updated!.title}`
+      `Task #${updated!.number} moved to ${input.status}: ${updated!.title}`
     );
   }
   if (changingStatus && input.status === 'in_review') {
@@ -313,16 +313,16 @@ export async function moveIssue(
   return updated!;
 }
 
-export async function deleteIssue(userId: string, issueId: string): Promise<void> {
-  if (await hasActiveWorkspaces({ issueId })) {
+export async function deleteTask(userId: string, taskId: string): Promise<void> {
+  if (await hasActiveWorkspaces({ taskId })) {
     throw conflict(
       'workspace_active',
-      'Merge, keep the branch, or abandon the code workspace before deleting this issue'
+      'Merge, keep the branch, or abandon the code workspace before deleting this task'
     );
   }
   const deleted = await db
-    .delete(issues)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
-    .returning({ id: issues.id });
-  if (deleted.length === 0) throw notFound('Issue not found');
+    .delete(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning({ id: tasks.id });
+  if (deleted.length === 0) throw notFound('Task not found');
 }

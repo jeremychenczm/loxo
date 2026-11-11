@@ -197,6 +197,13 @@
       "when": 1794370969749,
       "tag": "0027_agent-groups-to-crews",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794371572970,
+      "tag": "0028_issues-to-tasks",
+      "breakpoints": true
     }
   ]
 }

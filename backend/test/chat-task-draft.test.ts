@@ -4,12 +4,12 @@ import { db, pool } from '../src/db/client';
 import { messages } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import {
-  fallbackIssueDraft,
+  fallbackTaskDraft,
   sliceTopicWindow,
   TOPIC_CHAR_BUDGET,
   TOPIC_GAP_MS,
   TOPIC_MIN_MESSAGES,
-} from '../src/modules/chat/issue-draft.service';
+} from '../src/modules/chat/task-draft.service';
 
 const app = createApp();
 let token = '';
@@ -87,7 +87,7 @@ describe('sliceTopicWindow', () => {
       msg('assistant', 'context 2', gapMinutes + 31),
       msg('user', 'context 3', gapMinutes + 30),
       // gap, then a terse follow-up
-      msg('user', 'file that as an issue', 1),
+      msg('user', 'file that as a task', 1),
     ];
     const window = sliceTopicWindow(history);
     expect(window).toHaveLength(4);
@@ -103,23 +103,23 @@ describe('sliceTopicWindow', () => {
   });
 });
 
-describe('fallbackIssueDraft', () => {
+describe('fallbackTaskDraft', () => {
   it('titles from the last user message and quotes the transcript', () => {
     const window = [
       msg('user', 'please fix the login bug\nmore detail', 5),
       msg('assistant', 'sure', 4),
     ];
-    const draft = fallbackIssueDraft('Ada', window);
+    const draft = fallbackTaskDraft('Ada', window);
     expect(draft.title).toBe('please fix the login bug');
-    expect(draft.description).toContain('ADA: sure');
+    expect(draft.brief).toContain('ADA: sure');
   });
 });
 
-describe('POST /api/conversations/:id/draft-issue', () => {
+describe('POST /api/conversations/:id/draft-task', () => {
   it('400s when the conversation has no messages', async () => {
     const conversationId = await newConversation();
     const empty = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth());
     expect(empty.status).toBe(400);
   });
@@ -133,12 +133,12 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     ]);
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth());
     expect(res.status).toBe(200);
     expect(res.body.draft.source).toBe('fallback');
     expect(res.body.draft.title).toBe('add a yearly toggle too');
-    expect(res.body.draft.description).toContain('ship the pricing page');
+    expect(res.body.draft.brief).toContain('ship the pricing page');
     expect(res.body.draft.warnings[0]).toContain('No anthropic/openai provider');
   });
 
@@ -172,7 +172,7 @@ describe('POST /api/conversations/:id/draft-issue', () => {
             content: [
               {
                 type: 'text',
-                text: '{"title":"Build the dashboard","description":"Cards and feed."}',
+                text: '{"title":"Build the dashboard","brief":"Cards and feed."}',
               },
             ],
           }),
@@ -182,12 +182,12 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     );
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth());
     expect(res.status).toBe(200);
     expect(res.body.draft).toMatchObject({
       title: 'Build the dashboard',
-      description: 'Cards and feed.',
+      brief: 'Cards and feed.',
       source: 'anthropic',
       warnings: [],
     });
@@ -210,7 +210,7 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     );
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth());
     expect(res.status).toBe(200);
     expect(res.body.draft.source).toBe('fallback');
@@ -227,7 +227,7 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     ]);
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth());
     expect(res.status).toBe(200);
     const stored = await request(app)
@@ -255,7 +255,7 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     const ids = stored.body.messages.map((m: { id: string }) => m.id);
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth())
       .send({ fromMessageId: ids[0], toMessageId: ids[1] });
     expect(res.status).toBe(200);
@@ -265,7 +265,7 @@ describe('POST /api/conversations/:id/draft-issue', () => {
       count: 2,
     });
     expect(res.body.draft.title).toBe('topic A: refactor auth');
-    expect(res.body.draft.description).not.toContain('topic B');
+    expect(res.body.draft.brief).not.toContain('topic B');
   });
 
   it('rejects a range pointing at unknown or reversed messages', async () => {
@@ -280,13 +280,13 @@ describe('POST /api/conversations/:id/draft-issue', () => {
     const ids = stored.body.messages.map((m: { id: string }) => m.id);
 
     const unknown = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth())
       .send({ fromMessageId: '00000000-0000-0000-0000-000000000000' });
     expect(unknown.status).toBe(400);
 
     const reversed = await request(app)
-      .post(`/api/conversations/${conversationId}/draft-issue`)
+      .post(`/api/conversations/${conversationId}/draft-task`)
       .set(auth())
       .send({ fromMessageId: ids[1], toMessageId: ids[0] });
     expect(reversed.status).toBe(400);

@@ -52,7 +52,7 @@ function baseRequest(tools: ApiToolDefinition[], protocol: 'openai' | 'anthropic
     apiKey: 'sk-test',
     model: protocol === 'openai' ? 'gpt-4o-mini' : 'claude-sonnet-5',
     system: 'You are a worker.',
-    prompt: 'Handle the issue.',
+    prompt: 'Handle the task.',
     tools,
   };
 }
@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe('openai tool loop', () => {
   it('executes tool calls and feeds results back', async () => {
-    const { tool, calls } = recordingTool('comment_on_issue', 'Comment posted');
+    const { tool, calls } = recordingTool('comment_on_task', 'Comment posted');
     const fetchMock = sequencedFetch([
       {
         choices: [
@@ -72,7 +72,7 @@ describe('openai tool loop', () => {
               role: 'assistant',
               content: null,
               tool_calls: [
-                { id: 'c1', function: { name: 'comment_on_issue', arguments: '{"body":"note"}' } },
+                { id: 'c1', function: { name: 'comment_on_task', arguments: '{"body":"note"}' } },
               ],
             },
           },
@@ -89,16 +89,16 @@ describe('openai tool loop', () => {
     const second = JSON.parse((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].body as string);
     const toolMessage = second.messages.find((m: { role: string }) => m.role === 'tool');
     expect(toolMessage).toMatchObject({ tool_call_id: 'c1', content: 'Comment posted' });
-    expect(second.tools[0].function.name).toBe('comment_on_issue');
+    expect(second.tools[0].function.name).toBe('comment_on_task');
   });
 
   it('surfaces domain rejections as tool results and keeps going', async () => {
     const failing: ApiToolDefinition = {
-      name: 'update_issue_status',
+      name: 'update_task_status',
       description: 'move',
       parameters: { type: 'object', properties: {} },
       execute: async () => {
-        throw badRequest('invalid_transition', 'Cannot move an issue from todo to done');
+        throw badRequest('invalid_transition', 'Cannot move a task from todo to done');
       },
     };
     const fetchMock = sequencedFetch([
@@ -108,7 +108,7 @@ describe('openai tool loop', () => {
             message: {
               role: 'assistant',
               tool_calls: [
-                { id: 'c1', function: { name: 'update_issue_status', arguments: '{"status":"done"}' } },
+                { id: 'c1', function: { name: 'update_task_status', arguments: '{"status":"done"}' } },
               ],
             },
           },
@@ -127,7 +127,7 @@ describe('openai tool loop', () => {
   });
 
   it('stops a runaway loop at the round limit', async () => {
-    const { tool } = recordingTool('get_issue', '{}');
+    const { tool } = recordingTool('get_task', '{}');
     vi.stubGlobal(
       'fetch',
       sequencedFetch([
@@ -136,7 +136,7 @@ describe('openai tool loop', () => {
             {
               message: {
                 role: 'assistant',
-                tool_calls: [{ id: 'c1', function: { name: 'get_issue', arguments: '{}' } }],
+                tool_calls: [{ id: 'c1', function: { name: 'get_task', arguments: '{}' } }],
               },
             },
           ],
@@ -152,13 +152,13 @@ describe('openai tool loop', () => {
 
 describe('anthropic tool loop', () => {
   it('handles tool_use blocks and returns the final text', async () => {
-    const { tool, calls } = recordingTool('get_issue', '{"status":"todo"}');
+    const { tool, calls } = recordingTool('get_task', '{"status":"todo"}');
     const fetchMock = sequencedFetch([
       {
         stop_reason: 'tool_use',
         content: [
           { type: 'text', text: 'let me check' },
-          { type: 'tool_use', id: 't1', name: 'get_issue', input: {} },
+          { type: 'tool_use', id: 't1', name: 'get_task', input: {} },
         ],
       },
       { stop_reason: 'end_turn', content: [{ type: 'text', text: 'report ready' }] },
@@ -204,7 +204,7 @@ describe('anthropic tool loop', () => {
   });
 });
 
-describe('api-lane issue run', () => {
+describe('api-lane task run', () => {
   const app = createApp();
   let token = '';
   let agentId = '';
@@ -241,7 +241,7 @@ describe('api-lane issue run', () => {
 
   const auth = () => ({ Authorization: `Bearer ${token}` });
 
-  it('gives api-runtime issue runs the control-plane tools in-process', async () => {
+  it('gives api-runtime task runs the control-plane tools in-process', async () => {
     setApiToolLoopExecutorForTests(async (req) => {
       const submit = req.tools.find((t) => t.name === 'submit_result')!;
       await submit.execute({ summary: 'Done via tool loop' });
@@ -250,28 +250,28 @@ describe('api-lane issue run', () => {
     });
 
     const created = await request(app)
-      .post('/api/issues')
+      .post('/api/tasks')
       .set(auth())
       .send({ title: 'API lane run' });
-    const issueId = created.body.issue.id as string;
-    await request(app).post(`/api/issues/${issueId}/move`).set(auth()).send({ status: 'todo' });
+    const taskId = created.body.task.id as string;
+    await request(app).post(`/api/tasks/${taskId}/move`).set(auth()).send({ status: 'todo' });
     await request(app)
-      .patch(`/api/issues/${issueId}`)
+      .patch(`/api/tasks/${taskId}`)
       .set(auth())
       .send({ assignee: { agentId } });
     await drainRunsForTests();
 
-    const detail = await request(app).get(`/api/issues/${issueId}`).set(auth());
-    expect(detail.body.issue.status).toBe('in_review');
+    const detail = await request(app).get(`/api/tasks/${taskId}`).set(auth());
+    expect(detail.body.task.status).toBe('in_review');
 
-    const comments = await request(app).get(`/api/issues/${issueId}/comments`).set(auth());
+    const comments = await request(app).get(`/api/tasks/${taskId}/comments`).set(auth());
     const agentComments = comments.body.comments.filter(
       (c: { authorType: string }) => c.authorType === 'agent'
     );
     expect(agentComments).toHaveLength(1);
     expect(agentComments[0].body).toBe('Done via tool loop');
 
-    const runs = await request(app).get(`/api/runs?issueId=${issueId}`).set(auth());
+    const runs = await request(app).get(`/api/runs?taskId=${taskId}`).set(auth());
     expect(runs.body.runs[0].status).toBe('succeeded');
   });
 });

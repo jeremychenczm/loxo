@@ -2,34 +2,34 @@ import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
-  issueComments,
-  issues,
+  taskComments,
+  tasks,
   runs,
   type Agent,
-  type Issue,
+  type Task,
   type Run,
   type RunTrigger,
 } from '../../db/schema';
 import { badRequest } from '../../http/errors';
-import { addAgentComment } from '../issues/comments.service';
+import { addAgentComment } from '../tasks/comments.service';
 import { RunnerError } from '../runner/runner';
-import { executeIssueTurn } from './issue-run';
+import { executeTaskTurn } from './task-run';
 import {
   ACTIVE_RUN_STATUSES,
-  acquireIssueLock,
+  acquireTaskLock,
   claimRun,
   createQueuedRun,
   finishRun,
   nextQueuedRunForAgent,
-  nextQueuedRunForIssue,
-  releaseIssueLock,
+  nextQueuedRunForTask,
+  releaseTaskLock,
 } from './runs.service';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
 
 export interface WakeInput {
   agentId: string;
-  issueId: string;
+  taskId: string;
   trigger: RunTrigger;
   reason?: string;
 }
@@ -54,9 +54,9 @@ export async function drainRunsForTests(): Promise<void> {
  * (assignment, manual nudge, review, and later chat) calls this and nothing
  * else; merge, lock, and rejection logic lives here exactly once.
  *
- * Order of checks: agent and issue must exist and be owned by the caller;
- * an active run for the same agent+issue absorbs the wake (merged); otherwise
- * a queued run is created and started if both the agent and the issue's
+ * Order of checks: agent and task must exist and be owned by the caller;
+ * an active run for the same agent+task absorbs the wake (merged); otherwise
+ * a queued run is created and started if both the agent and the task's
  * execution lock are free, else it waits in queue for promotion.
  */
 export async function requestWake(userId: string, input: WakeInput): Promise<WakeDecision> {
@@ -67,12 +67,12 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
     .limit(1);
   if (!agent) throw badRequest('invalid_agent', 'Agent does not exist');
 
-  const [issue] = await db
-    .select({ id: issues.id })
-    .from(issues)
-    .where(and(eq(issues.id, input.issueId), eq(issues.userId, userId)))
+  const [task] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.id, input.taskId), eq(tasks.userId, userId)))
     .limit(1);
-  if (!issue) throw badRequest('invalid_issue', 'Issue does not exist');
+  if (!task) throw badRequest('invalid_task', 'Task does not exist');
 
   // Two racing wakes can both miss this check; the loser then parks as a
   // queued run behind the winner's lock, which is safe, just not merged.
@@ -82,7 +82,7 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
     .where(
       and(
         eq(runs.agentId, input.agentId),
-        eq(runs.issueId, input.issueId),
+        eq(runs.taskId, input.taskId),
         inArray(runs.status, [...ACTIVE_RUN_STATUSES])
       )
     )
@@ -92,7 +92,7 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
   const run = await createQueuedRun(userId, {
     agentId: agent.id,
     agentName: agent.name,
-    issueId: input.issueId,
+    taskId: input.taskId,
     trigger: input.trigger,
     reason: input.reason,
   });
@@ -103,7 +103,7 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
 
 /**
  * Atomic agent claim; an agent executes at most one turn at a time, no
- * matter which surface (issue run, chat) started it.
+ * matter which surface (task run, chat) started it.
  */
 export async function claimAgentForTurn(agentId: string): Promise<boolean> {
   const rows = await db
@@ -136,7 +136,7 @@ export async function releaseAgentAfterTurn(
 }
 
 /**
- * Starts a queued run if both gates open: the agent claim and the issue
+ * Starts a queued run if both gates open: the agent claim and the task
  * execution lock. Any failed gate rolls the earlier ones back and leaves the
  * run queued for a later promotion pass.
  */
@@ -147,14 +147,14 @@ async function tryStartRun(run: Run): Promise<boolean> {
   }
   if (!(await claimAgentForTurn(run.agentId))) return false;
 
-  if (run.issueId && !(await acquireIssueLock(run.issueId, run.id))) {
+  if (run.taskId && !(await acquireTaskLock(run.taskId, run.id))) {
     await releaseAgentClaim(run.agentId, 'idle');
     return false;
   }
 
   const claimed = await claimRun(run.id);
   if (!claimed) {
-    if (run.issueId) await releaseIssueLock(run.issueId, run.id);
+    if (run.taskId) await releaseTaskLock(run.taskId, run.id);
     await releaseAgentClaim(run.agentId, 'idle');
     return false;
   }
@@ -168,18 +168,18 @@ async function tryStartRun(run: Run): Promise<boolean> {
 }
 
 async function agentSpokeSince(
-  issueId: string,
+  taskId: string,
   agentId: string,
   since: Date | null
 ): Promise<boolean> {
   const [row] = await db
-    .select({ id: issueComments.id })
-    .from(issueComments)
+    .select({ id: taskComments.id })
+    .from(taskComments)
     .where(
       and(
-        eq(issueComments.issueId, issueId),
-        eq(issueComments.authorAgentId, agentId),
-        gte(issueComments.createdAt, since ?? new Date(0))
+        eq(taskComments.taskId, taskId),
+        eq(taskComments.authorAgentId, agentId),
+        gte(taskComments.createdAt, since ?? new Date(0))
       )
     )
     .limit(1);
@@ -194,14 +194,14 @@ async function performRun(run: Run): Promise<void> {
       .from(agents)
       .where(eq(agents.id, run.agentId!))
       .limit(1);
-    const [issue] = run.issueId
-      ? await db.select().from(issues).where(eq(issues.id, run.issueId)).limit(1)
+    const [task] = run.taskId
+      ? await db.select().from(tasks).where(eq(tasks.id, run.taskId)).limit(1)
       : [undefined];
-    if (!agent || !issue) {
-      throw new RunnerError('Agent or issue disappeared before the run started', 'cli_failed');
+    if (!agent || !task) {
+      throw new RunnerError('Agent or task disappeared before the run started', 'cli_failed');
     }
 
-    const outcome = await executeIssueTurn(run, agent as Agent, issue as Issue);
+    const outcome = await executeTaskTurn(run, agent as Agent, task as Task);
     await finishRun(run.id, {
       status: 'succeeded',
       output: outcome.text,
@@ -209,31 +209,31 @@ async function performRun(run: Run): Promise<void> {
     });
     // Fallback report: only when the agent said nothing through the control
     // plane during the run. Best-effort — the run result stands regardless.
-    if (outcome.text.trim() && !(await agentSpokeSince(issue.id, agent.id, run.startedAt))) {
-      await addAgentComment(run.userId, issue.id, agent.id, outcome.text).catch(() => {});
+    if (outcome.text.trim() && !(await agentSpokeSince(task.id, agent.id, run.startedAt))) {
+      await addAgentComment(run.userId, task.id, agent.id, outcome.text).catch(() => {});
     }
     succeeded = true;
   } catch (error) {
-    const detail = error instanceof RunnerError ? error.message : 'Issue run failed unexpectedly';
+    const detail = error instanceof RunnerError ? error.message : 'Task run failed unexpectedly';
     if (!(error instanceof RunnerError)) console.error(`Run ${run.id} failed:`, error);
     await finishRun(run.id, { status: 'failed', error: detail }).catch(() => {});
   } finally {
-    if (run.issueId) await releaseIssueLock(run.issueId, run.id);
+    if (run.taskId) await releaseTaskLock(run.taskId, run.id);
     if (run.agentId) await releaseAgentClaim(run.agentId, succeeded ? 'idle' : 'error');
     await promoteNext(run);
   }
 }
 
 /**
- * After a run settles, try the oldest queued run waiting on the same issue,
+ * After a run settles, try the oldest queued run waiting on the same task,
  * then the oldest waiting on the same agent. Gate failures leave candidates
  * queued for the next settlement.
  */
 async function promoteNext(finished: Run): Promise<void> {
   const candidates: Run[] = [];
-  if (finished.issueId) {
-    const byIssue = await nextQueuedRunForIssue(finished.issueId);
-    if (byIssue) candidates.push(byIssue);
+  if (finished.taskId) {
+    const byTask = await nextQueuedRunForTask(finished.taskId);
+    if (byTask) candidates.push(byTask);
   }
   if (finished.agentId) {
     const byAgent = await nextQueuedRunForAgent(finished.agentId);

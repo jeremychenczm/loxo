@@ -10,8 +10,8 @@ import { db, pool } from '../src/db/client';
 import { projectRepositories } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { registerLiveMergeOperationForTests } from '../src/modules/code-workspaces/workspace.service';
-import { createReview } from '../src/modules/issues/reviews.service';
-import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
+import { createReview } from '../src/modules/tasks/reviews.service';
+import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest } from '../src/modules/runner/runner';
 import { storage } from '../src/storage/layout';
@@ -36,35 +36,35 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-interface IssueRef {
+interface TaskRef {
   id: string;
-  issueNumber: number;
+  number: number;
 }
 
-async function createIssueIn(title: string): Promise<IssueRef> {
-  const res = await request(app).post('/api/issues').set(auth()).send({ title, projectId });
+async function createTaskIn(title: string): Promise<TaskRef> {
+  const res = await request(app).post('/api/tasks').set(auth()).send({ title, projectId });
   expect(res.status).toBe(201);
-  return res.body.issue;
+  return res.body.task;
 }
 
-async function workedIssue(title: string, work: (workspace: string) => void): Promise<IssueRef> {
-  const issue = await createIssueIn(title);
+async function workedTask(title: string, work: (workspace: string) => void): Promise<TaskRef> {
+  const task = await createTaskIn(title);
   onTurn = (req) => work(req.workspace);
-  await requestWake(userId, { agentId: workerId, issueId: issue.id, trigger: 'manual' });
+  await requestWake(userId, { agentId: workerId, taskId: task.id, trigger: 'manual' });
   await drainRunsForTests();
   for (const status of ['todo', 'in_progress', 'in_review']) {
     const res = await request(app)
-      .post(`/api/issues/${issue.id}/move`)
+      .post(`/api/tasks/${task.id}/move`)
       .set(auth())
       .send({ status });
     expect(res.status).toBe(200);
   }
   await drainRunsForTests();
-  return issue;
+  return task;
 }
 
-async function approve(issueId: string): Promise<void> {
-  const review = await createReview(userId, issueId, {
+async function approve(taskId: string): Promise<void> {
+  const review = await createReview(userId, taskId, {
     decision: 'approved',
     body: 'Verified against the captured change set.',
     reviewer: { userId },
@@ -72,13 +72,13 @@ async function approve(issueId: string): Promise<void> {
   expect(review.changeSnapshotId).not.toBeNull();
 }
 
-async function issueStatus(issueId: string): Promise<string> {
-  const res = await request(app).get(`/api/issues/${issueId}`).set(auth());
-  return res.body.issue.status;
+async function taskStatus(taskId: string): Promise<string> {
+  const res = await request(app).get(`/api/tasks/${taskId}`).set(auth());
+  return res.body.task.status;
 }
 
-async function workspaceOf(issueId: string) {
-  const res = await request(app).get(`/api/issues/${issueId}/workspace`).set(auth());
+async function workspaceOf(taskId: string) {
+  const res = await request(app).get(`/api/tasks/${taskId}/workspace`).set(auth());
   return res.body.workspace as {
     id: string;
     status: string;
@@ -87,13 +87,13 @@ async function workspaceOf(issueId: string) {
   } | null;
 }
 
-function finalize(issueId: string, action: 'merge' | 'keep-branch', body: object = {}) {
-  return request(app).post(`/api/issues/${issueId}/workspace/${action}`).set(auth()).send(body);
+function finalize(taskId: string, action: 'merge' | 'keep-branch', body: object = {}) {
+  return request(app).post(`/api/tasks/${taskId}/workspace/${action}`).set(auth()).send(body);
 }
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setIssueTurnExecutorForTests(async (req) => {
+  setTaskTurnExecutorForTests(async (req) => {
     onTurn(req);
     return { text: 'stub output', durationMs: 5 };
   });
@@ -136,7 +136,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setIssueTurnExecutorForTests(null);
+  setTaskTurnExecutorForTests(null);
 });
 
 afterEach(async () => {
@@ -146,36 +146,36 @@ afterEach(async () => {
 
 describe('merge finalization', () => {
   it('requires a snapshot-bound human approval', { timeout: T }, async () => {
-    const issue = await workedIssue('No approval yet', (ws) => {
+    const task = await workedTask('No approval yet', (ws) => {
       fs.writeFileSync(path.join(ws, 'a.txt'), 'a\n');
     });
-    const res = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('approval_required');
   });
 
   it('requires checkpoint confirmation for uncommitted work, then merges into the base', { timeout: T }, async () => {
-    const issue = await workedIssue('Merge me', (ws) => {
+    const task = await workedTask('Merge me', (ws) => {
       fs.writeFileSync(path.join(ws, 'ledger.ts'), 'export const ledger = 1;\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
-    const unconfirmed = await finalize(issue.id, 'merge');
+    const unconfirmed = await finalize(task.id, 'merge');
     expect(unconfirmed.status).toBe(409);
     expect(unconfirmed.body.code).toBe('checkpoint_required');
 
-    const merged = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const merged = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(merged.status).toBe(200);
     expect(merged.body.workspace.status).toBe('merged');
-    expect(merged.body.issueStatus).toBe('done');
+    expect(merged.body.taskStatus).toBe('done');
 
     expect(fs.existsSync(path.join(repoDir, 'ledger.ts'))).toBe(true);
     const subject = await git(repoDir, 'log', '-1', '--format=%s');
-    expect(subject).toContain(`Merge issue #${issue.issueNumber}`);
+    expect(subject).toContain(`Merge task #${task.number}`);
     expect(fs.existsSync(merged.body.workspace.worktreePath)).toBe(false);
     const branches = await git(repoDir, 'branch', '--list', merged.body.workspace.branchName);
     expect(branches).toContain(merged.body.workspace.branchName);
-    expect(await issueStatus(issue.id)).toBe('done');
+    expect(await taskStatus(task.id)).toBe('done');
 
     const [repo] = await db
       .select()
@@ -185,60 +185,60 @@ describe('merge finalization', () => {
   });
 
   it('rejects a merge when the workspace changed after approval', { timeout: T }, async () => {
-    const issue = await workedIssue('Stale approval', (ws) => {
+    const task = await workedTask('Stale approval', (ws) => {
       fs.writeFileSync(path.join(ws, 'b.txt'), 'b1\n');
     });
-    await approve(issue.id);
-    const ws = await workspaceOf(issue.id);
+    await approve(task.id);
+    const ws = await workspaceOf(task.id);
     fs.writeFileSync(path.join(ws!.worktreePath, 'b.txt'), 'b2 changed after approval\n');
 
-    const res = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('stale_approval');
-    expect(await issueStatus(issue.id)).toBe('in_review');
+    expect(await taskStatus(task.id)).toBe('in_review');
   });
 
-  it('aborts a conflicted merge, restores the base checkout, and keeps the issue in review', { timeout: T }, async () => {
-    const issue = await workedIssue('Conflicting change', (ws) => {
-      fs.writeFileSync(path.join(ws, 'README.md'), '# issue version\n');
+  it('aborts a conflicted merge, restores the base checkout, and keeps the task in review', { timeout: T }, async () => {
+    const task = await workedTask('Conflicting change', (ws) => {
+      fs.writeFileSync(path.join(ws, 'README.md'), '# task version\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
     fs.writeFileSync(path.join(repoDir, 'README.md'), '# mainline version\n');
     await git(repoDir, 'add', '.');
     await git(repoDir, 'commit', '-m', 'mainline change');
 
-    const res = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(200);
     expect(res.body.workspace.status).toBe('conflicted');
-    expect(await issueStatus(issue.id)).toBe('in_review');
+    expect(await taskStatus(task.id)).toBe('in_review');
 
     const restored = fs.readFileSync(path.join(repoDir, 'README.md'), 'utf8').replace(/\r\n/g, '\n');
     expect(restored).toBe('# mainline version\n');
     expect(await git(repoDir, 'status', '--porcelain')).toBe('');
-    const ws = await workspaceOf(issue.id);
+    const ws = await workspaceOf(task.id);
     expect(fs.existsSync(ws!.worktreePath)).toBe(true);
   });
 
   it('refuses to merge into a wrong or dirty primary checkout', { timeout: T }, async () => {
-    const issue = await workedIssue('Guarded merge', (ws) => {
+    const task = await workedTask('Guarded merge', (ws) => {
       fs.writeFileSync(path.join(ws, 'c.txt'), 'c\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
     await git(repoDir, 'checkout', '-b', 'sidetrack');
-    const wrongBranch = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const wrongBranch = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(wrongBranch.status).toBe(400);
     expect(wrongBranch.body.code).toBe('merge_precondition_failed');
     await git(repoDir, 'checkout', 'main');
 
     fs.writeFileSync(path.join(repoDir, 'scratch.txt'), 'uncommitted\n');
-    const dirty = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const dirty = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(dirty.status).toBe(400);
     expect(dirty.body.code).toBe('merge_precondition_failed');
     fs.rmSync(path.join(repoDir, 'scratch.txt'));
 
-    const ok = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const ok = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(ok.status).toBe(200);
     expect(ok.body.workspace.status).toBe('merged');
   });
@@ -246,14 +246,14 @@ describe('merge finalization', () => {
 
 describe('merge lock', () => {
   it('rejects finalization while a live merge holds the lock', { timeout: T }, async () => {
-    const issue = await workedIssue('Lock holder', (ws) => {
+    const task = await workedTask('Lock holder', (ws) => {
       fs.writeFileSync(path.join(ws, 'd.txt'), 'd\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
     const liveOp = crypto.randomUUID();
     registerLiveMergeOperationForTests(liveOp);
-    const ws = await workspaceOf(issue.id);
+    const ws = await workspaceOf(task.id);
     await db
       .update(projectRepositories)
       .set({
@@ -264,11 +264,11 @@ describe('merge lock', () => {
       })
       .where(eq(projectRepositories.id, repositoryId));
 
-    const res = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('merge_in_progress');
 
-    // Cleanup: release the fake lock and finish the issue.
+    // Cleanup: release the fake lock and finish the task.
     await db
       .update(projectRepositories)
       .set({
@@ -278,17 +278,17 @@ describe('merge lock', () => {
         activeMergeStartedAt: null,
       })
       .where(eq(projectRepositories.id, repositoryId));
-    const ok = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const ok = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(ok.status).toBe(200);
   });
 
   it('recovers a stale lock whose merge never started, then proceeds', { timeout: T }, async () => {
-    const issue = await workedIssue('Stale lock recovery', (ws) => {
+    const task = await workedTask('Stale lock recovery', (ws) => {
       fs.writeFileSync(path.join(ws, 'e.txt'), 'e\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
-    const ws = await workspaceOf(issue.id);
+    const ws = await workspaceOf(task.id);
     await db
       .update(projectRepositories)
       .set({
@@ -299,23 +299,23 @@ describe('merge lock', () => {
       })
       .where(eq(projectRepositories.id, repositoryId));
 
-    const res = await finalize(issue.id, 'merge', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(200);
     expect(res.body.workspace.status).toBe('merged');
   });
 });
 
 describe('keep branch and abandon', () => {
-  it('keep-branch retains the branch, removes the worktree, and completes the issue', { timeout: T }, async () => {
-    const issue = await workedIssue('Keep this branch', (ws) => {
+  it('keep-branch retains the branch, removes the worktree, and completes the task', { timeout: T }, async () => {
+    const task = await workedTask('Keep this branch', (ws) => {
       fs.writeFileSync(path.join(ws, 'kept.txt'), 'kept\n');
     });
-    await approve(issue.id);
+    await approve(task.id);
 
-    const res = await finalize(issue.id, 'keep-branch', { confirmCheckpoint: true });
+    const res = await finalize(task.id, 'keep-branch', { confirmCheckpoint: true });
     expect(res.status).toBe(200);
     expect(res.body.workspace.status).toBe('retained');
-    expect(res.body.issueStatus).toBe('done');
+    expect(res.body.taskStatus).toBe('done');
     expect(fs.existsSync(res.body.workspace.worktreePath)).toBe(false);
     const branches = await git(repoDir, 'branch', '--list', res.body.workspace.branchName);
     expect(branches).toContain(res.body.workspace.branchName);
@@ -323,26 +323,26 @@ describe('keep branch and abandon', () => {
     expect(fs.existsSync(path.join(repoDir, 'kept.txt'))).toBe(false);
   });
 
-  it('abandon requires confirmation for dirty work, then cancels the issue', { timeout: T }, async () => {
-    const issue = await workedIssue('Abandon me', (ws) => {
+  it('abandon requires confirmation for dirty work, then cancels the task', { timeout: T }, async () => {
+    const task = await workedTask('Abandon me', (ws) => {
       fs.writeFileSync(path.join(ws, 'doomed.txt'), 'doomed\n');
     });
 
     const refused = await request(app)
-      .post(`/api/issues/${issue.id}/workspace/abandon`)
+      .post(`/api/tasks/${task.id}/workspace/abandon`)
       .set(auth())
       .send({});
     expect(refused.status).toBe(409);
     expect(refused.body.code).toBe('discard_confirmation_required');
 
     const res = await request(app)
-      .post(`/api/issues/${issue.id}/workspace/abandon`)
+      .post(`/api/tasks/${task.id}/workspace/abandon`)
       .set(auth())
       .send({ confirmDiscard: true });
     expect(res.status).toBe(200);
     expect(res.body.workspace.status).toBe('abandoned');
-    expect(res.body.issueStatus).toBe('cancelled');
+    expect(res.body.taskStatus).toBe('cancelled');
     expect(fs.existsSync(res.body.workspace.worktreePath)).toBe(false);
-    expect(await issueStatus(issue.id)).toBe('cancelled');
+    expect(await taskStatus(task.id)).toBe('cancelled');
   });
 });

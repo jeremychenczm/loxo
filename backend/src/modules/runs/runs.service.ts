@@ -1,15 +1,15 @@
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { issues, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import { tasks, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
 
-/** Statuses that count as "this agent/issue already has work in flight". */
+/** Statuses that count as "this agent/task already has work in flight". */
 export const ACTIVE_RUN_STATUSES = ['queued', 'running'] as const satisfies readonly RunStatus[];
 
 export interface CreateRunInput {
   agentId: string;
   agentName: string;
-  issueId?: string | null;
+  taskId?: string | null;
   trigger: RunTrigger;
   reason?: string;
   model?: string | null;
@@ -33,7 +33,7 @@ export async function createQueuedRun(userId: string, input: CreateRunInput): Pr
       userId,
       agentId: input.agentId,
       agentName: input.agentName,
-      issueId: input.issueId ?? null,
+      taskId: input.taskId ?? null,
       trigger: input.trigger,
       reason: input.reason ?? '',
       model: input.model ?? null,
@@ -54,10 +54,10 @@ export async function getRun(userId: string, runId: string): Promise<Run> {
 
 export async function listRuns(
   userId: string,
-  filter: { issueId?: string; agentId?: string; status?: RunStatus }
+  filter: { taskId?: string; agentId?: string; status?: RunStatus }
 ): Promise<Run[]> {
   const conditions = [eq(runs.userId, userId)];
-  if (filter.issueId) conditions.push(eq(runs.issueId, filter.issueId));
+  if (filter.taskId) conditions.push(eq(runs.taskId, filter.taskId));
   if (filter.agentId) conditions.push(eq(runs.agentId, filter.agentId));
   if (filter.status) conditions.push(eq(runs.status, filter.status));
   return db
@@ -103,39 +103,39 @@ export async function finishRun(runId: string, outcome: RunOutcome): Promise<Run
 }
 
 /**
- * Takes the issue execution lock for a run. The conditional UPDATE is the
+ * Takes the task execution lock for a run. The conditional UPDATE is the
  * whole mutual-exclusion story: exactly one concurrent caller sees the null
  * column and wins; everyone else stays queued.
  */
-export async function acquireIssueLock(issueId: string, runId: string): Promise<boolean> {
+export async function acquireTaskLock(taskId: string, runId: string): Promise<boolean> {
   const claimed = await db
-    .update(issues)
+    .update(tasks)
     .set({ activeRunId: runId })
-    .where(and(eq(issues.id, issueId), isNull(issues.activeRunId)))
-    .returning({ id: issues.id });
+    .where(and(eq(tasks.id, taskId), isNull(tasks.activeRunId)))
+    .returning({ id: tasks.id });
   return claimed.length > 0;
 }
 
 /** Releases the lock only if this run still holds it. */
-export async function releaseIssueLock(issueId: string, runId: string): Promise<void> {
+export async function releaseTaskLock(taskId: string, runId: string): Promise<void> {
   await db
-    .update(issues)
+    .update(tasks)
     .set({ activeRunId: null })
-    .where(and(eq(issues.id, issueId), eq(issues.activeRunId, runId)));
+    .where(and(eq(tasks.id, taskId), eq(tasks.activeRunId, runId)));
 }
 
-/** Oldest queued run waiting on an issue, if any; promotion order is FIFO. */
-export async function nextQueuedRunForIssue(issueId: string): Promise<Run | undefined> {
+/** Oldest queued run waiting on a task, if any; promotion order is FIFO. */
+export async function nextQueuedRunForTask(taskId: string): Promise<Run | undefined> {
   const [run] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.issueId, issueId), eq(runs.status, 'queued')))
+    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued')))
     .orderBy(asc(runs.createdAt))
     .limit(1);
   return run;
 }
 
-/** Oldest queued run waiting on an agent, across issues. */
+/** Oldest queued run waiting on an agent, across tasks. */
 export async function nextQueuedRunForAgent(agentId: string): Promise<Run | undefined> {
   const [run] = await db
     .select()

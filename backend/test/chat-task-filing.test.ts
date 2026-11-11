@@ -33,55 +33,55 @@ async function newConversation(): Promise<string> {
   return res.body.conversation.id;
 }
 
-describe('POST /api/conversations/:id/file-issue', () => {
-  it('creates a backlog issue assigned to the chat agent, linked to the conversation', async () => {
+describe('POST /api/conversations/:id/file-task', () => {
+  it('creates a backlog task assigned to the chat agent, linked to the conversation', async () => {
     const conversationId = await newConversation();
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
-      .send({ title: 'Ship the export command', description: 'CSV first, JSON later.' });
+      .send({ title: 'Ship the export command', brief: 'CSV first, JSON later.' });
 
     expect(res.status).toBe(201);
-    const issue = res.body.issue;
-    expect(issue.status).toBe('backlog');
-    expect(issue.title).toBe('Ship the export command');
-    expect(issue.description).toBe('CSV first, JSON later.');
-    expect(issue.assigneeAgentId).toBe(agentId);
-    expect(issue.sourceConversationId).toBe(conversationId);
-    expect(issue.issueNumber).toBeGreaterThan(0);
+    const task = res.body.task;
+    expect(task.status).toBe('backlog');
+    expect(task.title).toBe('Ship the export command');
+    expect(task.brief).toBe('CSV first, JSON later.');
+    expect(task.assigneeAgentId).toBe(agentId);
+    expect(task.sourceConversationId).toBe(conversationId);
+    expect(task.number).toBeGreaterThan(0);
   });
 
   it('does not enqueue a run: backlog filing must not wake the agent', async () => {
     const conversationId = await newConversation();
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Quiet filing' });
 
-    const runs = await pool.query('SELECT id FROM runs WHERE issue_id = $1', [res.body.issue.id]);
+    const runs = await pool.query('SELECT id FROM runs WHERE task_id = $1', [res.body.task.id]);
     expect(runs.rowCount).toBe(0);
   });
 
-  it('leaves a timeline comment on the issue', async () => {
+  it('leaves a timeline comment on the task', async () => {
     const conversationId = await newConversation();
     const filed = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Comment breadcrumb' });
 
     const comments = await request(app)
-      .get(`/api/issues/${filed.body.issue.id}/comments`)
+      .get(`/api/tasks/${filed.body.task.id}/comments`)
       .set(auth());
     expect(comments.body.comments).toHaveLength(1);
     expect(comments.body.comments[0].authorType).toBe('human');
     expect(comments.body.comments[0].body).toContain('Filed from the chat');
   });
 
-  it('posts a system message into the conversation pointing at the issue', async () => {
+  it('posts a system message into the conversation pointing at the task', async () => {
     const conversationId = await newConversation();
     const filed = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Chat breadcrumb' });
 
@@ -90,27 +90,27 @@ describe('POST /api/conversations/:id/file-issue', () => {
       .set(auth());
     const system = messages.body.messages.filter((m: { role: string }) => m.role === 'system');
     expect(system).toHaveLength(1);
-    expect(system[0].content).toContain(`#${filed.body.issue.issueNumber}`);
+    expect(system[0].content).toContain(`#${filed.body.task.number}`);
     expect(system[0].content).toContain('Chat breadcrumb');
-    expect(system[0].meta.issueId).toBe(filed.body.issue.id);
-    expect(system[0].meta.source).toBe('issue_filing');
+    expect(system[0].meta.taskId).toBe(filed.body.task.id);
+    expect(system[0].meta.source).toBe('task_filing');
   });
 
-  it('lets one conversation file several issues', async () => {
+  it('lets one conversation file several tasks', async () => {
     const conversationId = await newConversation();
     const first = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'First topic' });
     const second = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Second topic' });
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
-    expect(second.body.issue.id).not.toBe(first.body.issue.id);
-    expect(second.body.issue.sourceConversationId).toBe(conversationId);
+    expect(second.body.task.id).not.toBe(first.body.task.id);
+    expect(second.body.task.sourceConversationId).toBe(conversationId);
   });
 
   it('honors an explicit project and rejects a foreign one', async () => {
@@ -121,14 +121,14 @@ describe('POST /api/conversations/:id/file-issue', () => {
     const conversationId = await newConversation();
 
     const ok = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Into a project', projectId: project.body.project.id });
     expect(ok.status).toBe(201);
-    expect(ok.body.issue.projectId).toBe(project.body.project.id);
+    expect(ok.body.task.projectId).toBe(project.body.project.id);
 
     const bad = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Nope', projectId: '00000000-0000-0000-0000-000000000000' });
     expect(bad.status).toBe(400);
@@ -137,7 +137,7 @@ describe('POST /api/conversations/:id/file-issue', () => {
   it('rejects an empty title', async () => {
     const conversationId = await newConversation();
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: '   ' });
     expect(res.status).toBe(400);
@@ -152,23 +152,23 @@ describe('POST /api/conversations/:id/file-issue', () => {
     });
 
     const res = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set({ Authorization: `Bearer ${other.body.token}` })
       .send({ title: 'Not yours' });
     expect(res.status).toBe(404);
   });
 
-  it('deleting the conversation keeps the issue and clears the link', async () => {
+  it('deleting the conversation keeps the task and clears the link', async () => {
     const conversationId = await newConversation();
     const filed = await request(app)
-      .post(`/api/conversations/${conversationId}/file-issue`)
+      .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Survives deletion' });
 
     await request(app).delete(`/api/conversations/${conversationId}`).set(auth());
 
-    const issue = await request(app).get(`/api/issues/${filed.body.issue.id}`).set(auth());
-    expect(issue.status).toBe(200);
-    expect(issue.body.issue.sourceConversationId).toBeNull();
+    const task = await request(app).get(`/api/tasks/${filed.body.task.id}`).set(auth());
+    expect(task.status).toBe(200);
+    expect(task.body.task.sourceConversationId).toBeNull();
   });
 });

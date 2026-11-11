@@ -41,7 +41,7 @@ export interface PrepareWorkspaceInput {
   repositoryRoot: string;
   /** Managed root for this project's worktrees; the driver generates the leaf path. */
   worktreesRoot: string;
-  issueId: string;
+  taskId: string;
   branchName: string;
   baseRef: string;
   /**
@@ -54,7 +54,7 @@ export interface PrepareWorkspaceInput {
 
 export type ObservedWorkspaceState = 'ready' | 'dirty' | 'missing' | 'error';
 
-/** Observable Git and filesystem facts only; issue status lives on the issue. */
+/** Observable Git and filesystem facts only; task status lives on the task. */
 export interface WorkspaceObservation {
   state: ObservedWorkspaceState;
   worktreePath: string;
@@ -177,7 +177,7 @@ export interface RemoveWorkspaceInput {
 }
 
 /**
- * Location-agnostic workspace operations; issue and run services never know
+ * Location-agnostic workspace operations; task and run services never know
  * where Git executes.
  */
 export interface ExecutionWorkspaceDriver {

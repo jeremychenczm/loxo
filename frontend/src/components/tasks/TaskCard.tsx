@@ -1,28 +1,28 @@
 'use client';
 
-import { STATUS_META, type Issue } from '@/lib/issues';
+import { STATUS_META, type Task } from '@/lib/tasks';
 
 const PAPER = '#FDFCF7';
 
-interface IssueCardProps {
-  issue: Issue;
+interface TaskCardProps {
+  task: Task;
   /** Present on blocked/in_progress cards: toggles the blocked loop. */
-  onToggleBlocked?: (issue: Issue) => void;
-  onOpen?: (issue: Issue) => void;
+  onToggleBlocked?: (task: Task) => void;
+  onOpen?: (task: Task) => void;
   dragging?: boolean;
 }
 
 /**
  * Ticket stub on the rail: thermal paper, order number, a torn bottom
- * edge. The full receipt lives in IssueReceipt; this is its stub.
+ * edge. The full ticket lives in TaskDetail; this is its stub.
  */
-export function IssueCard({ issue, onToggleBlocked, onOpen, dragging = false }: IssueCardProps) {
-  const blocked = issue.status === 'blocked';
-  const spine = STATUS_META[issue.status].swatch;
+export function TaskCard({ task, onToggleBlocked, onOpen, dragging = false }: TaskCardProps) {
+  const blocked = task.status === 'blocked';
+  const spine = STATUS_META[task.status].swatch;
 
   return (
     <div
-      onClick={() => onOpen?.(issue)}
+      onClick={() => onOpen?.(task)}
       className={`group relative transition-transform ${onOpen ? 'cursor-pointer' : ''} ${
         dragging ? 'scale-[1.02]' : ''
       }`}
@@ -42,7 +42,7 @@ export function IssueCard({ issue, onToggleBlocked, onOpen, dragging = false }: 
         <div className="py-2 pl-3 pr-2">
           <div className="flex items-center gap-2">
             <span className="font-pixel text-[10px] tracking-wide text-pixel-gray">
-              ORD-{String(issue.issueNumber).padStart(4, '0')}
+              ORD-{String(task.number).padStart(4, '0')}
             </span>
             {blocked && (
               <span className="bg-pixel-red px-1 font-pixel text-[10px] uppercase tracking-wide text-pixel-white">
@@ -50,13 +50,13 @@ export function IssueCard({ issue, onToggleBlocked, onOpen, dragging = false }: 
               </span>
             )}
           </div>
-          <p className="mt-1 break-words text-sm leading-snug text-pixel-black">{issue.title}</p>
+          <p className="mt-1 break-words text-sm leading-snug text-pixel-black">{task.title}</p>
           {onToggleBlocked && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleBlocked(issue);
+                onToggleBlocked(task);
               }}
               className={`mt-1.5 hidden font-pixel text-[10px] uppercase tracking-wide underline group-hover:inline-block ${
                 blocked ? 'text-pixel-green' : 'text-pixel-red'

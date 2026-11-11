@@ -3,10 +3,10 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-type MobileTabKey = 'issues' | 'agents' | 'projects' | 'me';
+type MobileTabKey = 'tasks' | 'agents' | 'projects' | 'me';
 
 const MOBILE_TABS: Array<{ key: MobileTabKey; label: string; accent: string; href: string }> = [
-  { key: 'issues', label: 'Issues', accent: 'bg-pixel-yellow', href: '/issues' },
+  { key: 'tasks', label: 'Tasks', accent: 'bg-pixel-yellow', href: '/tasks' },
   { key: 'agents', label: 'Agents', accent: 'bg-pixel-yellow', href: '/agents' },
   { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow', href: '/projects' },
   { key: 'me', label: 'Me', accent: 'bg-pixel-gray', href: '/settings/providers' },
@@ -21,7 +21,7 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
       </svg>
     );
   }
-  if (tab === 'issues') {
+  if (tab === 'tasks') {
     return (
       <svg viewBox="0 0 24 24" className={common} aria-hidden="true">
         <path fill="currentColor" d="M12 3 3 8l9 5 9-5-9-5Zm-7 9 7 4 7-4v5l-7 4-7-4v-5Z" />
@@ -43,7 +43,7 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
 }
 
 function activeTabForRoute(pathname: string): MobileTabKey | null {
-  if (pathname.startsWith('/issues')) return 'issues';
+  if (pathname.startsWith('/tasks')) return 'tasks';
   if (pathname.startsWith('/agents') || pathname.startsWith('/upload')) return 'agents';
   if (pathname.startsWith('/projects')) return 'projects';
   if (pathname.startsWith('/settings')) return 'me';

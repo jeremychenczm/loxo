@@ -6,7 +6,7 @@ import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { crewsRouter } from '../modules/crews/crews.routes';
-import { issuesRouter } from '../modules/issues/issues.routes';
+import { tasksRouter } from '../modules/tasks/tasks.routes';
 import { projectsRouter } from '../modules/projects/projects.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
 import { handleMcpRequest } from '../modules/runs/mcp-server';
@@ -41,7 +41,7 @@ export function createApp(): express.Express {
   app.use('/api/crews', crewsRouter);
   app.use('/api/conversations', conversationsRouter);
   app.use('/api/projects', projectsRouter);
-  app.use('/api/issues', issuesRouter);
+  app.use('/api/tasks', tasksRouter);
   app.use('/api/runs', runsRouter);
 
   // Agent control plane; authenticated by per-run tokens, not user JWTs.

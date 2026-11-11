@@ -17,7 +17,7 @@ function sign(runId: string): string {
     .slice(0, 32);
 }
 
-export function issueRunToken(runId: string): string {
+export function mintRunToken(runId: string): string {
   return `srt_${runId}_${sign(runId)}`;
 }
 

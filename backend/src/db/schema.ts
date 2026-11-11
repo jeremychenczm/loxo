@@ -19,8 +19,8 @@ export const users = pgTable('users', {
   email: text('email').notNull().unique(),
   username: text('username').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  /** Monotonic per-user issue number source; incremented inside the create-issue transaction. */
-  issueCounter: integer('issue_counter').notNull().default(0),
+  /** Monotonic per-user task number source; incremented inside the create-task transaction. */
+  taskCounter: integer('task_counter').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -161,8 +161,8 @@ export interface MessageMeta {
   durationMs?: number;
   error?: boolean;
   source?: string;
-  /** Set on the system message posted when a chat topic is filed as an issue. */
-  issueId?: string;
+  /** Set on the system message posted when a chat topic is filed as a task. */
+  taskId?: string;
 }
 
 export const messages = pgTable('messages', {
@@ -226,7 +226,7 @@ export const projectAgents = pgTable(
 
 export type ProjectAgent = typeof projectAgents.$inferSelect;
 
-export type IssueStatus =
+export type TaskStatus =
   | 'backlog'
   | 'todo'
   | 'in_progress'
@@ -237,12 +237,12 @@ export type IssueStatus =
 
 /**
  * Unit of work. Status transitions are enforced by a static transition table
- * in the issues service, never by direct writes. Assignee and reviewer are
+ * in the tasks service, never by direct writes. Assignee and reviewer are
  * each a single principal: agent or user, checked at the database level.
- * issueNumber is unique per user and drawn from users.issueCounter.
+ * number is unique per user and drawn from users.taskCounter.
  */
-export const issues = pgTable(
-  'issues',
+export const tasks = pgTable(
+  'tasks',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id')
@@ -251,10 +251,11 @@ export const issues = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    issueNumber: integer('issue_number').notNull(),
+    number: integer('number').notNull(),
     title: text('title').notNull(),
-    description: text('description').notNull().default(''),
-    status: text('status').$type<IssueStatus>().notNull().default('backlog'),
+    /** The requirement as the user wrote it. */
+    brief: text('brief').notNull().default(''),
+    status: text('status').$type<TaskStatus>().notNull().default('backlog'),
     assigneeAgentId: uuid('assignee_agent_id').references(() => agents.id, {
       onDelete: 'set null',
     }),
@@ -270,14 +271,14 @@ export const issues = pgTable(
     /** Position within a kanban column; fractional values allow reorder without renumbering. */
     boardOrder: doublePrecision('board_order').notNull().default(0),
     /**
-     * Execution lock: the run currently working this issue. Wake admission
-     * acquires it with a conditional UPDATE, so the same issue is never
+     * Execution lock: the run currently working this task. Wake admission
+     * acquires it with a conditional UPDATE, so the same task is never
      * executed by two runs at once regardless of trigger source.
      */
     activeRunId: uuid('active_run_id').references((): AnyPgColumn => runs.id, {
       onDelete: 'set null',
     }),
-    /** Chat conversation this issue was filed from. A conversation can spawn many issues. */
+    /** Chat conversation this task was filed from. A conversation can spawn many tasks. */
     sourceConversationId: uuid('source_conversation_id').references(() => conversations.id, {
       onDelete: 'set null',
     }),
@@ -286,48 +287,48 @@ export const issues = pgTable(
     closedAt: timestamp('closed_at', { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex('issues_user_number').on(t.userId, t.issueNumber),
-    index('issues_user_status').on(t.userId, t.status),
-    index('issues_project_status').on(t.projectId, t.status),
-    index('issues_assignee_agent').on(t.assigneeAgentId, t.status),
-    index('issues_source_conversation').on(t.sourceConversationId),
+    uniqueIndex('tasks_user_number').on(t.userId, t.number),
+    index('tasks_user_status').on(t.userId, t.status),
+    index('tasks_project_status').on(t.projectId, t.status),
+    index('tasks_assignee_agent').on(t.assigneeAgentId, t.status),
+    index('tasks_source_conversation').on(t.sourceConversationId),
     check(
-      'issues_assignee_single_principal',
+      'tasks_assignee_single_principal',
       sql`NOT (${t.assigneeAgentId} IS NOT NULL AND ${t.assigneeUserId} IS NOT NULL)`
     ),
     check(
-      'issues_reviewer_single_principal',
+      'tasks_reviewer_single_principal',
       sql`NOT (${t.reviewerAgentId} IS NOT NULL AND ${t.reviewerUserId} IS NOT NULL)`
     ),
   ]
 );
 
-export type Issue = typeof issues.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
 
 /** system rows are platform-generated (workspace lifecycle, capture evidence); both author links stay null. */
-export type IssueCommentAuthorType = 'human' | 'agent' | 'system';
+export type TaskCommentAuthorType = 'human' | 'agent' | 'system';
 
 /**
- * Issue activity timeline. Author columns mirror the dual-principal pattern;
- * rows are pruned with their issue, author links survive as null for display.
+ * Task activity timeline. Author columns mirror the dual-principal pattern;
+ * rows are pruned with their task, author links survive as null for display.
  */
-export const issueComments = pgTable(
-  'issue_comments',
+export const taskComments = pgTable(
+  'task_comments',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    issueId: uuid('issue_id')
+    taskId: uuid('task_id')
       .notNull()
-      .references(() => issues.id, { onDelete: 'cascade' }),
-    authorType: text('author_type').$type<IssueCommentAuthorType>().notNull(),
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    authorType: text('author_type').$type<TaskCommentAuthorType>().notNull(),
     authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
     authorAgentId: uuid('author_agent_id').references(() => agents.id, { onDelete: 'set null' }),
     body: text('body').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('issue_comments_issue_created').on(t.issueId, t.createdAt)]
+  (t) => [index('task_comments_task_created').on(t.taskId, t.createdAt)]
 );
 
-export type IssueComment = typeof issueComments.$inferSelect;
+export type TaskComment = typeof taskComments.$inferSelect;
 
 export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'review';
 
@@ -336,7 +337,7 @@ export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancell
 /**
  * One admitted wake-up of an agent. Every trigger source funnels through the
  * wake admission service, which creates exactly one row per admitted wake-up.
- * Queued rows double as the wait queue for an issue's execution lock and are
+ * Queued rows double as the wait queue for a task's execution lock and are
  * promoted oldest-first when the lock releases.
  */
 export const runs = pgTable(
@@ -349,7 +350,7 @@ export const runs = pgTable(
     agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     /** Display snapshot; run history survives agent deletion. */
     agentName: text('agent_name').notNull(),
-    issueId: uuid('issue_id').references(() => issues.id, { onDelete: 'set null' }),
+    taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
     trigger: text('trigger').$type<RunTrigger>().notNull(),
     status: text('status').$type<RunStatus>().notNull().default('queued'),
     /** Why the agent was woken; rendered into the turn prompt. */
@@ -367,7 +368,7 @@ export const runs = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('runs_issue_status').on(t.issueId, t.status),
+    index('runs_task_status').on(t.taskId, t.status),
     index('runs_agent_status').on(t.agentId, t.status),
     index('runs_user_created').on(t.userId, t.createdAt),
   ]
@@ -378,20 +379,20 @@ export type Run = typeof runs.$inferSelect;
 export type ReviewDecision = 'approved' | 'changes_requested';
 
 /**
- * Structured verdict on an issue in review. Every decision carries a body;
- * the body is also posted to the issue timeline so the assignee's next run
+ * Structured verdict on a task in review. Every decision carries a body;
+ * the body is also posted to the task timeline so the assignee's next run
  * reads the feedback naturally. Reviewer mirrors the dual-principal pattern.
  */
-export const issueReviews = pgTable(
-  'issue_reviews',
+export const taskReviews = pgTable(
+  'task_reviews',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    issueId: uuid('issue_id')
+    taskId: uuid('task_id')
       .notNull()
-      .references(() => issues.id, { onDelete: 'cascade' }),
+      .references(() => tasks.id, { onDelete: 'cascade' }),
     reviewerType: text('reviewer_type').$type<'human' | 'agent'>().notNull(),
     reviewerUserId: uuid('reviewer_user_id').references(() => users.id, { onDelete: 'set null' }),
     reviewerAgentId: uuid('reviewer_agent_id').references(() => agents.id, {
@@ -413,15 +414,15 @@ export const issueReviews = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('issue_reviews_issue_created').on(t.issueId, t.createdAt),
+    index('task_reviews_task_created').on(t.taskId, t.createdAt),
     check(
-      'issue_reviews_single_principal',
+      'task_reviews_single_principal',
       sql`NOT (${t.reviewerAgentId} IS NOT NULL AND ${t.reviewerUserId} IS NOT NULL)`
     ),
   ]
 );
 
-export type IssueReview = typeof issueReviews.$inferSelect;
+export type TaskReview = typeof taskReviews.$inferSelect;
 
 export type RepositoryLocation = 'server';
 
@@ -488,11 +489,11 @@ export const EXECUTION_WORKSPACE_TERMINAL_STATUSES = [
 ] as const satisfies readonly ExecutionWorkspaceStatus[];
 
 /**
- * Issue-scoped git worktree. Status records only observable filesystem and
- * Git facts — review and approval state live on the issue and issue_reviews.
- * merged (landed on base), retained (branch kept, issue done) and abandoned
- * (work discarded, issue cancelled) are distinct terminal outcomes; the
- * partial unique index enforces at most one active workspace per issue.
+ * Task-scoped git worktree. Status records only observable filesystem and
+ * Git facts — review and approval state live on the task and task_reviews.
+ * merged (landed on base), retained (branch kept, task done) and abandoned
+ * (work discarded, task cancelled) are distinct terminal outcomes; the
+ * partial unique index enforces at most one active workspace per task.
  */
 export const executionWorkspaces = pgTable(
   'execution_workspaces',
@@ -504,9 +505,9 @@ export const executionWorkspaces = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    issueId: uuid('issue_id')
+    taskId: uuid('task_id')
       .notNull()
-      .references(() => issues.id, { onDelete: 'cascade' }),
+      .references(() => tasks.id, { onDelete: 'cascade' }),
     /** Survives repository unbinding so terminal rows keep their audit value. */
     repositoryId: uuid('repository_id').references(() => projectRepositories.id, {
       onDelete: 'set null',
@@ -530,8 +531,8 @@ export const executionWorkspaces = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('execution_workspaces_issue_active')
-      .on(t.issueId)
+    uniqueIndex('execution_workspaces_task_active')
+      .on(t.taskId)
       .where(sql`${t.status} NOT IN ('merged', 'retained', 'abandoned')`),
     index('execution_workspaces_repository_status').on(t.repositoryId, t.status),
     index('execution_workspaces_user_status').on(t.userId, t.status),
@@ -562,7 +563,7 @@ export const runChangeSnapshots = pgTable(
     runId: uuid('run_id')
       .notNull()
       .references(() => runs.id, { onDelete: 'cascade' }),
-    /** Nullable so snapshots outlive their workspace row, mirroring runs vs issues. */
+    /** Nullable so snapshots outlive their workspace row, mirroring runs vs tasks. */
     executionWorkspaceId: uuid('execution_workspace_id').references(
       () => executionWorkspaces.id,
       { onDelete: 'set null' }

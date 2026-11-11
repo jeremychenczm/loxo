@@ -198,7 +198,7 @@ export async function getOrCreateDefaultProject(userId: string): Promise<Project
     .values({
       userId,
       name: DEFAULT_PROJECT_NAME,
-      description: 'Fallback project for issues created without one',
+      description: 'Fallback project for tasks created without one',
       kind: 'default',
     })
     .onConflictDoNothing()

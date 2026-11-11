@@ -6,22 +6,22 @@ import { db } from '../../db/client';
 import {
   EXECUTION_WORKSPACE_TERMINAL_STATUSES,
   executionWorkspaces,
-  issueReviews,
-  issues,
+  taskReviews,
+  tasks,
   projectRepositories,
   projects,
   runChangeSnapshots,
   type ExecutionWorkspace,
-  type Issue,
+  type Task,
   type ProjectRepository,
   type RunChangeSnapshot,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
-import { addSystemComment } from '../issues/comments.service';
-import { moveIssue } from '../issues/issues.service';
+import { addSystemComment } from '../tasks/comments.service';
+import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
-import { issueBranchName } from './branch-name';
+import { taskBranchName } from './branch-name';
 import { localGitDriver } from './local-git-driver';
 import {
   GitDriverError,
@@ -162,22 +162,22 @@ export async function unbindProjectRepository(userId: string, projectId: string)
   if (active) {
     throw conflict(
       'workspace_active',
-      'Merge, keep, or abandon the active issue workspaces before unbinding the repository'
+      'Merge, keep, or abandon the active task workspaces before unbinding the repository'
     );
   }
   await db.delete(projectRepositories).where(eq(projectRepositories.id, repository.id));
 }
 
-export async function getIssueWorkspace(
+export async function getTaskWorkspace(
   userId: string,
-  issueId: string
+  taskId: string
 ): Promise<ExecutionWorkspace | null> {
   const [row] = await db
     .select()
     .from(executionWorkspaces)
     .where(
       and(
-        eq(executionWorkspaces.issueId, issueId),
+        eq(executionWorkspaces.taskId, taskId),
         eq(executionWorkspaces.userId, userId),
         notInArray(executionWorkspaces.status, TERMINALS)
       )
@@ -187,11 +187,11 @@ export async function getIssueWorkspace(
 }
 
 export async function hasActiveWorkspaces(
-  scope: { issueId: string } | { projectId: string }
+  scope: { taskId: string } | { projectId: string }
 ): Promise<boolean> {
   const filter =
-    'issueId' in scope
-      ? eq(executionWorkspaces.issueId, scope.issueId)
+    'taskId' in scope
+      ? eq(executionWorkspaces.taskId, scope.taskId)
       : eq(executionWorkspaces.projectId, scope.projectId);
   const [row] = await db
     .select({ id: executionWorkspaces.id })
@@ -229,38 +229,38 @@ export interface ResolvedWorkspace {
 /**
  * The single entry point for run admission: no repository binding means no
  * code workspace (legacy shared project workspace behavior); a binding means
- * the issue gets its isolated worktree, created or reused idempotently.
+ * the task gets its isolated worktree, created or reused idempotently.
  */
 export async function resolveExecutionWorkspace(
   userId: string,
-  issue: Issue
+  task: Task
 ): Promise<ResolvedWorkspace | null> {
-  const repository = await getProjectRepository(userId, issue.projectId);
+  const repository = await getProjectRepository(userId, task.projectId);
   if (!repository) return null;
-  const workspace = await prepareIssueWorkspace(userId, issue, repository);
+  const workspace = await prepareTaskWorkspace(userId, task, repository);
   if (workspace.status !== 'ready' && workspace.status !== 'dirty') {
     throw conflict(
       'workspace_unavailable',
-      workspace.lastError ?? `Issue workspace is ${workspace.status}; reconcile it before running`
+      workspace.lastError ?? `Task workspace is ${workspace.status}; reconcile it before running`
     );
   }
   return { workspace, repository };
 }
 
-export async function prepareIssueWorkspace(
+export async function prepareTaskWorkspace(
   userId: string,
-  issue: Issue,
+  task: Task,
   boundRepository?: ProjectRepository
 ): Promise<ExecutionWorkspace> {
   const repository =
-    boundRepository ?? (await getProjectRepository(userId, issue.projectId)) ?? undefined;
+    boundRepository ?? (await getProjectRepository(userId, task.projectId)) ?? undefined;
   if (!repository) throw notFound('Project has no repository binding');
   const root = repositoryRoot(userId, repository);
-  const worktreesRoot = storage.projectWorktreesRoot(userId, issue.projectId);
+  const worktreesRoot = storage.projectWorktreesRoot(userId, task.projectId);
 
-  let row = await getIssueWorkspace(userId, issue.id);
+  let row = await getTaskWorkspace(userId, task.id);
   if (!row) {
-    const branchName = issueBranchName(repository.branchPrefix, issue.issueNumber, issue.id);
+    const branchName = taskBranchName(repository.branchPrefix, task.number, task.id);
     const info = await localGitDriver
       .inspectRepository({ rootPath: root, baseRef: repository.defaultBaseRef })
       .catch(rethrowGitError);
@@ -269,11 +269,11 @@ export async function prepareIssueWorkspace(
         .insert(executionWorkspaces)
         .values({
           userId,
-          projectId: issue.projectId,
-          issueId: issue.id,
+          projectId: task.projectId,
+          taskId: task.id,
           repositoryId: repository.id,
           location: 'server',
-          worktreePath: path.join(worktreesRoot, issue.id),
+          worktreePath: path.join(worktreesRoot, task.id),
           branchName,
           baseRef: repository.defaultBaseRef,
           baseCommit: info.baseCommit,
@@ -286,7 +286,7 @@ export async function prepareIssueWorkspace(
       const code = (err as { code?: string; cause?: { code?: string } }).code ??
         (err as { cause?: { code?: string } }).cause?.code;
       if (code !== '23505') throw err;
-      row = await getIssueWorkspace(userId, issue.id);
+      row = await getTaskWorkspace(userId, task.id);
       if (!row) throw err;
     }
   }
@@ -297,7 +297,7 @@ export async function prepareIssueWorkspace(
     const prepared = await localGitDriver.prepareWorkspace({
       repositoryRoot: root,
       worktreesRoot,
-      issueId: issue.id,
+      taskId: task.id,
       branchName: row.branchName,
       baseRef: row.baseRef,
       baseCommit: row.baseCommit,
@@ -322,12 +322,12 @@ export async function prepareIssueWorkspace(
   }
 }
 
-export async function reconcileIssueWorkspace(
+export async function reconcileTaskWorkspace(
   userId: string,
-  issueId: string
+  taskId: string
 ): Promise<ExecutionWorkspace> {
-  const row = await getIssueWorkspace(userId, issueId);
-  if (!row) throw notFound('Issue has no active workspace');
+  const row = await getTaskWorkspace(userId, taskId);
+  if (!row) throw notFound('Task has no active workspace');
   const repository = await getProjectRepository(userId, row.projectId);
   if (!repository) throw conflict('repository_unbound', 'The project repository binding is gone');
 
@@ -421,12 +421,12 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
   return { snapshot: snapshot!, policyViolation };
 }
 
-/** Latest platform-captured snapshot for the issue's active workspace; approval binds to it. */
-export async function latestIssueSnapshot(
+/** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */
+export async function latestTaskSnapshot(
   userId: string,
-  issueId: string
+  taskId: string
 ): Promise<RunChangeSnapshot | null> {
-  const workspace = await getIssueWorkspace(userId, issueId);
+  const workspace = await getTaskWorkspace(userId, taskId);
   if (!workspace) return null;
   const [row] = await db
     .select()
@@ -546,10 +546,10 @@ async function recoverStaleMergeLock(
       (await isAncestorIn(root, workspace.headCommit, checkout.head));
     if (provable) {
       await updateWorkspace(workspace.id, { status: 'merged', mergedAt: new Date() });
-      await moveIssue(userId, workspace.issueId, { status: 'done' }).catch(() => {});
+      await moveTask(userId, workspace.taskId, { status: 'done' }).catch(() => {});
       await addSystemComment(
         userId,
-        workspace.issueId,
+        workspace.taskId,
         'Merge recovered after an interruption: the base branch already contains this workspace.'
       ).catch(() => {});
       return clearLock();
@@ -594,38 +594,38 @@ export interface FinalizeInput {
 
 export interface FinalizeResult {
   workspace: ExecutionWorkspace;
-  issueStatus: string;
+  taskStatus: string;
 }
 
 /**
- * Merge or keep-branch, per 9.5: requires an in-review issue whose latest
+ * Merge or keep-branch, per 9.5: requires an in-review task whose latest
  * human approval still matches the workspace content fingerprint. Uncommitted
  * changes become a confirmed checkpoint commit that provably preserves the
  * approved fingerprint.
  */
-export async function finalizeIssueWorkspace(
+export async function finalizeTaskWorkspace(
   userId: string,
-  issueId: string,
+  taskId: string,
   input: FinalizeInput
 ): Promise<FinalizeResult> {
-  const workspace = await getIssueWorkspace(userId, issueId);
-  if (!workspace) throw notFound('Issue has no active workspace');
+  const workspace = await getTaskWorkspace(userId, taskId);
+  if (!workspace) throw notFound('Task has no active workspace');
   if (workspace.status !== 'ready' && workspace.status !== 'dirty') {
     throw conflict('workspace_unavailable', `Workspace is ${workspace.status}; reconcile it first`);
   }
-  const [issue] = await db
+  const [task] = await db
     .select()
-    .from(issues)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .limit(1);
-  if (!issue) throw notFound('Issue not found');
-  if (issue.status !== 'in_review') {
-    throw conflict('not_in_review', 'Finalization requires the issue to be in review');
+  if (!task) throw notFound('Task not found');
+  if (task.status !== 'in_review') {
+    throw conflict('not_in_review', 'Finalization requires the task to be in review');
   }
   let repository = await getProjectRepository(userId, workspace.projectId);
   if (!repository) throw conflict('repository_unbound', 'The project repository binding is gone');
 
-  const approval = await latestHumanApproval(userId, issueId);
+  const approval = await latestHumanApproval(userId, taskId);
   if (!approval?.snapshot) {
     throw conflict('approval_required', 'A human approval bound to a change snapshot is required');
   }
@@ -664,7 +664,7 @@ export async function finalizeIssueWorkspace(
     await localGitDriver
       .commitCheckpoint({
         worktreePath: workspace.worktreePath,
-        message: `Issue #${issue.issueNumber}: ${issue.title}`,
+        message: `Task #${task.number}: ${task.title}`,
       })
       .catch(rethrowGitError);
     current = await recapture().catch(rethrowGitError);
@@ -685,13 +685,13 @@ export async function finalizeIssueWorkspace(
       headCommit: current.afterHead,
       retainedAt: new Date(),
     });
-    const moved = await moveIssue(userId, issueId, { status: 'done' });
+    const moved = await moveTask(userId, taskId, { status: 'done' });
     await addSystemComment(
       userId,
-      issueId,
+      taskId,
       `Branch ${workspace.branchName} retained; the managed worktree was removed.`
     ).catch(() => {});
-    return { workspace: updated, issueStatus: moved.status };
+    return { workspace: updated, taskStatus: moved.status };
   }
 
   // Merge path: serialize base-checkout mutation with the repository lock,
@@ -707,7 +707,7 @@ export async function finalizeIssueWorkspace(
         repositoryRoot: root,
         baseRef: repository.defaultBaseRef,
         branchName: workspace.branchName,
-        message: `Merge issue #${issue.issueNumber}: ${issue.title}`,
+        message: `Merge task #${task.number}: ${task.title}`,
       })
       .catch(rethrowGitError);
 
@@ -722,13 +722,13 @@ export async function finalizeIssueWorkspace(
         headCommit: current.afterHead,
         mergedAt: new Date(),
       });
-      const moved = await moveIssue(userId, issueId, { status: 'done' });
+      const moved = await moveTask(userId, taskId, { status: 'done' });
       await addSystemComment(
         userId,
-        issueId,
+        taskId,
         `Merged ${workspace.branchName} into ${repository.defaultBaseRef} (${outcome.newHead.slice(0, 12)}).`
       ).catch(() => {});
-      return { workspace: updated, issueStatus: moved.status };
+      return { workspace: updated, taskStatus: moved.status };
     }
 
     if (outcome.result === 'conflicted') {
@@ -738,10 +738,10 @@ export async function finalizeIssueWorkspace(
       });
       await addSystemComment(
         userId,
-        issueId,
-        `Merge of ${workspace.branchName} conflicted; the base checkout was restored and the issue stays in review.`
+        taskId,
+        `Merge of ${workspace.branchName} conflicted; the base checkout was restored and the task stays in review.`
       ).catch(() => {});
-      return { workspace: updated, issueStatus: issue.status };
+      return { workspace: updated, taskStatus: task.status };
     }
 
     // abort_failed: keep the lock for manual recovery evidence, mark error.
@@ -762,24 +762,24 @@ export interface AbandonInput {
 
 /**
  * Explicit abandon: discards the managed worktree and cancels an active
- * issue. Cleanup must succeed before any state transitions; done issues
+ * task. Cleanup must succeed before any state transitions; done tasks
  * cannot be abandoned.
  */
-export async function abandonIssueWorkspace(
+export async function abandonTaskWorkspace(
   userId: string,
-  issueId: string,
+  taskId: string,
   input: AbandonInput
 ): Promise<FinalizeResult> {
-  const workspace = await getIssueWorkspace(userId, issueId);
-  if (!workspace) throw notFound('Issue has no active workspace');
-  const [issue] = await db
+  const workspace = await getTaskWorkspace(userId, taskId);
+  if (!workspace) throw notFound('Task has no active workspace');
+  const [task] = await db
     .select()
-    .from(issues)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .limit(1);
-  if (!issue) throw notFound('Issue not found');
-  if (issue.status === 'done') {
-    throw conflict('issue_done', 'A completed issue cannot abandon its workspace');
+  if (!task) throw notFound('Task not found');
+  if (task.status === 'done') {
+    throw conflict('task_done', 'A completed task cannot abandon its workspace');
   }
   const repository = await getProjectRepository(userId, workspace.projectId);
   if (!repository) throw conflict('repository_unbound', 'The project repository binding is gone');
@@ -804,35 +804,35 @@ export async function abandonIssueWorkspace(
     status: 'abandoned',
     abandonedAt: new Date(),
   });
-  let issueStatus: string = issue.status;
-  if (issue.status !== 'cancelled') {
-    const moved = await moveIssue(userId, issueId, { status: 'cancelled' });
-    issueStatus = moved.status;
+  let taskStatus: string = task.status;
+  if (task.status !== 'cancelled') {
+    const moved = await moveTask(userId, taskId, { status: 'cancelled' });
+    taskStatus = moved.status;
   }
   await addSystemComment(
     userId,
-    issueId,
+    taskId,
     `Workspace abandoned; branch ${workspace.branchName} and its worktree were discarded from management.`
   ).catch(() => {});
-  return { workspace: updated, issueStatus };
+  return { workspace: updated, taskStatus };
 }
 
 async function latestHumanApproval(
   userId: string,
-  issueId: string
+  taskId: string
 ): Promise<{ reviewId: string; snapshot: RunChangeSnapshot | null } | null> {
   const [review] = await db
     .select()
-    .from(issueReviews)
+    .from(taskReviews)
     .where(
       and(
-        eq(issueReviews.issueId, issueId),
-        eq(issueReviews.userId, userId),
-        eq(issueReviews.reviewerType, 'human'),
-        eq(issueReviews.decision, 'approved')
+        eq(taskReviews.taskId, taskId),
+        eq(taskReviews.userId, userId),
+        eq(taskReviews.reviewerType, 'human'),
+        eq(taskReviews.decision, 'approved')
       )
     )
-    .orderBy(desc(issueReviews.createdAt))
+    .orderBy(desc(taskReviews.createdAt))
     .limit(1);
   if (!review) return null;
   if (!review.changeSnapshotId) return { reviewId: review.id, snapshot: null };
@@ -844,16 +844,16 @@ async function latestHumanApproval(
   return { reviewId: review.id, snapshot: snapshot ?? null };
 }
 
-export interface IssueChangesView {
+export interface TaskChangesView {
   workspace: ExecutionWorkspace;
   snapshot: RunChangeSnapshot | null;
   drift: BaseDriftReport | null;
 }
 
-export async function getIssueChanges(userId: string, issueId: string): Promise<IssueChangesView> {
-  const workspace = await getIssueWorkspace(userId, issueId);
-  if (!workspace) throw notFound('Issue has no active workspace');
-  const snapshot = await latestIssueSnapshot(userId, issueId);
+export async function getTaskChanges(userId: string, taskId: string): Promise<TaskChangesView> {
+  const workspace = await getTaskWorkspace(userId, taskId);
+  if (!workspace) throw notFound('Task has no active workspace');
+  const snapshot = await latestTaskSnapshot(userId, taskId);
   const repository = await getProjectRepository(userId, workspace.projectId);
 
   let drift: BaseDriftReport | null = null;

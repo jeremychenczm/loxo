@@ -8,24 +8,24 @@ import {
   type DropResult,
 } from '@hello-pangea/dnd';
 import { RequireAuth } from '@/components/auth/RequireAuth';
-import { IssueCard } from '@/components/issues/IssueCard';
-import { IssueReceipt } from '@/components/issues/IssueReceipt';
-import { NewTicketModal } from '@/components/issues/NewTicketModal';
+import { TaskCard } from '@/components/tasks/TaskCard';
+import { TaskDetail } from '@/components/tasks/TaskDetail';
+import { NewTaskModal } from '@/components/tasks/NewTaskModal';
 import { ApiError } from '@/lib/api';
 import { fetchAgents, type Agent } from '@/lib/agents';
 import {
   CLIENT_TRANSITIONS,
   STATUS_META,
   fetchBoard,
-  moveIssue,
+  moveTask,
   type Board,
-  type Issue,
-  type IssueStatus,
-} from '@/lib/issues';
+  type Task,
+  type TaskStatus,
+} from '@/lib/tasks';
 import { fetchProjects, type ProjectView } from '@/lib/projects';
 
 /** Columns rendered on the board; blocked cards ride inside In Progress. */
-const BOARD_COLUMNS: IssueStatus[] = ['todo', 'in_progress', 'in_review', 'done'];
+const BOARD_COLUMNS: TaskStatus[] = ['todo', 'in_progress', 'in_review', 'done'];
 
 const EMPTY_BOARD: Board = {
   backlog: [],
@@ -37,14 +37,14 @@ const EMPTY_BOARD: Board = {
   cancelled: [],
 };
 
-/** Cards a column displays: In Progress interleaves its blocked issues. */
-function columnCards(board: Board, status: IssueStatus): Issue[] {
+/** Cards a column displays: In Progress interleaves its blocked tasks. */
+function columnCards(board: Board, status: TaskStatus): Task[] {
   if (status !== 'in_progress') return board[status];
   return [...board.in_progress, ...board.blocked].sort((a, b) => a.boardOrder - b.boardOrder);
 }
 
 /** Midpoint ordering: land between the new neighbours without renumbering. */
-function orderAt(cards: Issue[], index: number, draggedId: string): number {
+function orderAt(cards: Task[], index: number, draggedId: string): number {
   const rest = cards.filter((c) => c.id !== draggedId);
   const prev = rest[index - 1]?.boardOrder;
   const next = rest[index]?.boardOrder;
@@ -59,8 +59,8 @@ function BoardPage() {
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [projectFilter, setProjectFilter] = useState<string>('');
-  const [dragSource, setDragSource] = useState<IssueStatus | null>(null);
-  const [openIssue, setOpenIssue] = useState<Issue | null>(null);
+  const [dragSource, setDragSource] = useState<TaskStatus | null>(null);
+  const [openTask, setOpenTask] = useState<Task | null>(null);
   const [printEntrance, setPrintEntrance] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -92,36 +92,36 @@ function BoardPage() {
     };
   }, [projectFilter]);
 
-  // Deep link (?issue=<id>): open the receipt once the board is in, then
+  // Deep link (?task=<id>): open the ticket once the board is in, then
   // strip the param so refreshes and closes don't reopen it.
   useEffect(() => {
     if (loading) return;
-    const requested = new URLSearchParams(window.location.search).get('issue');
+    const requested = new URLSearchParams(window.location.search).get('task');
     if (!requested) return;
-    const issue = Object.values(board)
+    const task = Object.values(board)
       .flat()
       .find((candidate) => candidate.id === requested);
-    if (issue) {
+    if (task) {
       setPrintEntrance(false);
-      setOpenIssue(issue);
+      setOpenTask(task);
     }
     window.history.replaceState(null, '', window.location.pathname);
   }, [loading, board]);
 
   const legalTargets = useMemo(() => {
     if (!dragSource) return null;
-    return new Set<IssueStatus>([dragSource, ...CLIENT_TRANSITIONS[dragSource]]);
+    return new Set<TaskStatus>([dragSource, ...CLIENT_TRANSITIONS[dragSource]]);
   }, [dragSource]);
 
   const applyMove = useCallback(
-    async (issue: Issue, status: IssueStatus, boardOrder?: number) => {
+    async (task: Task, status: TaskStatus, boardOrder?: number) => {
       setError('');
       try {
-        await moveIssue(issue.id, { status, ...(boardOrder !== undefined ? { boardOrder } : {}) });
+        await moveTask(task.id, { status, ...(boardOrder !== undefined ? { boardOrder } : {}) });
       } catch (err) {
         setError(
           err instanceof ApiError && err.code === 'invalid_transition'
-            ? `#${issue.issueNumber}: ${STATUS_META[issue.status].label} -> ${STATUS_META[status].label} is not allowed`
+            ? `#${task.number}: ${STATUS_META[task.status].label} -> ${STATUS_META[status].label} is not allowed`
             : err instanceof Error
               ? err.message
               : 'Move failed'
@@ -137,8 +137,8 @@ function BoardPage() {
       setDragSource(null);
       const { source, destination, draggableId } = result;
       if (!destination) return;
-      const from = source.droppableId as IssueStatus;
-      const to = destination.droppableId as IssueStatus;
+      const from = source.droppableId as TaskStatus;
+      const to = destination.droppableId as TaskStatus;
       const cards = columnCards(board, from);
       const dragged = cards.find((c) => c.id === draggableId);
       if (!dragged) return;
@@ -158,18 +158,18 @@ function BoardPage() {
   );
 
   const toggleBlocked = useCallback(
-    (issue: Issue) => {
-      void applyMove(issue, issue.status === 'blocked' ? 'in_progress' : 'blocked');
+    (task: Task) => {
+      void applyMove(task, task.status === 'blocked' ? 'in_progress' : 'blocked');
     },
     [applyMove]
   );
 
-  const renderCard = (issue: Issue, index: number) => (
+  const renderCard = (task: Task, index: number) => (
     <Draggable
-      key={issue.id}
-      draggableId={issue.id}
+      key={task.id}
+      draggableId={task.id}
       index={index}
-      isDragDisabled={issue.status === 'done' || issue.status === 'cancelled'}
+      isDragDisabled={task.status === 'done' || task.status === 'cancelled'}
     >
       {(dragProvided, dragSnapshot) => (
         <div
@@ -177,15 +177,15 @@ function BoardPage() {
           {...dragProvided.draggableProps}
           {...dragProvided.dragHandleProps}
         >
-          <IssueCard
-            issue={issue}
+          <TaskCard
+            task={task}
             dragging={dragSnapshot.isDragging}
             onOpen={(i) => {
               setPrintEntrance(false);
-              setOpenIssue(i);
+              setOpenTask(i);
             }}
             onToggleBlocked={
-              issue.status === 'in_progress' || issue.status === 'blocked'
+              task.status === 'in_progress' || task.status === 'blocked'
                 ? toggleBlocked
                 : undefined
             }
@@ -196,7 +196,7 @@ function BoardPage() {
   );
 
   /** Station plate: black tag with the status signal, like a kitchen rail label. */
-  const columnHeader = (status: IssueStatus, count: number) => {
+  const columnHeader = (status: TaskStatus, count: number) => {
     const meta = STATUS_META[status];
     return (
       <div className="mb-2 flex items-center gap-2">
@@ -211,7 +211,7 @@ function BoardPage() {
     );
   };
 
-  const renderColumn = (status: IssueStatus, cards: Issue[]) => {
+  const renderColumn = (status: TaskStatus, cards: Task[]) => {
     const dimmed = legalTargets !== null && !legalTargets.has(status);
     return (
       <div
@@ -279,7 +279,7 @@ function BoardPage() {
   return (
     <div className="flex h-full min-h-0 flex-col px-4 py-4">
       <div className="mb-5 flex flex-wrap items-center gap-3 border-b border-pixel-line pb-4">
-        <h1 className="font-sans text-xl text-pixel-black">Issues</h1>
+        <h1 className="font-sans text-xl text-pixel-black">Tasks</h1>
         <button
           type="button"
           onClick={() => setCreating(true)}
@@ -319,7 +319,7 @@ function BoardPage() {
         <p className="font-sans text-sm text-pixel-gray">Loading board...</p>
       ) : (
         <DragDropContext
-          onDragStart={(start) => setDragSource(start.source.droppableId as IssueStatus)}
+          onDragStart={(start) => setDragSource(start.source.droppableId as TaskStatus)}
           onDragEnd={onDragEnd}
         >
           <div className="flex min-h-0 flex-1 flex-col gap-4 pb-4">
@@ -332,27 +332,27 @@ function BoardPage() {
       )}
 
       {creating && (
-        <NewTicketModal
+        <NewTaskModal
           projects={projects}
           initialProjectId={projectFilter || undefined}
           onClose={() => setCreating(false)}
-          onCreated={(issue) => {
+          onCreated={(task) => {
             setCreating(false);
             setPrintEntrance(true);
-            setOpenIssue(issue);
+            setOpenTask(task);
             void refresh();
           }}
         />
       )}
 
-      {openIssue && (
-        <IssueReceipt
-          issueId={openIssue.id}
+      {openTask && (
+        <TaskDetail
+          taskId={openTask.id}
           printEntrance={printEntrance}
-          projectName={projects.find((p) => p.id === openIssue.projectId)?.name}
+          projectName={projects.find((p) => p.id === openTask.projectId)?.name}
           agents={agents}
           onClose={() => {
-            setOpenIssue(null);
+            setOpenTask(null);
             void refresh();
           }}
           onChanged={() => void refresh()}
@@ -362,7 +362,7 @@ function BoardPage() {
   );
 }
 
-export default function IssuesPage() {
+export default function TasksPage() {
   return (
     <RequireAuth>
       <BoardPage />

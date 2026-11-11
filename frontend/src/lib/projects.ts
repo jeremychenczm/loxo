@@ -6,7 +6,7 @@ export interface ProjectView {
   id: string;
   name: string;
   description: string;
-  /** 'default' is the built-in fallback project for issues created without one. */
+  /** 'default' is the built-in fallback project for tasks created without one. */
   kind: 'normal' | 'default';
   agentIds: string[];
   createdAt: string;

@@ -20,7 +20,7 @@
   --pixel-amber: #f2b03d;
   --pixel-red: #c94141;
   /* UI text is Inter (injected by next/font as --font-sans); the pixel face
-     survives as the ticket font for receipt surfaces only. */
+     survives as the ticket font for task surfaces only. */
   --font-main: var(--font-sans), Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-ticket: 'Departure Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }

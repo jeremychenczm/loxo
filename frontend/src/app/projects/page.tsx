@@ -115,7 +115,7 @@ function ProjectsPageInner() {
   const [showCreate, setShowCreate] = useState(false);
 
   const reload = useCallback(() => {
-    // The built-in default project is an issue fallback, not a managed project.
+    // The built-in default project is a task fallback, not a managed project.
     fetchProjects()
       .then((all) => setProjects(all.filter((p) => p.kind !== 'default')))
       .catch(() => setProjects([]));

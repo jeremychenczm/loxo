@@ -1,5 +1,5 @@
 import { apiFetch } from './api';
-import type { Issue } from './issues';
+import type { Task } from './tasks';
 
 export interface Conversation {
   id: string;
@@ -13,13 +13,13 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  meta?: { error?: boolean; durationMs?: number; source?: string; issueId?: string };
+  meta?: { error?: boolean; durationMs?: number; source?: string; taskId?: string };
   createdAt: string;
 }
 
-export interface IssueDraft {
+export interface TaskDraft {
   title: string;
-  description: string;
+  brief: string;
   source: 'anthropic' | 'openai' | 'fallback';
   warnings: string[];
   window: { fromMessageId: string; toMessageId: string; count: number };
@@ -52,17 +52,17 @@ export const fetchMessages = (id: string) =>
 
 export const exportUrl = (id: string) => `/api/conversations/${id}/export`;
 
-export const draftIssue = (id: string, range?: { fromMessageId?: string; toMessageId?: string }) =>
-  apiFetch<{ draft: IssueDraft }>(`/api/conversations/${id}/draft-issue`, {
+export const draftTask = (id: string, range?: { fromMessageId?: string; toMessageId?: string }) =>
+  apiFetch<{ draft: TaskDraft }>(`/api/conversations/${id}/draft-task`, {
     method: 'POST',
     body: JSON.stringify(range ?? {}),
   }).then((r) => r.draft);
 
-export const fileIssue = (
+export const fileTask = (
   id: string,
-  input: { title: string; description?: string; projectId?: string }
+  input: { title: string; brief?: string; projectId?: string }
 ) =>
-  apiFetch<{ issue: Issue }>(`/api/conversations/${id}/file-issue`, {
+  apiFetch<{ task: Task }>(`/api/conversations/${id}/file-task`, {
     method: 'POST',
     body: JSON.stringify(input),
-  }).then((r) => r.issue);
+  }).then((r) => r.task);

@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import { runChatTurn, setTurnExecutorForTests } from '../src/modules/chat/chat.service';
-import { setIssueTurnExecutorForTests } from '../src/modules/runs/issue-run';
+import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { RunnerError, type TurnRequest, type TurnResult } from '../src/modules/runner/runner';
 
@@ -15,12 +15,12 @@ let conversationId = '';
 
 type Executor = (req: TurnRequest) => Promise<TurnResult>;
 const quickReply: Executor = async () => ({ text: 'chat reply', durationMs: 5 });
-const quickReport: Executor = async () => ({ text: 'issue report', durationMs: 5 });
+const quickReport: Executor = async () => ({ text: 'task report', durationMs: 5 });
 let chatExecutor: Executor = quickReply;
-let issueExecutor: Executor = quickReport;
+let taskExecutor: Executor = quickReport;
 const pendingReleases: Array<() => void> = [];
 
-function gate(target: 'chat' | 'issue') {
+function gate(target: 'chat' | 'task') {
   let entered!: () => void;
   const invoked = new Promise<void>((resolve) => (entered = resolve));
   let release!: () => void;
@@ -35,7 +35,7 @@ function gate(target: 'chat' | 'issue') {
     return target === 'chat' ? quickReply(req) : quickReport(req);
   };
   if (target === 'chat') chatExecutor = impl;
-  else issueExecutor = impl;
+  else taskExecutor = impl;
   pendingReleases.push(release);
   return { invoked, release };
 }
@@ -43,7 +43,7 @@ function gate(target: 'chat' | 'issue') {
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
   setTurnExecutorForTests((req) => chatExecutor(req));
-  setIssueTurnExecutorForTests((req) => issueExecutor(req));
+  setTaskTurnExecutorForTests((req) => taskExecutor(req));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'claim@example.com',
@@ -68,7 +68,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   setTurnExecutorForTests(null);
-  setIssueTurnExecutorForTests(null);
+  setTaskTurnExecutorForTests(null);
 });
 
 afterEach(async () => {
@@ -76,29 +76,29 @@ afterEach(async () => {
   pendingReleases.length = 0;
   await drainRunsForTests();
   chatExecutor = quickReply;
-  issueExecutor = quickReport;
+  taskExecutor = quickReport;
 });
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-async function wakeableIssue(title: string) {
-  const created = await request(app).post('/api/issues').set(auth()).send({ title });
-  const issue = created.body.issue as { id: string };
-  await request(app).post(`/api/issues/${issue.id}/move`).set(auth()).send({ status: 'todo' });
-  return issue;
+async function wakeableTask(title: string) {
+  const created = await request(app).post('/api/tasks').set(auth()).send({ title });
+  const task = created.body.task as { id: string };
+  await request(app).post(`/api/tasks/${task.id}/move`).set(auth()).send({ status: 'todo' });
+  return task;
 }
 
-async function runsFor(issueId: string) {
-  const res = await request(app).get(`/api/runs?issueId=${issueId}`).set(auth());
+async function runsFor(taskId: string) {
+  const res = await request(app).get(`/api/runs?taskId=${taskId}`).set(auth());
   return res.body.runs as Array<{ status: string }>;
 }
 
 describe('shared agent claim', () => {
-  it('rejects a chat turn while an issue run holds the agent', async () => {
-    const gated = gate('issue');
-    const issue = await wakeableIssue('Chat blocker');
+  it('rejects a chat turn while a task run holds the agent', async () => {
+    const gated = gate('task');
+    const task = await wakeableTask('Chat blocker');
     await request(app)
-      .patch(`/api/issues/${issue.id}`)
+      .patch(`/api/tasks/${task.id}`)
       .set(auth())
       .send({ assignee: { agentId } });
     await gated.invoked;
@@ -120,18 +120,18 @@ describe('shared agent claim', () => {
     const chatPromise = runChatTurn(userId, conversationId, 'long think');
     await gated.invoked;
 
-    const issue = await wakeableIssue('Queued behind chat');
+    const task = await wakeableTask('Queued behind chat');
     await request(app)
-      .patch(`/api/issues/${issue.id}`)
+      .patch(`/api/tasks/${task.id}`)
       .set(auth())
       .send({ assignee: { agentId } });
-    expect((await runsFor(issue.id))[0]!.status).toBe('queued');
+    expect((await runsFor(task.id))[0]!.status).toBe('queued');
 
     gated.release();
     await chatPromise;
     await drainRunsForTests();
 
-    expect((await runsFor(issue.id))[0]!.status).toBe('succeeded');
+    expect((await runsFor(task.id))[0]!.status).toBe('succeeded');
   });
 
   it('releases the claim when the chat turn fails', async () => {
@@ -146,12 +146,12 @@ describe('shared agent claim', () => {
 
     // The claim is free again: a wake starts immediately.
     chatExecutor = quickReply;
-    const issue = await wakeableIssue('After chat failure');
+    const task = await wakeableTask('After chat failure');
     await request(app)
-      .patch(`/api/issues/${issue.id}`)
+      .patch(`/api/tasks/${task.id}`)
       .set(auth())
       .send({ assignee: { agentId } });
     await drainRunsForTests();
-    expect((await runsFor(issue.id))[0]!.status).toBe('succeeded');
+    expect((await runsFor(task.id))[0]!.status).toBe('succeeded');
   });
 });

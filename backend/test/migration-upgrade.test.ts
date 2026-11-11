@@ -50,6 +50,10 @@ const ids = {
   agent1: '00000000-0000-4000-8000-0000000000b1',
   agent2: '00000000-0000-4000-8000-0000000000b2',
   agent3: '00000000-0000-4000-8000-0000000000b3',
+  project: '00000000-0000-4000-8000-0000000000c1',
+  issue: '00000000-0000-4000-8000-0000000000d1',
+  run: '00000000-0000-4000-8000-0000000000e1',
+  conversation: '00000000-0000-4000-8000-0000000000f1',
 };
 
 async function seedLegacyRows(): Promise<void> {
@@ -67,6 +71,31 @@ async function seedLegacyRows(): Promise<void> {
       ($2, $4, 'Second', 'api', $5, now() - interval '1 minute'),
       ($3, $4, 'Loner', 'api', NULL, now())`,
     [ids.agent1, ids.agent2, ids.agent3, ids.user, ids.groupA]
+  );
+  await q(`UPDATE users SET issue_counter = 7 WHERE id = $1`, [ids.user]);
+  await q(`INSERT INTO projects (id, user_id, name) VALUES ($1, $2, 'Legacy')`, [ids.project, ids.user]);
+  await q(
+    `INSERT INTO issues (id, user_id, project_id, issue_number, title, description, status, assignee_agent_id)
+     VALUES ($1, $2, $3, 7, 'Port the exporter', 'CSV first', 'in_progress', $4)`,
+    [ids.issue, ids.user, ids.project, ids.agent1]
+  );
+  await q(
+    `INSERT INTO issue_comments (issue_id, author_type, author_user_id, body) VALUES ($1, 'human', $2, 'Please add tests')`,
+    [ids.issue, ids.user]
+  );
+  await q(
+    `INSERT INTO runs (id, user_id, agent_id, agent_name, issue_id, trigger, status)
+     VALUES ($1, $2, $3, 'First', $4, 'assignment', 'succeeded')`,
+    [ids.run, ids.user, ids.agent1, ids.issue]
+  );
+  await q(`INSERT INTO conversations (id, user_id, agent_id) VALUES ($1, $2, $3)`, [
+    ids.conversation,
+    ids.user,
+    ids.agent1,
+  ]);
+  await q(
+    `INSERT INTO messages (conversation_id, role, content, meta) VALUES ($1, 'system', 'Filed', $2)`,
+    [ids.conversation, JSON.stringify({ source: 'filing', issueId: ids.issue })]
   );
 }
 
@@ -105,6 +134,20 @@ describe('migration upgrade from the pre-reshape schema', () => {
     ]);
     const agents = await q(`SELECT count(*)::int AS n FROM agents`);
     expect(agents[0]).toEqual({ n: 3 });
+  });
+
+  it('carries issues over as tasks with their number, brief, and history', async () => {
+    const [task] = await q(`SELECT number, title, brief, status FROM tasks WHERE id = $1`, [ids.issue]);
+    expect(task).toEqual({ number: 7, title: 'Port the exporter', brief: 'CSV first', status: 'in_progress' });
+    const [user] = await q(`SELECT task_counter FROM users WHERE id = $1`, [ids.user]);
+    expect(user).toEqual({ task_counter: 7 });
+    const [run] = await q(`SELECT task_id FROM runs WHERE id = $1`, [ids.run]);
+    expect(run).toEqual({ task_id: ids.issue });
+    const [message] = await q<{ meta: Record<string, string> }>(
+      `SELECT meta FROM messages WHERE conversation_id = $1`,
+      [ids.conversation]
+    );
+    expect(message!.meta).toEqual({ source: 'filing', taskId: ids.issue });
   });
 
   it('drops the legacy grouping storage', async () => {

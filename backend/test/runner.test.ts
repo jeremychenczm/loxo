@@ -34,9 +34,9 @@ describe('claude-code control-plane args', () => {
     // this the control plane mounts but every call is rejected.
     const allowed = args[args.indexOf('--allowedTools') + 1]!;
     for (const tool of [
-      'get_issue',
-      'comment_on_issue',
-      'update_issue_status',
+      'get_task',
+      'comment_on_task',
+      'update_task_status',
       'ask_blocker',
       'submit_result',
     ]) {
@@ -100,7 +100,7 @@ describe('claude-code permission mapping', () => {
     expect(occurrences).toHaveLength(1);
     const allowed = args[args.indexOf('--allowedTools') + 1]!;
     expect(allowed).toContain('Bash(git diff:*)');
-    expect(allowed).toContain('mcp__swarmdev__get_issue');
+    expect(allowed).toContain('mcp__swarmdev__get_task');
   });
 
   it('never delegates worktree management to the runtime', () => {

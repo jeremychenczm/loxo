@@ -5,7 +5,7 @@ import { normalizeApiMessages, type ApiProtocol } from './api-turn';
 /**
  * Thin tool loop for api-runtime agents: hosted model + the platform
  * control-plane tools, nothing else. Deliberately no sub-agents, browsing,
- * or vendor-specific harness features.
+ * or vendor-specific runtime features.
  */
 
 export interface ApiToolDefinition {

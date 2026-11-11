@@ -23,14 +23,14 @@ import {
 import {
   createConversation,
   deleteConversation,
-  draftIssue,
+  draftTask,
   fetchConversations,
   fetchMessages,
-  fileIssue,
+  fileTask,
   renameConversation,
   type ChatMessage,
   type Conversation,
-  type IssueDraft,
+  type TaskDraft,
 } from '@/lib/chat';
 import { fetchProviders, type ProviderView } from '@/lib/providers';
 import { API_BASE } from '@/lib/runtime';
@@ -49,14 +49,14 @@ function MessageBubble({ message, agentName }: { message: LiveMessage | ChatMess
         <div className="max-w-[85%] border border-pixel-line bg-pixel-yellow/20 px-3 py-1.5 text-center">
           <p className="font-sans text-xs text-pixel-black/70">
             {message.content}
-            {message.meta?.issueId && (
+            {message.meta?.taskId && (
               <>
                 {' '}
                 <Link
-                  href={`/issues?issue=${message.meta.issueId}`}
+                  href={`/tasks?task=${message.meta.taskId}`}
                   className="font-bold text-pixel-blue underline"
                 >
-                  View issue →
+                  View task →
                 </Link>
               </>
             )}
@@ -98,9 +98,9 @@ function MessageBubble({ message, agentName }: { message: LiveMessage | ChatMess
 type DraftCard =
   | { phase: 'loading' }
   | { phase: 'error'; message: string }
-  | { phase: 'editing' | 'filing'; draft: IssueDraft; title: string; description: string; error?: string };
+  | { phase: 'editing' | 'filing'; draft: TaskDraft; title: string; brief: string; error?: string };
 
-function sliceLabel(draft: IssueDraft, messages: Array<LiveMessage | ChatMessage>): string {
+function sliceLabel(draft: TaskDraft, messages: Array<LiveMessage | ChatMessage>): string {
   const base = `Drafted from ${draft.window.count} message${draft.window.count === 1 ? '' : 's'}`;
   const from = messages.find((m) => m.id === draft.window.fromMessageId);
   const to = messages.find((m) => m.id === draft.window.toMessageId);
@@ -110,7 +110,7 @@ function sliceLabel(draft: IssueDraft, messages: Array<LiveMessage | ChatMessage
   return `${base} · ${stamp(from.createdAt)} – ${stamp(to.createdAt)}`;
 }
 
-function IssueDraftCard({
+function TaskDraftCard({
   card,
   messages,
   onEdit,
@@ -120,7 +120,7 @@ function IssueDraftCard({
 }: {
   card: DraftCard;
   messages: Array<LiveMessage | ChatMessage>;
-  onEdit: (patch: { title?: string; description?: string }) => void;
+  onEdit: (patch: { title?: string; brief?: string }) => void;
   onCancel: () => void;
   onRetry: () => void;
   onFile: () => void;
@@ -131,7 +131,7 @@ function IssueDraftCard({
       style={{ boxShadow: '4px 4px 0 rgba(17,17,17,0.10)' }}
     >
       <div className="flex items-center justify-between border-b border-pixel-line bg-pixel-black px-3 py-1.5">
-        <span className="font-sans text-xs font-bold text-pixel-white">■ ISSUE DRAFT</span>
+        <span className="font-sans text-xs font-bold text-pixel-white">■ TASK DRAFT</span>
         <button
           onClick={onCancel}
           className="font-sans text-xs text-pixel-white/70 hover:text-pixel-white"
@@ -169,15 +169,15 @@ function IssueDraftCard({
             value={card.title}
             disabled={card.phase === 'filing'}
             onChange={(e) => onEdit({ title: e.target.value })}
-            placeholder="Issue title"
+            placeholder="Task title"
           />
           <textarea
             className="min-h-28 w-full resize-y border border-pixel-line bg-pixel-white px-2 py-1.5 font-sans text-sm text-pixel-black outline-none focus:border-pixel-blue"
             style={{ boxShadow: 'inset 2px 2px 0 rgba(17,17,17,0.08)' }}
-            value={card.description}
+            value={card.brief}
             disabled={card.phase === 'filing'}
-            onChange={(e) => onEdit({ description: e.target.value })}
-            placeholder="Issue description"
+            onChange={(e) => onEdit({ brief: e.target.value })}
+            placeholder="What should the crew build?"
           />
           <p className="font-sans text-xs text-pixel-black/50">{sliceLabel(card.draft, messages)}</p>
           {card.draft.warnings.map((warning) => (
@@ -196,7 +196,7 @@ function IssueDraftCard({
               onClick={onFile}
               disabled={card.phase === 'filing' || !card.title.trim()}
             >
-              {card.phase === 'filing' ? 'Filing…' : 'File issue'}
+              {card.phase === 'filing' ? 'Filing…' : 'File task'}
             </PixelButton>
           </div>
         </div>
@@ -479,12 +479,12 @@ function ChatPageInner() {
     if (!activeId) return;
     setDraftCard({ phase: 'loading' });
     try {
-      const issueDraft = await draftIssue(activeId);
+      const taskDraft = await draftTask(activeId);
       setDraftCard({
         phase: 'editing',
-        draft: issueDraft,
-        title: issueDraft.title,
-        description: issueDraft.description,
+        draft: taskDraft,
+        title: taskDraft.title,
+        brief: taskDraft.brief,
       });
     } catch (err) {
       setDraftCard({
@@ -499,11 +499,11 @@ function ChatPageInner() {
     const editing = draftCard;
     setDraftCard({ ...editing, phase: 'filing', error: undefined });
     try {
-      await fileIssue(activeId, {
+      await fileTask(activeId, {
         title: editing.title.trim(),
-        description: editing.description,
+        brief: editing.brief,
       });
-      // The system-message breadcrumb is the durable receipt; the card retires.
+      // The system-message breadcrumb is the durable record; the card retires.
       setDraftCard(null);
       const refreshed = await fetchMessages(activeId);
       setHistory(refreshed);
@@ -724,7 +724,7 @@ function ChatPageInner() {
                   </div>
                 )}
                 {draftCard && (
-                  <IssueDraftCard
+                  <TaskDraftCard
                     card={draftCard}
                     messages={allMessages}
                     onEdit={(patch) =>
@@ -747,9 +747,9 @@ function ChatPageInner() {
                     onClick={() => void openDraftCard()}
                     disabled={busy}
                     className="font-sans text-xs font-bold text-pixel-black/60 hover:text-pixel-blue disabled:opacity-40"
-                    title="Draft an issue from the current topic"
+                    title="Draft a task from the current topic"
                   >
-                    ▣ FILE AS ISSUE
+                    ▣ FILE AS TASK
                   </button>
                 </div>
               )}

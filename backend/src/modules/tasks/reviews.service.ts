@@ -2,16 +2,16 @@ import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
-  issueReviews,
-  issues,
-  type Issue,
-  type IssueReview,
+  taskReviews,
+  tasks,
+  type Task,
+  type TaskReview,
   type ReviewDecision,
 } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
-import { getProjectRepository, latestIssueSnapshot } from '../code-workspaces/workspace.service';
+import { getProjectRepository, latestTaskSnapshot } from '../code-workspaces/workspace.service';
 import { addAgentComment, addHumanComment } from './comments.service';
-import { moveIssue } from './issues.service';
+import { moveTask } from './tasks.service';
 
 export interface CreateReviewInput {
   decision: ReviewDecision;
@@ -24,25 +24,25 @@ export interface CreateReviewInput {
 
 export interface CreateReviewOptions {
   /**
-   * Agent approvals record a recommendation but leave the issue in review —
-   * closing an issue stays a human decision. Rejections always transition.
+   * Agent approvals record a recommendation but leave the task in review —
+   * closing a task stays a human decision. Rejections always transition.
    */
   applyTransition?: boolean;
 }
 
-/** Automated reject cycles allowed per issue before a human must take over. */
+/** Automated reject cycles allowed per task before a human must take over. */
 export const REVIEW_CYCLE_CAP = 3;
 
-/** Agent-issued changes_requested verdicts on an issue, ever. */
-export async function countAgentRejections(issueId: string): Promise<number> {
+/** Agent-taskd changes_requested verdicts on a task, ever. */
+export async function countAgentRejections(taskId: string): Promise<number> {
   const rows = await db
-    .select({ id: issueReviews.id })
-    .from(issueReviews)
+    .select({ id: taskReviews.id })
+    .from(taskReviews)
     .where(
       and(
-        eq(issueReviews.issueId, issueId),
-        eq(issueReviews.reviewerType, 'agent'),
-        eq(issueReviews.decision, 'changes_requested')
+        eq(taskReviews.taskId, taskId),
+        eq(taskReviews.reviewerType, 'agent'),
+        eq(taskReviews.decision, 'changes_requested')
       )
     );
   return rows.length;
@@ -53,30 +53,30 @@ const DECISION_LABEL: Record<ReviewDecision, string> = {
   changes_requested: '[CHANGES REQUESTED]',
 };
 
-async function findOwnedIssue(userId: string, issueId: string): Promise<Issue> {
-  const [issue] = await db
+async function findOwnedTask(userId: string, taskId: string): Promise<Task> {
+  const [task] = await db
     .select()
-    .from(issues)
-    .where(and(eq(issues.id, issueId), eq(issues.userId, userId)))
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .limit(1);
-  if (!issue) throw notFound('Issue not found');
-  return issue;
+  if (!task) throw notFound('Task not found');
+  return task;
 }
 
 /**
  * One review verdict: record it, put the feedback on the timeline, then move
- * the issue. The comment must exist before the transition, because moving to
+ * the task. The comment must exist before the transition, because moving to
  * in_progress re-wakes the assignee and the next run reads it.
  */
 export async function createReview(
   userId: string,
-  issueId: string,
+  taskId: string,
   input: CreateReviewInput,
   options: CreateReviewOptions = {}
-): Promise<IssueReview> {
-  const issue = await findOwnedIssue(userId, issueId);
-  if (issue.status !== 'in_review') {
-    throw badRequest('not_in_review', 'Only issues in review can be reviewed');
+): Promise<TaskReview> {
+  const task = await findOwnedTask(userId, taskId);
+  if (task.status !== 'in_review') {
+    throw badRequest('not_in_review', 'Only tasks in review can be reviewed');
   }
   const body = input.body.trim();
   if (!body) throw badRequest('invalid_input', 'A review must carry a comment');
@@ -100,16 +100,16 @@ export async function createReview(
 
   // Code projects: the verdict applies to an exact captured change set. A
   // later workspace change makes an approval stale without another status.
-  const codeProject = (await getProjectRepository(userId, issue.projectId)) !== null;
+  const codeProject = (await getProjectRepository(userId, task.projectId)) !== null;
   const changeSnapshotId = codeProject
-    ? ((await latestIssueSnapshot(userId, issueId))?.id ?? null)
+    ? ((await latestTaskSnapshot(userId, taskId))?.id ?? null)
     : null;
 
   const [review] = await db
-    .insert(issueReviews)
+    .insert(taskReviews)
     .values({
       userId,
-      issueId,
+      taskId,
       reviewerType: reviewerAgentId ? 'agent' : 'human',
       reviewerAgentId,
       reviewerUserId,
@@ -122,20 +122,20 @@ export async function createReview(
 
   const commentBody = `${DECISION_LABEL[input.decision]} ${body}`;
   if (reviewerAgentId) {
-    await addAgentComment(userId, issueId, reviewerAgentId, commentBody);
+    await addAgentComment(userId, taskId, reviewerAgentId, commentBody);
   } else {
-    await addHumanComment(userId, issueId, commentBody);
+    await addHumanComment(userId, taskId, commentBody);
   }
 
   // in_review -> done | in_progress are both legal transitions; moving to
   // in_progress re-wakes the assignee through the existing move hook. On a
-  // code project an approval never closes the issue by itself: it stays in
+  // code project an approval never closes the task by itself: it stays in
   // review until merge or keep-branch succeeds against this snapshot.
   if (options.applyTransition !== false) {
     if (input.decision === 'approved' && codeProject) {
       return review!;
     }
-    await moveIssue(userId, issueId, {
+    await moveTask(userId, taskId, {
       status: input.decision === 'approved' ? 'done' : 'in_progress',
     });
   }
@@ -143,11 +143,11 @@ export async function createReview(
   return review!;
 }
 
-export async function listReviews(userId: string, issueId: string): Promise<IssueReview[]> {
-  await findOwnedIssue(userId, issueId);
+export async function listReviews(userId: string, taskId: string): Promise<TaskReview[]> {
+  await findOwnedTask(userId, taskId);
   return db
     .select()
-    .from(issueReviews)
-    .where(eq(issueReviews.issueId, issueId))
-    .orderBy(asc(issueReviews.createdAt));
+    .from(taskReviews)
+    .where(eq(taskReviews.taskId, taskId))
+    .orderBy(asc(taskReviews.createdAt));
 }

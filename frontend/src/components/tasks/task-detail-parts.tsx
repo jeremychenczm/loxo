@@ -38,7 +38,7 @@ export function Rule({ dashed = false }: { dashed?: boolean }) {
  * Circular rubber-stamp chop: double ring, arced captions, status across the
  * middle, date below. Ink follows currentColor; a turbulence filter erodes
  * random specks so each ticket's chop reads as hand-stamped. Seed keeps the
- * wear pattern stable per issue.
+ * wear pattern stable per task.
  */
 export function CircularStamp({
   label,

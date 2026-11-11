@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import {
   executionWorkspaces,
-  issueReviews,
+  taskReviews,
   projectRepositories,
   runChangeSnapshots,
   runs,
@@ -16,7 +16,7 @@ let token = '';
 let userId = '';
 let agentId = '';
 let projectId = '';
-let issueId = '';
+let taskId = '';
 
 function one<T>(rows: T[]): T {
   const row = rows[0];
@@ -52,22 +52,22 @@ beforeAll(async () => {
     .send({ name: 'Workspace worker', runtime: 'claude-code' });
   agentId = agent.body.agent.id;
 
-  const issue = await request(app)
-    .post('/api/issues')
+  const task = await request(app)
+    .post('/api/tasks')
     .set({ Authorization: `Bearer ${token}` })
     .send({ title: 'Workspace constraint fixture' });
-  issueId = issue.body.issue.id;
-  projectId = issue.body.issue.projectId;
+  taskId = task.body.task.id;
+  projectId = task.body.task.projectId;
 });
 
 function workspaceRow(overrides: Partial<typeof executionWorkspaces.$inferInsert> = {}) {
   return {
     userId,
     projectId,
-    issueId,
+    taskId,
     location: 'server' as const,
-    worktreePath: `worktrees/${issueId}`,
-    branchName: 'swarmdev/issue-1-fixture',
+    worktreePath: `worktrees/${taskId}`,
+    branchName: 'swarmdev/task-1-fixture',
     baseRef: 'main',
     baseCommit: 'a'.repeat(40),
     ...overrides,
@@ -75,7 +75,7 @@ function workspaceRow(overrides: Partial<typeof executionWorkspaces.$inferInsert
 }
 
 describe('execution workspace constraints', () => {
-  it('allows at most one non-terminal workspace per issue', async () => {
+  it('allows at most one non-terminal workspace per task', async () => {
     const first = one(
       await db.insert(executionWorkspaces).values(workspaceRow({ status: 'ready' })).returning()
     );
@@ -137,7 +137,7 @@ describe('run change snapshots and review binding', () => {
     const run = one(
       await db
         .insert(runs)
-        .values({ userId, agentId, agentName: 'Workspace worker', issueId, trigger: 'manual' })
+        .values({ userId, agentId, agentName: 'Workspace worker', taskId, trigger: 'manual' })
         .returning()
     );
 
@@ -168,10 +168,10 @@ describe('run change snapshots and review binding', () => {
 
     const review = one(
       await db
-        .insert(issueReviews)
+        .insert(taskReviews)
         .values({
           userId,
-          issueId,
+          taskId,
           reviewerType: 'human',
           reviewerUserId: userId,
           changeSnapshotId: snapshot.id,
@@ -183,7 +183,7 @@ describe('run change snapshots and review binding', () => {
     expect(review.changeSnapshotId).toBe(snapshot.id);
 
     await db.delete(runChangeSnapshots).where(eq(runChangeSnapshots.id, snapshot.id));
-    const after = one(await db.select().from(issueReviews).where(eq(issueReviews.id, review.id)));
+    const after = one(await db.select().from(taskReviews).where(eq(taskReviews.id, review.id)));
     expect(after.changeSnapshotId).toBeNull();
   });
 });
