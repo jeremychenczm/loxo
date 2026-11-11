@@ -85,6 +85,11 @@ interface ActiveTurn {
 class AcpSession implements AgentSession {
   sessionId = '';
   resumed = false;
+
+  get runtimeSessionId(): string | null {
+    return this.sessionId || null;
+  }
+
   private active: ActiveTurn | null = null;
   /** Session updates during `session/load` replay history; they are not new activity. */
   private loading = false;

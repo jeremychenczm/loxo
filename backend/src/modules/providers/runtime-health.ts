@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { db } from '../../db/client';
 import { providers } from '../../db/schema';
 import { eq } from 'drizzle-orm';
+import { runtimeProfile, type RuntimeProfile } from '../hosts/runtime-catalog';
 
 const execFileAsync = promisify(execFile);
 const CLI_CHECK_TIMEOUT_MS = 5_000;
@@ -99,6 +100,8 @@ export interface PlatformHealth {
   credentials: { providerCount: number; envConfigured: boolean };
   ready: boolean;
   installHint: string;
+  /** Transport and permission model the runtime would use right now. */
+  session: RuntimeProfile;
 }
 
 /** Single-platform CLI probe; used by the health endpoint and agent diagnostics. */
@@ -155,6 +158,7 @@ export async function getRuntimeHealth(userId: string): Promise<{
         credentials: { providerCount, envConfigured },
         ready: cli.available && (providerCount > 0 || envConfigured),
         installHint: spec.installHint,
+        session: runtimeProfile(spec.platform),
       };
     })
   );

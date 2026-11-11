@@ -13,6 +13,7 @@
     "db:migrate": "npm run db:migrate -w backend",
     "typecheck": "npm run typecheck -w backend -w frontend",
     "test": "npm test -w backend",
-    "build": "npm run build -w frontend"
+    "build": "npm run build -w frontend",
+    "runtimes:install": "npm run runtimes:install -w backend"
   }
 }

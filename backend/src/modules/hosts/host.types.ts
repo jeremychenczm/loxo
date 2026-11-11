@@ -101,6 +101,8 @@ export interface TurnOutcome {
 
 export interface AgentSession {
   readonly sessionId: string;
+  /** The runtime's own id for this conversation, for resuming later; null when it cannot resume. */
+  readonly runtimeSessionId: string | null;
   /** True when resumeSessionId was honored; false means the runtime starts with no memory. */
   readonly resumed: boolean;
   /** One turn at a time; a second concurrent call rejects. */

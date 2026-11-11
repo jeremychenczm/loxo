@@ -69,6 +69,10 @@ class ProcessSession implements AgentSession {
     this.sessionId = this.sessionRef ?? `process-${crypto.randomUUID()}`;
   }
 
+  get runtimeSessionId(): string | null {
+    return this.sessionRef;
+  }
+
   async prompt(turn: TurnInput): Promise<TurnOutcome> {
     if (this.active) throw new Error('A turn is already running in this session');
     if (this.closed) throw new Error('The session is closed');

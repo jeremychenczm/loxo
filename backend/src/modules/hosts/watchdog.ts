@@ -150,6 +150,10 @@ class WatchedSession implements AgentSession {
     return this.inner.resumed;
   }
 
+  get runtimeSessionId(): string | null {
+    return this.inner.runtimeSessionId;
+  }
+
   async prompt(turn: TurnInput): Promise<TurnOutcome> {
     const monitor = new TurnMonitor(this.limits);
     const pending = this.inner.prompt({

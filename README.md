@@ -49,6 +49,19 @@ Loxo supports five CLI coding runtimes — Claude Code, Codex, OpenCode, Hermes,
 
 Both modes use the same agent model, governance rules, run history, and review flow. Runtime detection uses local markers and confidence scoring, while adapter boundaries absorb capability differences.
 
+### Live sessions and platform-decided permissions
+
+Every runtime sits behind one host interface. Where an [Agent Client Protocol](https://agentclientprotocol.com) adapter exists, Loxo keeps a long-lived session: tool calls stream into the run's event log as they happen, the agent remembers earlier turns, and every action the agent asks to take is decided by Loxo's policy — inside its own worktree it may proceed, outside it is refused, and commands such as `git push`, `sudo`, or recursive deletes outside the worktree go to a person. Unanswered questions are denied when they expire. A watchdog stops turns that go silent, stop making progress, or repeat themselves.
+
+| Runtime | Transport | Permissions | Live events | Resume |
+|---|---|---|---|---|
+| Claude Code | ACP through `@agentclientprotocol/claude-agent-acp` | Decided per request by Loxo | Yes | Yes |
+| Codex | ACP through `@agentclientprotocol/codex-acp` | Decided per request by Loxo | Yes | Yes |
+| OpenCode, Hermes, OpenClaw | One CLI process per turn | Fixed per turn by CLI flags | No | No |
+| API agents | Provider API tool loop | Read-only worktree tools only | Yes | Within a session |
+
+`npm run runtimes:install` installs the pinned adapters into Loxo's storage directory. They drive the CLIs you already have installed, with their existing logins; until they are installed, Claude Code and Codex fall back to one process per turn. `GET /api/providers/runtime-health` reports which transport each runtime would use.
+
 ### MCP control plane
 
 Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.

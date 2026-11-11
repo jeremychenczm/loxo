@@ -44,6 +44,7 @@ const STOP_FOR_ERROR: Record<string, TurnStopReason> = { timeout: 'timeout', abo
 class ApiSession implements AgentSession {
   readonly sessionId = `api-${crypto.randomUUID()}`;
   readonly resumed = false;
+  readonly runtimeSessionId = null;
   private readonly history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   private active: AbortController | null = null;
 

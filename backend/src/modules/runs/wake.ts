@@ -183,18 +183,24 @@ async function performRun(run: Run): Promise<void> {
 
     const outcome = await executeTaskTurn(run, agent as Agent, task as Task);
     await finishRun(run.id, {
-      status: 'succeeded',
+      status: outcome.ok ? 'succeeded' : 'failed',
       output: outcome.text,
+      error: outcome.ok ? null : (outcome.error ?? `Turn ended: ${outcome.stopReason}`),
       sessionRef: outcome.sessionRef,
+      transport: outcome.transport,
+      stopReason: outcome.stopReason,
+      tokensIn: outcome.tokensIn,
+      tokensOut: outcome.tokensOut,
+      costUsd: outcome.costUsd,
     });
     // Fallback report: only when the agent said nothing through the control
     // plane during the run. Best-effort — the run result stands regardless.
-    if (outcome.text.trim() && !(await runHasTurns(run.id))) {
+    if (outcome.ok && outcome.text.trim() && !(await runHasTurns(run.id))) {
       await addAgentTurn(run.userId, task.id, agent.id, outcome.text, { runId: run.id }).catch(
         () => {}
       );
     }
-    succeeded = true;
+    succeeded = outcome.ok;
   } catch (error) {
     const detail = error instanceof RunnerError ? error.message : 'Task run failed unexpectedly';
     if (!(error instanceof RunnerError)) console.error(`Run ${run.id} failed:`, error);
