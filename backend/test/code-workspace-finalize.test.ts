@@ -1,38 +1,30 @@
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { projectRepositories } from '../src/db/schema';
+import { repositories } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { registerLiveMergeOperationForTests } from '../src/modules/code-workspaces/workspace.service';
 import { createReview } from '../src/modules/tasks/reviews.service';
 import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest } from '../src/modules/runner/runner';
-import { storage } from '../src/storage/layout';
+import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
-const execFileAsync = promisify(execFile);
 const app = createApp();
 const T = 30_000;
 
 let token = '';
 let userId = '';
 let workerId = '';
-let projectId = '';
+let sandbox = '';
 let repoDir = '';
 let repositoryId = '';
 
 let onTurn: (req: TurnRequest) => void = () => {};
-
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, windowsHide: true });
-  return stdout.trim();
-}
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -42,7 +34,7 @@ interface TaskRef {
 }
 
 async function createTaskIn(title: string): Promise<TaskRef> {
-  const res = await request(app).post('/api/tasks').set(auth()).send({ title, projectId });
+  const res = await request(app).post('/api/tasks').set(auth()).send({ title, repositoryId });
   expect(res.status).toBe(201);
   return res.body.task;
 }
@@ -112,31 +104,17 @@ beforeAll(async () => {
     .send({ name: 'Finalize Worker', runtime: 'claude-code' });
   workerId = agent.body.agent.id;
 
-  const project = await request(app)
-    .post('/api/projects')
-    .set(auth())
-    .send({ name: 'FinalizeProj' });
-  projectId = project.body.project.id;
+  sandbox = makeSandbox('finalize');
+  repoDir = await initFixtureRepo(path.join(sandbox, 'repo'), { 'README.md': '# base\n' });
 
-  repoDir = storage.projectWorkspace(userId, projectId);
-  await git(repoDir, 'init', '-b', 'main');
-  await git(repoDir, 'config', 'user.email', 'fixture@swarmdev.test');
-  await git(repoDir, 'config', 'user.name', 'SwarmDev Fixture');
-  await git(repoDir, 'config', 'commit.gpgsign', 'false');
-  fs.writeFileSync(path.join(repoDir, 'README.md'), '# base\n');
-  await git(repoDir, 'add', '.');
-  await git(repoDir, 'commit', '-m', 'initial');
-
-  const bind = await request(app)
-    .put(`/api/projects/${projectId}/repository`)
-    .set(auth())
-    .send({ location: 'server' });
-  expect(bind.status).toBe(200);
-  repositoryId = bind.body.repository.id;
+  const created = await request(app).post('/api/repositories').set(auth()).send({ rootPath: repoDir });
+  expect(created.status).toBe(201);
+  repositoryId = created.body.repository.id;
 });
 
 afterAll(() => {
   setTaskTurnExecutorForTests(null);
+  removeSandbox(sandbox);
 });
 
 afterEach(async () => {
@@ -179,8 +157,8 @@ describe('merge finalization', () => {
 
     const [repo] = await db
       .select()
-      .from(projectRepositories)
-      .where(eq(projectRepositories.id, repositoryId));
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
     expect(repo!.activeMergeWorkspaceId).toBeNull();
   });
 
@@ -255,14 +233,14 @@ describe('merge lock', () => {
     registerLiveMergeOperationForTests(liveOp);
     const ws = await workspaceOf(task.id);
     await db
-      .update(projectRepositories)
+      .update(repositories)
       .set({
         activeMergeWorkspaceId: ws!.id,
         activeMergeOperationId: liveOp,
         activeMergePreHead: await git(repoDir, 'rev-parse', 'HEAD'),
         activeMergeStartedAt: new Date(),
       })
-      .where(eq(projectRepositories.id, repositoryId));
+      .where(eq(repositories.id, repositoryId));
 
     const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(409);
@@ -270,14 +248,14 @@ describe('merge lock', () => {
 
     // Cleanup: release the fake lock and finish the task.
     await db
-      .update(projectRepositories)
+      .update(repositories)
       .set({
         activeMergeWorkspaceId: null,
         activeMergeOperationId: null,
         activeMergePreHead: null,
         activeMergeStartedAt: null,
       })
-      .where(eq(projectRepositories.id, repositoryId));
+      .where(eq(repositories.id, repositoryId));
     const ok = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(ok.status).toBe(200);
   });
@@ -290,14 +268,14 @@ describe('merge lock', () => {
 
     const ws = await workspaceOf(task.id);
     await db
-      .update(projectRepositories)
+      .update(repositories)
       .set({
         activeMergeWorkspaceId: ws!.id,
         activeMergeOperationId: crypto.randomUUID(), // never registered as live
         activeMergePreHead: await git(repoDir, 'rev-parse', 'HEAD'),
         activeMergeStartedAt: new Date(Date.now() - 60_000),
       })
-      .where(eq(projectRepositories.id, repositoryId));
+      .where(eq(repositories.id, repositoryId));
 
     const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(200);

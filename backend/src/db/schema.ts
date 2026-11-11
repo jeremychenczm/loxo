@@ -178,53 +178,52 @@ export const messages = pgTable('messages', {
 
 export type Message = typeof messages.$inferSelect;
 
-/**
- * Project workspace: a durable directory agents collaborate in, bound to
- * agents via a join table. `updatedAt` is the recency key maintained by
- * touchProject.
- */
-export type ProjectKind = 'normal' | 'default';
+/** A command the platform runs in a workspace to verify it; runs through the system shell. */
+export interface RepositoryCheck {
+  name: string;
+  command: string;
+  timeoutSeconds: number;
+}
 
-export const projects = pgTable(
-  'projects',
+/**
+ * A git repository on the host, registered by the root of its primary
+ * checkout. Loxo adds worktrees and branches beside it and writes to the
+ * primary checkout only during an explicit merge. The activeMerge* columns
+ * form a compare-and-set lock: at most one workspace may mutate the primary
+ * checkout, and the persisted operation id and pre-merge HEAD let crash
+ * recovery prove whether an interrupted merge never started, aborted, or
+ * completed — staleness is never inferred from age alone.
+ */
+export const repositories = pgTable(
+  'repositories',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    description: text('description').notNull().default(''),
-    /** 'default' marks the per-user fallback project; created lazily, cannot be deleted. */
-    kind: text('kind').$type<ProjectKind>().notNull().default('normal'),
+    /** Primary checkout root as reported by git. */
+    rootPath: text('root_path').notNull(),
+    /** Must resolve to a local branch under refs/heads/; the only valid merge target. */
+    defaultBranch: text('default_branch').notNull().default('main'),
+    setupCommand: text('setup_command'),
+    checks: jsonb('checks').$type<RepositoryCheck[]>().notNull().default([]),
+    /** Stable repo identity (root, common dir, initial commit, remote); a change invalidates workspace reuse. */
+    fingerprint: text('fingerprint').notNull(),
+    activeMergeWorkspaceId: uuid('active_merge_workspace_id').references(
+      (): AnyPgColumn => executionWorkspaces.id,
+      { onDelete: 'set null' }
+    ),
+    activeMergeOperationId: text('active_merge_operation_id'),
+    activeMergePreHead: text('active_merge_pre_head'),
+    activeMergeStartedAt: timestamp('active_merge_started_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
-    // At most one default project per user; makes lazy creation race-safe.
-    uniqueIndex('projects_user_default')
-      .on(t.userId)
-      .where(sql`${t.kind} = 'default'`),
-  ]
+  (t) => [uniqueIndex('repositories_user_root').on(t.userId, t.rootPath)]
 );
 
-export type Project = typeof projects.$inferSelect;
-
-export const projectAgents = pgTable(
-  'project_agents',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    agentId: uuid('agent_id')
-      .notNull()
-      .references(() => agents.id, { onDelete: 'cascade' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('project_agents_project_agent').on(t.projectId, t.agentId)]
-);
-
-export type ProjectAgent = typeof projectAgents.$inferSelect;
+export type Repository = typeof repositories.$inferSelect;
 
 export type TaskStatus =
   | 'backlog'
@@ -248,9 +247,10 @@ export const tasks = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
+    /** Null for tasks that need no code, such as discussions. */
+    repositoryId: uuid('repository_id').references((): AnyPgColumn => repositories.id, {
+      onDelete: 'set null',
+    }),
     number: integer('number').notNull(),
     title: text('title').notNull(),
     /** The requirement as the user wrote it. */
@@ -289,7 +289,7 @@ export const tasks = pgTable(
   (t) => [
     uniqueIndex('tasks_user_number').on(t.userId, t.number),
     index('tasks_user_status').on(t.userId, t.status),
-    index('tasks_project_status').on(t.projectId, t.status),
+    index('tasks_repository_status').on(t.repositoryId, t.status),
     index('tasks_assignee_agent').on(t.assigneeAgentId, t.status),
     index('tasks_source_conversation').on(t.sourceConversationId),
     check(
@@ -424,53 +424,6 @@ export const taskReviews = pgTable(
 
 export type TaskReview = typeof taskReviews.$inferSelect;
 
-export type RepositoryLocation = 'server';
-
-export type CleanupPolicy = 'manual' | 'after_merge';
-
-/**
- * Git repository bound to a project for code execution. The activeMerge*
- * columns form a compare-and-set lock: at most one workspace may mutate the
- * primary checkout, and the persisted operation id and pre-merge HEAD let
- * crash recovery prove whether an interrupted merge never started, aborted,
- * or completed — staleness is never inferred from age alone.
- */
-export const projectRepositories = pgTable(
-  'project_repositories',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    location: text('location').$type<RepositoryLocation>().notNull(),
-    /** Primary checkout root. Null for server repositories, which use the project workspace. */
-    rootPath: text('root_path'),
-    /** Must resolve to a local branch under refs/heads/; the only valid merge target. */
-    defaultBaseRef: text('default_base_ref').notNull().default('main'),
-    branchPrefix: text('branch_prefix').notNull().default('swarmdev'),
-    cleanupPolicy: text('cleanup_policy').$type<CleanupPolicy>().notNull().default('manual'),
-    /** Stable repo identity (root, common dir, initial commit, remote); a change invalidates workspace reuse. */
-    repositoryFingerprint: text('repository_fingerprint'),
-    activeMergeWorkspaceId: uuid('active_merge_workspace_id').references(
-      (): AnyPgColumn => executionWorkspaces.id,
-      { onDelete: 'set null' }
-    ),
-    activeMergeOperationId: text('active_merge_operation_id'),
-    activeMergePreHead: text('active_merge_pre_head'),
-    activeMergeStartedAt: timestamp('active_merge_started_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('project_repositories_project').on(t.projectId),
-  ]
-);
-
-export type ProjectRepository = typeof projectRepositories.$inferSelect;
-
 export type ExecutionWorkspaceStatus =
   | 'preparing'
   | 'ready'
@@ -502,17 +455,13 @@ export const executionWorkspaces = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
     taskId: uuid('task_id')
       .notNull()
       .references(() => tasks.id, { onDelete: 'cascade' }),
-    /** Survives repository unbinding so terminal rows keep their audit value. */
-    repositoryId: uuid('repository_id').references(() => projectRepositories.id, {
+    /** Survives repository removal so terminal rows keep their audit value. */
+    repositoryId: uuid('repository_id').references(() => repositories.id, {
       onDelete: 'set null',
     }),
-    location: text('location').$type<RepositoryLocation>().notNull(),
     /** Generated by the workspace driver; never supplied by the client. */
     worktreePath: text('worktree_path').notNull(),
     branchName: text('branch_name').notNull(),

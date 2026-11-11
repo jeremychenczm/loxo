@@ -22,7 +22,7 @@ import {
   type Task,
   type TaskStatus,
 } from '@/lib/tasks';
-import { fetchProjects, type ProjectView } from '@/lib/projects';
+import { fetchRepositories, type Repository } from '@/lib/repositories';
 
 /** Columns rendered on the board; blocked cards ride inside In Progress. */
 const BOARD_COLUMNS: TaskStatus[] = ['todo', 'in_progress', 'in_review', 'done'];
@@ -56,9 +56,9 @@ function orderAt(cards: Task[], index: number, draggedId: string): number {
 
 function BoardPage() {
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
-  const [projects, setProjects] = useState<ProjectView[]>([]);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [projectFilter, setProjectFilter] = useState<string>('');
+  const [repositoryFilter, setRepositoryFilter] = useState<string>('');
   const [dragSource, setDragSource] = useState<TaskStatus | null>(null);
   const [openTask, setOpenTask] = useState<Task | null>(null);
   const [printEntrance, setPrintEntrance] = useState(false);
@@ -67,22 +67,22 @@ function BoardPage() {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const { board: next } = await fetchBoard(projectFilter || undefined);
+    const { board: next } = await fetchBoard(repositoryFilter || undefined);
     setBoard(next);
-  }, [projectFilter]);
+  }, [repositoryFilter]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     Promise.all([
-      fetchBoard(projectFilter || undefined),
-      fetchProjects(),
+      fetchBoard(repositoryFilter || undefined),
+      fetchRepositories(),
       fetchAgents().catch(() => [] as Agent[]),
     ])
-      .then(([boardRes, projectsRes, agentList]) => {
+      .then(([boardRes, repositoriesRes, agentList]) => {
         if (cancelled) return;
         setBoard(boardRes.board);
-        setProjects(projectsRes);
+        setRepositories(repositoriesRes);
         setAgents(agentList);
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : 'Load failed'))
@@ -90,7 +90,7 @@ function BoardPage() {
     return () => {
       cancelled = true;
     };
-  }, [projectFilter]);
+  }, [repositoryFilter]);
 
   // Deep link (?task=<id>): open the ticket once the board is in, then
   // strip the param so refreshes and closes don't reopen it.
@@ -288,25 +288,16 @@ function BoardPage() {
           [ NEW TICKET ]
         </button>
         <select
-          value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
+          value={repositoryFilter}
+          onChange={(e) => setRepositoryFilter(e.target.value)}
           className="border border-pixel-line bg-pixel-white px-2 py-1 font-sans text-xs text-pixel-black focus:border-pixel-black focus:outline-none"
         >
-          <option value="">All projects</option>
-          {projects
-            .filter((p) => p.kind === 'default')
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          {projects
-            .filter((p) => p.kind !== 'default')
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+          <option value="">All repositories</option>
+          {repositories.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
         </select>
         {error && (
           <span className="border border-pixel-red bg-pixel-white px-2 py-1 font-sans text-xs text-pixel-red">
@@ -333,8 +324,8 @@ function BoardPage() {
 
       {creating && (
         <NewTaskModal
-          projects={projects}
-          initialProjectId={projectFilter || undefined}
+          repositories={repositories}
+          initialRepositoryId={repositoryFilter || undefined}
           onClose={() => setCreating(false)}
           onCreated={(task) => {
             setCreating(false);
@@ -349,7 +340,7 @@ function BoardPage() {
         <TaskDetail
           taskId={openTask.id}
           printEntrance={printEntrance}
-          projectName={projects.find((p) => p.id === openTask.projectId)?.name}
+          repositoryName={repositories.find((r) => r.id === openTask.repositoryId)?.name}
           agents={agents}
           onClose={() => {
             setOpenTask(null);

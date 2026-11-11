@@ -11,7 +11,7 @@ export type TaskStatus =
 
 export interface Task {
   id: string;
-  projectId: string;
+  repositoryId: string | null;
   number: number;
   title: string;
   brief: string;
@@ -57,14 +57,14 @@ export interface AssignmentPatch {
   userId?: string | null;
 }
 
-export function fetchBoard(projectId?: string) {
-  const query = projectId ? `?projectId=${projectId}` : '';
+export function fetchBoard(repositoryId?: string) {
+  const query = repositoryId ? `?repositoryId=${repositoryId}` : '';
   return apiFetch<{ board: Board }>(`/api/tasks/board${query}`);
 }
 
-export function fetchTasks(filter: { projectId?: string; status?: TaskStatus } = {}) {
+export function fetchTasks(filter: { repositoryId?: string; status?: TaskStatus } = {}) {
   const params = new URLSearchParams();
-  if (filter.projectId) params.set('projectId', filter.projectId);
+  if (filter.repositoryId) params.set('repositoryId', filter.repositoryId);
   if (filter.status) params.set('status', filter.status);
   const query = params.toString();
   return apiFetch<{ tasks: Task[] }>(`/api/tasks${query ? `?${query}` : ''}`);
@@ -77,7 +77,7 @@ export function fetchTask(id: string) {
 export function createTask(input: {
   title: string;
   brief?: string;
-  projectId?: string;
+  repositoryId?: string;
 }) {
   return apiFetch<{ task: Task }>('/api/tasks', {
     method: 'POST',

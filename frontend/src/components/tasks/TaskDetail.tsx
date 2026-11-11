@@ -51,7 +51,7 @@ interface TaskDetailProps {
   taskId: string;
   /** Play the thermal-printer feed entrance (used right after creation). */
   printEntrance?: boolean;
-  projectName?: string;
+  repositoryName?: string;
   agents: Agent[];
   onClose: () => void;
   /** Fired after any mutation so the board behind can refresh. */
@@ -107,7 +107,7 @@ const VALUE_SELECT =
 export function TaskDetail({
   taskId,
   printEntrance = false,
-  projectName,
+  repositoryName,
   agents,
   onClose,
   onChanged,
@@ -360,9 +360,9 @@ export function TaskDetail({
 
           {/* Details */}
           <div className="flex flex-col gap-1.5">
-            <Row label="Project">
+            <Row label="Repo">
               <span className="max-w-[55%] truncate font-pixel text-sm text-pixel-black">
-                {projectName ?? '-'}
+                {repositoryName ?? '-'}
               </span>
             </Row>
             <Row label="Assignee">

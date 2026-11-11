@@ -1,7 +1,9 @@
+import path from 'node:path';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
+import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
 const app = createApp();
 let token = '';
@@ -113,25 +115,31 @@ describe('POST /api/conversations/:id/file-task', () => {
     expect(second.body.task.sourceConversationId).toBe(conversationId);
   });
 
-  it('honors an explicit project and rejects a foreign one', async () => {
-    const project = await request(app)
-      .post('/api/projects')
-      .set(auth())
-      .send({ name: 'Filing target' });
-    const conversationId = await newConversation();
+  it('honors an explicit repository and rejects an unknown one', async () => {
+    const sandbox = makeSandbox('filing');
+    try {
+      const repoDir = await initFixtureRepo(path.join(sandbox, 'target'));
+      const repository = await request(app)
+        .post('/api/repositories')
+        .set(auth())
+        .send({ rootPath: repoDir });
+      const conversationId = await newConversation();
 
-    const ok = await request(app)
-      .post(`/api/conversations/${conversationId}/file-task`)
-      .set(auth())
-      .send({ title: 'Into a project', projectId: project.body.project.id });
-    expect(ok.status).toBe(201);
-    expect(ok.body.task.projectId).toBe(project.body.project.id);
+      const ok = await request(app)
+        .post(`/api/conversations/${conversationId}/file-task`)
+        .set(auth())
+        .send({ title: 'Into a repository', repositoryId: repository.body.repository.id });
+      expect(ok.status).toBe(201);
+      expect(ok.body.task.repositoryId).toBe(repository.body.repository.id);
 
-    const bad = await request(app)
-      .post(`/api/conversations/${conversationId}/file-task`)
-      .set(auth())
-      .send({ title: 'Nope', projectId: '00000000-0000-0000-0000-000000000000' });
-    expect(bad.status).toBe(400);
+      const bad = await request(app)
+        .post(`/api/conversations/${conversationId}/file-task`)
+        .set(auth())
+        .send({ title: 'Nope', repositoryId: '00000000-0000-0000-0000-000000000000' });
+      expect(bad.status).toBe(400);
+    } finally {
+      removeSandbox(sandbox);
+    }
   });
 
   it('rejects an empty title', async () => {

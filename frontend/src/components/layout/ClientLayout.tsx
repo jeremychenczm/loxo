@@ -1,15 +1,14 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { BrandMark, Header } from '@/components/layout/Header';
 import { MobileAppNav } from '@/components/layout/MobileAppNav';
 import { useAuthStore } from '@/store/auth';
-import { fetchProjects, deleteProject, type ProjectView } from '@/lib/projects';
 
-type SidebarIcon = 'home' | 'agents' | 'teams' | 'workshop' | 'projects' | 'settings';
+type SidebarIcon = 'home' | 'agents' | 'teams' | 'workshop' | 'repositories' | 'settings';
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'swarmdev.sidebarWidth';
 const SIDEBAR_OPEN_STORAGE_KEY = 'swarmdev.sidebarOpen';
@@ -29,7 +28,7 @@ function SidebarIconGlyph({ icon, className = 'h-5 w-5' }: { icon: SidebarIcon; 
     teams: 'M12 2 2 7l10 5 10-5-10-5ZM2 17l10 5 10-5M2 12l10 5 10-5',
     workshop:
       'M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2Zm0 14H6l-2 2V4h16ZM7 9h10v2H7Zm0-3h10v2H7Z',
-    projects: 'M4 5h7l2 3h7v11H4V5Zm2 5v7h12v-7H6Z',
+    repositories: 'M4 5h7l2 3h7v11H4V5Zm2 5v7h12v-7H6Z',
     settings:
       'M19.4 13.5a7.8 7.8 0 0 0 0-3l2-1.5-2-3.4-2.4 1a8.7 8.7 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A8.7 8.7 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a8.7 8.7 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8.7 8.7 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.5ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z',
   };
@@ -44,29 +43,22 @@ function TraditionalSidebar({
   open,
   pathname,
   width,
-  projects,
   onWidthChange,
   onToggle,
-  onDeleteProject,
 }: {
   open: boolean;
   pathname: string;
   width: number;
-  projects: ProjectView[];
   onWidthChange: (width: number) => void;
   onToggle: () => void;
-  onDeleteProject: (project: ProjectView) => void;
 }) {
   const navItems: Array<{ href: string; label: string; icon: SidebarIcon; exact?: boolean }> = [
     { href: '/', label: 'Home', icon: 'home', exact: true },
     { href: '/tasks', label: 'Tasks', icon: 'teams' },
+    { href: '/repositories', label: 'Repositories', icon: 'repositories' },
     { href: '/agents', label: 'My Agents', icon: 'agents' },
     { href: '/settings/providers', label: 'Providers', icon: 'settings' },
   ];
-  const recentProjects = projects
-    .filter((p) => p.kind !== 'default')
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, 7);
 
   const handleResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -150,61 +142,6 @@ function TraditionalSidebar({
             );
           })}
 
-          {recentProjects.length > 0 && (
-            <div className="pt-2">
-              <div className="my-3 h-px bg-[#E4E4E4]" aria-hidden="true" />
-              <p className="mb-2 px-3 font-sans text-[10px] uppercase tracking-[0.16em] leading-none text-[#9B9B9B]">
-                Recent projects
-              </p>
-              <div className="space-y-1">
-                {recentProjects.map((project, index) => {
-                  const href = `/projects/${project.id}`;
-                  const active = pathname === href;
-                  return (
-                    <motion.div
-                      key={project.id}
-                      initial={{ opacity: 0, x: -16 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.035 * (navItems.length + index) }}
-                    >
-                      <div className="group/sidebar-project relative">
-                        <Link
-                          href={href}
-                          className={`flex min-h-[44px] items-center gap-2.5 rounded-sm px-3 font-sans text-sm no-underline transition-colors ${
-                            active
-                              ? 'bg-[#111] text-white'
-                              : 'text-[#6B6B6B] hover:bg-[#F5F5F5] hover:text-[#111]'
-                          }`}
-                          title={project.name}
-                        >
-                          <SidebarIconGlyph icon="projects" className="h-4 w-4 shrink-0" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate leading-tight">{project.name}</span>
-                            <span className="block truncate text-[10px] leading-tight opacity-60">
-                              {project.agentIds.length} agents
-                            </span>
-                          </span>
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            onDeleteProject(project);
-                          }}
-                          className="pointer-events-none absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-sm border border-[#C9C9C9] bg-white font-sans text-xs leading-none text-[#6B6B6B] opacity-0 transition-opacity hover:border-[#111] hover:text-[#111] group-hover/sidebar-project:pointer-events-auto group-hover/sidebar-project:opacity-100"
-                          aria-label={`Delete project ${project.name}`}
-                          title="Delete project"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </nav>
 
         <div className="border-t border-[#F0F0F0] p-3">
@@ -248,12 +185,10 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
   const [isDesktopViewport, setIsDesktopViewport] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
-  const [projects, setProjects] = useState<ProjectView[]>([]);
 
   const isPublicPath = pathname === '/' || pathname === '/login' || pathname === '/register';
   const isRouteGuardBlocking = !isPublicPath && (!hasHydrated || !token);
   const isChatRoute = /^\/agents\/[^/]+$/.test(pathname);
-  const isProjectDetailRoute = /^\/projects\/[^/]+/.test(pathname);
 
   const mainClassName = isChatRoute
     ? 'max-w-none bg-pixel-cream p-0 md:mx-auto md:min-h-[calc(100vh-120px)] md:w-full md:max-w-none md:bg-pixel-white md:p-0'
@@ -293,20 +228,6 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
     window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, sidebarOpen ? 'open' : 'closed');
   }, [sidebarOpen]);
 
-  const reloadProjects = useCallback(() => {
-    if (!token) {
-      setProjects([]);
-      return;
-    }
-    fetchProjects()
-      .then(setProjects)
-      .catch(() => setProjects([]));
-  }, [token]);
-
-  useEffect(() => {
-    reloadProjects();
-  }, [reloadProjects, pathname]);
-
   const traditionalShellActive = isDesktopViewport;
   const sidebarEnabled = traditionalShellActive && !isRouteGuardBlocking;
   const effectiveSidebarOpen = sidebarEnabled && sidebarOpen;
@@ -314,9 +235,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
   const contentStyle = sidebarEnabled
     ? { paddingLeft: sidebarOffset, boxSizing: 'border-box' as const }
     : undefined;
-  const innerClassName = isProjectDetailRoute
-    ? 'px-3 py-4 lg:px-4 xl:px-5'
-    : 'px-8 py-6 xl:px-10 2xl:px-12';
+  const innerClassName = 'px-8 py-6 xl:px-10 2xl:px-12';
 
   return (
     <>
@@ -336,17 +255,8 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
                   open={sidebarOpen}
                   pathname={pathname}
                   width={sidebarWidth}
-                  projects={projects}
                   onWidthChange={setSidebarWidth}
                   onToggle={() => setSidebarOpen((open) => !open)}
-                  onDeleteProject={async (project) => {
-                    const ok = window.confirm(
-                      `Delete project "${project.name}"? This removes its configuration and workspace.`
-                    );
-                    if (!ok) return;
-                    await deleteProject(project.id);
-                    reloadProjects();
-                  }}
                 />
               )}
               <div

@@ -13,14 +13,14 @@ import { appendMessage, getConversation } from './conversations.service';
 export async function fileTaskFromConversation(
   userId: string,
   conversationId: string,
-  input: { title: string; brief?: string; projectId?: string }
+  input: { title: string; brief?: string; repositoryId?: string }
 ): Promise<Task> {
   const conversation = await getConversation(userId, conversationId);
 
   const task = await createTask(userId, {
     title: input.title,
     brief: input.brief,
-    projectId: input.projectId,
+    repositoryId: input.repositoryId,
     assignee: { agentId: conversation.agentId },
     sourceConversationId: conversation.id,
   });

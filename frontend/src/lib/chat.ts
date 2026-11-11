@@ -60,7 +60,7 @@ export const draftTask = (id: string, range?: { fromMessageId?: string; toMessag
 
 export const fileTask = (
   id: string,
-  input: { title: string; brief?: string; projectId?: string }
+  input: { title: string; brief?: string; repositoryId?: string }
 ) =>
   apiFetch<{ task: Task }>(`/api/conversations/${id}/file-task`, {
     method: 'POST',

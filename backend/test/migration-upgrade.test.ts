@@ -54,6 +54,7 @@ const ids = {
   issue: '00000000-0000-4000-8000-0000000000d1',
   run: '00000000-0000-4000-8000-0000000000e1',
   conversation: '00000000-0000-4000-8000-0000000000f1',
+  workspace: '00000000-0000-4000-8000-0000000000f2',
 };
 
 async function seedLegacyRows(): Promise<void> {
@@ -96,6 +97,16 @@ async function seedLegacyRows(): Promise<void> {
   await q(
     `INSERT INTO messages (conversation_id, role, content, meta) VALUES ($1, 'system', 'Filed', $2)`,
     [ids.conversation, JSON.stringify({ source: 'filing', issueId: ids.issue })]
+  );
+  const [binding] = await q<{ id: string }>(
+    `INSERT INTO project_repositories (user_id, project_id, location) VALUES ($1, $2, 'server') RETURNING id`,
+    [ids.user, ids.project]
+  );
+  await q(
+    `INSERT INTO execution_workspaces
+       (id, user_id, project_id, issue_id, repository_id, location, worktree_path, branch_name, base_ref, base_commit, status)
+     VALUES ($1, $2, $3, $4, $5, 'server', '/legacy/worktree', 'swarmdev/issue-7-000000', 'main', $6, 'merged')`,
+    [ids.workspace, ids.user, ids.project, ids.issue, binding!.id, 'a'.repeat(40)]
   );
 }
 
@@ -148,6 +159,23 @@ describe('migration upgrade from the pre-reshape schema', () => {
       [ids.conversation]
     );
     expect(message!.meta).toEqual({ source: 'filing', taskId: ids.issue });
+  });
+
+  it('detaches tasks and workspaces from the removed project bindings', async () => {
+    const [task] = await q(`SELECT repository_id FROM tasks WHERE id = $1`, [ids.issue]);
+    expect(task).toEqual({ repository_id: null });
+    const [workspace] = await q(
+      `SELECT task_id, repository_id, status FROM execution_workspaces WHERE id = $1`,
+      [ids.workspace]
+    );
+    expect(workspace).toEqual({ task_id: ids.issue, repository_id: null, status: 'merged' });
+    const repositories = await q(`SELECT 1 FROM repositories`);
+    expect(repositories).toHaveLength(0);
+    const legacy = await q(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_name IN ('projects', 'project_agents', 'project_repositories')`
+    );
+    expect(legacy).toHaveLength(0);
   });
 
   it('drops the legacy grouping storage', async () => {

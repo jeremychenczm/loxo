@@ -204,6 +204,13 @@
       "when": 1794371572970,
       "tag": "0028_issues-to-tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794372073538,
+      "tag": "0029_projects-to-repositories",
+      "breakpoints": true
     }
   ]
 }

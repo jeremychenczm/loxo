@@ -125,7 +125,7 @@ const assignmentPatch = z
 tasksRouter.get('/', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
-      projectId: z.string().uuid().optional(),
+      repositoryId: z.string().uuid().optional(),
       status: taskStatus.optional(),
       assigneeAgentId: z.string().uuid().optional(),
     });
@@ -139,10 +139,10 @@ tasksRouter.get('/', async (req: AuthedRequest, res, next) => {
 
 tasksRouter.get('/board', async (req: AuthedRequest, res, next) => {
   try {
-    const schema = z.object({ projectId: z.string().uuid().optional() });
+    const schema = z.object({ repositoryId: z.string().uuid().optional() });
     const parsed = schema.safeParse(req.query);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid board filter');
-    res.json({ board: await getBoard(req.auth!.userId, parsed.data.projectId) });
+    res.json({ board: await getBoard(req.auth!.userId, parsed.data.repositoryId) });
   } catch (error) {
     next(error);
   }
@@ -153,7 +153,7 @@ tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
     const schema = z.object({
       title: z.string().trim().min(1).max(300),
       brief: z.string().max(10000).optional(),
-      projectId: z.string().uuid().optional(),
+      repositoryId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Task title is required');

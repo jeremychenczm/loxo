@@ -97,7 +97,7 @@ conversationsRouter.post('/:id/file-task', async (req: AuthedRequest, res, next)
     const schema = z.object({
       title: z.string().trim().min(1).max(300),
       brief: z.string().max(10_000).optional(),
-      projectId: z.string().uuid().optional(),
+      repositoryId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'title is required');

@@ -8,7 +8,8 @@ import { toHostPath } from './host-path';
  *   <root>/
  *     users/<userId>/
  *       agents/<agentId>/{workspace,baseline,snapshots,state}
- *       projects/<projectId>/{workspace,worktrees/<taskId>}
+ *       worktrees/<taskId>
+ *       runs/<runId>/
  *
  * Agent runtime state lives beside the workspace, not inside it, so
  * workspace diffing never has to filter state files out.
@@ -25,9 +26,8 @@ export interface StorageLayout {
   root: string;
   userRoot: (userId: string) => string;
   agentPaths: (userId: string, agentId: string) => AgentPaths;
-  projectWorkspace: (userId: string, projectId: string) => string;
-  projectWorktreesRoot: (userId: string, projectId: string) => string;
-  projectCodeArtifacts: (userId: string, projectId: string, runId: string) => string;
+  worktreesRoot: (userId: string) => string;
+  runArtifacts: (userId: string, runId: string) => string;
 }
 
 function ensured(dir: string): string {
@@ -51,13 +51,9 @@ export function createStorageLayout(rootInput: string): StorageLayout {
         state: ensured(path.join(agentRoot, 'state')),
       };
     },
-    projectWorkspace: (userId, projectId) =>
-      ensured(path.join(root, 'users', userId, 'projects', projectId, 'workspace')),
-    // Managed task worktrees live beside the workspace, never inside the repository.
-    projectWorktreesRoot: (userId, projectId) =>
-      ensured(path.join(root, 'users', userId, 'projects', projectId, 'worktrees')),
-    projectCodeArtifacts: (userId, projectId, runId) =>
-      ensured(path.join(root, 'users', userId, 'projects', projectId, 'code-artifacts', runId)),
+    // Managed worktrees live in platform storage, never inside a registered repository.
+    worktreesRoot: (userId) => ensured(path.join(root, 'users', userId, 'worktrees')),
+    runArtifacts: (userId, runId) => ensured(path.join(root, 'users', userId, 'runs', runId)),
   };
 }
 

@@ -1,16 +1,20 @@
+import path from 'node:path';
 import request from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import type { TaskStatus } from '../src/db/schema';
 import { ALLOWED_TRANSITIONS } from '../src/modules/tasks/task-transitions';
+import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
 const app = createApp();
 let token = '';
 let otherToken = '';
 let agentId = '';
 let userId = '';
-let projectId = '';
+let repositoryId = '';
+let repoDir = '';
+let sandbox = '';
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
@@ -35,12 +39,16 @@ beforeAll(async () => {
     .send({ name: 'Task worker', runtime: 'api' });
   agentId = agent.body.agent.id;
 
-  const project = await request(app)
-    .post('/api/projects')
+  sandbox = makeSandbox('tasks');
+  repoDir = await initFixtureRepo(path.join(sandbox, 'home'));
+  const repository = await request(app)
+    .post('/api/repositories')
     .set({ Authorization: `Bearer ${token}` })
-    .send({ name: 'Task home' });
-  projectId = project.body.project.id;
+    .send({ rootPath: repoDir });
+  repositoryId = repository.body.repository.id;
 });
+
+afterAll(() => removeSandbox(sandbox));
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 const otherAuth = () => ({ Authorization: `Bearer ${otherToken}` });
@@ -59,32 +67,30 @@ async function move(id: string, status: string, boardOrder?: number) {
 }
 
 describe('task creation', () => {
-  it('creates in a chosen project with backlog status and a number', async () => {
-    const task = await create({ title: 'First task', projectId });
+  it('creates in a chosen repository with backlog status and a number', async () => {
+    const task = await create({ title: 'First task', repositoryId });
     expect(task.status).toBe('backlog');
-    expect(task.projectId).toBe(projectId);
+    expect(task.repositoryId).toBe(repositoryId);
     expect(task.number).toBeGreaterThan(0);
   });
 
-  it('falls back to the default project when none is given', async () => {
+  it('creates a task without a repository', async () => {
     const task = await create({ title: 'Quick capture' });
-    const projectRes = await request(app)
-      .get(`/api/projects/${task.projectId}`)
-      .set(auth());
-    expect(projectRes.body.project.kind).toBe('default');
+    expect(task.repositoryId).toBeNull();
   });
 
-  it('rejects a foreign project', async () => {
+  it("rejects another user's repository", async () => {
     const foreign = await request(app)
-      .post('/api/projects')
+      .post('/api/repositories')
       .set(otherAuth())
-      .send({ name: 'Not yours' });
+      .send({ rootPath: repoDir });
+    expect(foreign.status).toBe(201);
     const res = await request(app)
       .post('/api/tasks')
       .set(auth())
-      .send({ title: 'Nope', projectId: foreign.body.project.id });
+      .send({ title: 'Nope', repositoryId: foreign.body.repository.id });
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe('invalid_project');
+    expect(res.body.code).toBe('invalid_repository');
   });
 
   it('draws unique consecutive numbers under concurrent creation', async () => {
@@ -115,7 +121,7 @@ describe('task creation', () => {
 
 describe('status transitions', () => {
   it('walks the happy path backlog -> todo -> in_progress -> in_review -> done', async () => {
-    const task = await create({ title: 'Happy path', projectId });
+    const task = await create({ title: 'Happy path', repositoryId });
     for (const status of ['todo', 'in_progress', 'in_review', 'done']) {
       const res = await move(task.id, status);
       expect(res.status).toBe(200);
@@ -126,7 +132,7 @@ describe('status transitions', () => {
   });
 
   it('supports the blocked loop and the review rework path', async () => {
-    const task = await create({ title: 'Bumpy path', projectId });
+    const task = await create({ title: 'Bumpy path', repositoryId });
     await move(task.id, 'todo');
     await move(task.id, 'in_progress');
     expect((await move(task.id, 'blocked')).body.task.status).toBe('blocked');
@@ -152,7 +158,7 @@ describe('status transitions', () => {
     for (const from of statuses) {
       for (const to of statuses) {
         if (from === to || ALLOWED_TRANSITIONS[from].includes(to)) continue;
-        const task = await create({ title: `matrix ${from} -> ${to}`, projectId });
+        const task = await create({ title: `matrix ${from} -> ${to}`, repositoryId });
         for (const step of pathTo[from]) await move(task.id, step);
         const res = await move(task.id, to);
         expect(res.status, `${from} -> ${to} must be rejected`).toBe(400);
@@ -162,7 +168,7 @@ describe('status transitions', () => {
   });
 
   it('treats a same-status move as a pure reorder', async () => {
-    const task = await create({ title: 'Reorder me', projectId });
+    const task = await create({ title: 'Reorder me', repositoryId });
     const res = await move(task.id, 'backlog', 0.5);
     expect(res.status).toBe(200);
     expect(res.body.task.boardOrder).toBe(0.5);
@@ -171,7 +177,7 @@ describe('status transitions', () => {
 
 describe('assignment', () => {
   it('assigns an owned agent and clears it again', async () => {
-    const task = await create({ title: 'For the agent', projectId });
+    const task = await create({ title: 'For the agent', repositoryId });
     const assigned = await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
@@ -187,7 +193,7 @@ describe('assignment', () => {
   });
 
   it('assigns the owner as a human assignee', async () => {
-    const task = await create({ title: 'For me', projectId });
+    const task = await create({ title: 'For me', repositoryId });
     const res = await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
@@ -197,7 +203,7 @@ describe('assignment', () => {
   });
 
   it('rejects agent and user in the same slot', async () => {
-    const task = await create({ title: 'Greedy', projectId });
+    const task = await create({ title: 'Greedy', repositoryId });
     const res = await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
@@ -210,7 +216,7 @@ describe('assignment', () => {
       .post('/api/agents')
       .set(otherAuth())
       .send({ name: 'Foreign worker', runtime: 'api' });
-    const task = await create({ title: 'Stolen labor', projectId });
+    const task = await create({ title: 'Stolen labor', repositoryId });
     const res = await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
@@ -220,7 +226,7 @@ describe('assignment', () => {
   });
 
   it('sets a reviewer independently of the assignee', async () => {
-    const task = await create({ title: 'Reviewed', projectId });
+    const task = await create({ title: 'Reviewed', repositoryId });
     const res = await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
@@ -232,12 +238,12 @@ describe('assignment', () => {
 
 describe('board and isolation', () => {
   it('groups tasks by status ordered by boardOrder', async () => {
-    const a = await create({ title: 'Board A', projectId });
-    const b = await create({ title: 'Board B', projectId });
+    const a = await create({ title: 'Board A', repositoryId });
+    const b = await create({ title: 'Board B', repositoryId });
     await move(a.id, 'backlog', 2);
     await move(b.id, 'backlog', 1);
 
-    const res = await request(app).get(`/api/tasks/board?projectId=${projectId}`).set(auth());
+    const res = await request(app).get(`/api/tasks/board?repositoryId=${repositoryId}`).set(auth());
     expect(res.status).toBe(200);
     const backlog = res.body.board.backlog as { id: string }[];
     const posA = backlog.findIndex((i) => i.id === a.id);
@@ -247,7 +253,7 @@ describe('board and isolation', () => {
   });
 
   it("hides other users' tasks everywhere", async () => {
-    const mine = await create({ title: 'Mine only', projectId });
+    const mine = await create({ title: 'Mine only', repositoryId });
     const listed = await request(app).get('/api/tasks').set(otherAuth());
     expect(listed.body.tasks.some((i: { id: string }) => i.id === mine.id)).toBe(false);
     const fetched = await request(app).get(`/api/tasks/${mine.id}`).set(otherAuth());

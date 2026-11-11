@@ -39,7 +39,7 @@ export interface RepositoryInfo {
 
 export interface PrepareWorkspaceInput {
   repositoryRoot: string;
-  /** Managed root for this project's worktrees; the driver generates the leaf path. */
+  /** Managed root for task worktrees; the driver generates the leaf path. */
   worktreesRoot: string;
   taskId: string;
   branchName: string;

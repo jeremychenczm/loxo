@@ -35,7 +35,7 @@ const auth = () => ({ Authorization: `Bearer ${token}` });
 
 async function createTask(title: string) {
   const res = await request(app).post('/api/tasks').set(auth()).send({ title });
-  return res.body.task as { id: string; number: number; projectId: string };
+  return res.body.task as { id: string; number: number; repositoryId: string | null };
 }
 
 async function moveTo(taskId: string, status: string) {

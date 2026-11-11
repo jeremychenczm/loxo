@@ -108,7 +108,7 @@ export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
             ),
         ].join('\n')
       : '',
-    `Project workspace: ${input.workspace}`,
+    `Workspace: ${input.workspace}`,
     input.controlPlane === 'mcp'
       ? [
           'Platform control-plane tools for this run:',
@@ -122,7 +122,7 @@ export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
     [
       'Hard rules for this run:',
       '- This run is non-interactive. Never wait for confirmation; decide and proceed.',
-      '- Do the actual work in the project workspace. No placeholders and no descriptions of work you did not do.',
+      '- Do the actual work in the workspace. No placeholders and no descriptions of work you did not do.',
       input.controlPlane === 'mcp'
         ? '- Finish by calling submit_result with a concise work report, or ask_blocker if you cannot proceed. If you post nothing through the control plane, your final reply text lands on the timeline as a fallback.'
         : '- Your final reply is posted verbatim to the task timeline as your comment: make it a concise work report.',
@@ -170,7 +170,7 @@ export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
             ),
         ].join('\n')
       : '',
-    `Project workspace (inspect the actual work here): ${input.workspace}`,
+    `Workspace (inspect the actual work here): ${input.workspace}`,
     input.controlPlane === 'mcp'
       ? [
           'Reviewer control-plane tools for this run:',

@@ -3,14 +3,12 @@ import { db } from '../../db/client';
 import {
   agents,
   tasks,
-  projects,
   users,
   type Task,
   type TaskStatus,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
-import { hasActiveWorkspaces } from '../code-workspaces/workspace.service';
-import { getOrCreateDefaultProject } from '../projects/projects.service';
+import { findRepository, hasActiveWorkspaces } from '../code-workspaces/workspace.service';
 import { requestWake } from '../runs/wake';
 import { isTransitionAllowed, TERMINAL_STATUSES } from './task-transitions';
 import { countAgentRejections, REVIEW_CYCLE_CAP } from './reviews.service';
@@ -68,13 +66,10 @@ async function findTask(userId: string, taskId: string): Promise<Task | undefine
   return task;
 }
 
-async function assertOwnedProject(userId: string, projectId: string): Promise<void> {
-  const [row] = await db
-    .select({ id: projects.id })
-    .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.userId, userId)))
-    .limit(1);
-  if (!row) throw badRequest('invalid_project', 'Project does not exist');
+async function assertOwnedRepository(userId: string, repositoryId: string): Promise<void> {
+  if (!(await findRepository(userId, repositoryId))) {
+    throw badRequest('invalid_repository', 'Repository does not exist');
+  }
 }
 
 async function assertOwnedAgent(userId: string, agentId: string): Promise<void> {
@@ -125,18 +120,13 @@ export async function createTask(
   input: {
     title: string;
     brief?: string;
-    projectId?: string;
+    repositoryId?: string;
     assignee?: AssignmentPatch;
     /** Validated by the caller; not exposed through the HTTP create route. */
     sourceConversationId?: string;
   }
 ): Promise<Task> {
-  let projectId = input.projectId;
-  if (projectId) {
-    await assertOwnedProject(userId, projectId);
-  } else {
-    projectId = (await getOrCreateDefaultProject(userId)).id;
-  }
+  if (input.repositoryId) await assertOwnedRepository(userId, input.repositoryId);
   const assignee = input.assignee
     ? await resolvePrincipal(userId, input.assignee, 'assignee')
     : { agentId: null, userId: null };
@@ -156,7 +146,7 @@ export async function createTask(
       .insert(tasks)
       .values({
         userId,
-        projectId: projectId!,
+        repositoryId: input.repositoryId ?? null,
         number: counter!.value,
         title: input.title,
         brief: input.brief ?? '',
@@ -172,10 +162,10 @@ export async function createTask(
 
 export async function listTasks(
   userId: string,
-  filter: { projectId?: string; status?: TaskStatus; assigneeAgentId?: string }
+  filter: { repositoryId?: string; status?: TaskStatus; assigneeAgentId?: string }
 ): Promise<Task[]> {
   const conditions = [eq(tasks.userId, userId)];
-  if (filter.projectId) conditions.push(eq(tasks.projectId, filter.projectId));
+  if (filter.repositoryId) conditions.push(eq(tasks.repositoryId, filter.repositoryId));
   if (filter.status) conditions.push(eq(tasks.status, filter.status));
   if (filter.assigneeAgentId) conditions.push(eq(tasks.assigneeAgentId, filter.assigneeAgentId));
   return db
@@ -188,10 +178,10 @@ export async function listTasks(
 /** Kanban payload: every status bucket present, cards ordered by boardOrder. */
 export async function getBoard(
   userId: string,
-  projectId?: string
+  repositoryId?: string
 ): Promise<Record<TaskStatus, Task[]>> {
   const conditions = [eq(tasks.userId, userId)];
-  if (projectId) conditions.push(eq(tasks.projectId, projectId));
+  if (repositoryId) conditions.push(eq(tasks.repositoryId, repositoryId));
   const rows = await db
     .select()
     .from(tasks)

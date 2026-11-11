@@ -7,7 +7,7 @@ import { authRouter } from '../modules/auth/auth.routes';
 import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { crewsRouter } from '../modules/crews/crews.routes';
 import { tasksRouter } from '../modules/tasks/tasks.routes';
-import { projectsRouter } from '../modules/projects/projects.routes';
+import { repositoriesRouter } from '../modules/repositories/repositories.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
 import { handleMcpRequest } from '../modules/runs/mcp-server';
 import { providersRouter } from '../modules/providers/providers.routes';
@@ -40,7 +40,7 @@ export function createApp(): express.Express {
   app.use('/api/agent-presets', apiPresetsRouter);
   app.use('/api/crews', crewsRouter);
   app.use('/api/conversations', conversationsRouter);
-  app.use('/api/projects', projectsRouter);
+  app.use('/api/repositories', repositoriesRouter);
   app.use('/api/tasks', tasksRouter);
   app.use('/api/runs', runsRouter);
 

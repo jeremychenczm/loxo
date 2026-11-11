@@ -15,7 +15,7 @@ import {
 } from '../runner/runner';
 import {
   captureRunChanges,
-  getProjectRepository,
+  findRepository,
   resolveExecutionWorkspace,
   snapshotBeforeRun,
   type ResolvedWorkspace,
@@ -46,7 +46,7 @@ export interface TaskTurnOutcome {
 
 /**
  * One agent turn against a task: build the prompt from the task context
- * and run it in the project workspace. Locking, run-state transitions, and
+ * and run it in the task's workspace. Locking, run-state transitions, and
  * the timeline comment are the wake service's job, not this function's.
  */
 export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promise<TaskTurnOutcome> {
@@ -60,11 +60,11 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
   }));
 
   // A repository binding switches the run into the task's isolated worktree;
-  // without one the legacy shared project workspace remains in effect.
+  // without one the agent works in its own workspace.
   const codeWorkspace = await resolveCodeWorkspace(run, agent, task);
   const workspace = codeWorkspace
     ? codeWorkspace.workspace.worktreePath
-    : storage.projectWorkspace(run.userId, task.projectId);
+    : storage.agentPaths(run.userId, agent.id).workspace;
 
   // The api lane gets the same tools in-process.
   const mcpCapable = MCP_RUNTIMES.has(agent.runtime);
@@ -152,12 +152,12 @@ async function resolveCodeWorkspace(
   agent: Agent,
   task: Task
 ): Promise<ResolvedWorkspace | null> {
-  const repository = await getProjectRepository(run.userId, task.projectId);
+  const repository = await findRepository(run.userId, task.repositoryId);
   if (!repository) return null;
 
   if (agent.runtime === 'api') {
     // API agents have no filesystem execution; a textual review is fine, a
-    // worker assignment on a code project is not.
+    // worker assignment on a code task is not.
     if (run.trigger !== 'review') {
       throw new RunnerError(
         `Agent "${agent.name}" is API-hosted and cannot edit code; assign a CLI runtime`,

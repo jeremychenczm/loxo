@@ -1,14 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ProjectView } from '@/lib/projects';
+import type { Repository } from '@/lib/repositories';
 import { createTask, type Task } from '@/lib/tasks';
 import { BracketButton, PAPER, Rule, TornEdge } from './task-detail-parts';
 
 interface NewTaskModalProps {
-  projects: ProjectView[];
-  /** Preselected project, e.g. the board's active filter. */
-  initialProjectId?: string;
+  repositories: Repository[];
+  /** Preselected repository, e.g. the board's active filter. */
+  initialRepositoryId?: string;
   onClose: () => void;
   onCreated: (task: Task) => void;
 }
@@ -17,15 +17,14 @@ const FIELD =
   'w-full border border-dashed border-pixel-gray/60 bg-transparent p-2 font-pixel text-sm text-pixel-black focus:border-pixel-black focus:outline-none';
 
 export function NewTaskModal({
-  projects,
-  initialProjectId,
+  repositories,
+  initialRepositoryId,
   onClose,
   onCreated,
 }: NewTaskModalProps) {
-  const defaultProject = projects.find((p) => p.kind === 'default');
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
-  const [projectId, setProjectId] = useState(initialProjectId ?? defaultProject?.id ?? '');
+  const [repositoryId, setRepositoryId] = useState(initialRepositoryId ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -44,7 +43,7 @@ export function NewTaskModal({
       const { task } = await createTask({
         title: trimmed,
         ...(brief.trim() ? { brief: brief.trim() } : {}),
-        ...(projectId ? { projectId } : {}),
+        ...(repositoryId ? { repositoryId } : {}),
       });
       onCreated(task);
     } catch (err) {
@@ -52,11 +51,6 @@ export function NewTaskModal({
       setSubmitting(false);
     }
   };
-
-  const ordered = [
-    ...projects.filter((p) => p.kind === 'default'),
-    ...projects.filter((p) => p.kind !== 'default'),
-  ];
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -108,16 +102,17 @@ export function NewTaskModal({
           <div className="mt-3 flex gap-3">
             <div className="min-w-0 flex-1">
               <p className="mb-1 font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
-                Project
+                Repository
               </p>
               <select
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
+                value={repositoryId}
+                onChange={(e) => setRepositoryId(e.target.value)}
                 className={FIELD}
               >
-                {ordered.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
+                <option value="">No repository</option>
+                {repositories.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
                   </option>
                 ))}
               </select>

@@ -5,7 +5,7 @@ import { db, pool } from '../src/db/client';
 import {
   executionWorkspaces,
   taskReviews,
-  projectRepositories,
+  repositories,
   runChangeSnapshots,
   runs,
 } from '../src/db/schema';
@@ -15,7 +15,6 @@ const app = createApp();
 let token = '';
 let userId = '';
 let agentId = '';
-let projectId = '';
 let taskId = '';
 
 function one<T>(rows: T[]): T {
@@ -57,17 +56,14 @@ beforeAll(async () => {
     .set({ Authorization: `Bearer ${token}` })
     .send({ title: 'Workspace constraint fixture' });
   taskId = task.body.task.id;
-  projectId = task.body.task.projectId;
 });
 
 function workspaceRow(overrides: Partial<typeof executionWorkspaces.$inferInsert> = {}) {
   return {
     userId,
-    projectId,
     taskId,
-    location: 'server' as const,
     worktreePath: `worktrees/${taskId}`,
-    branchName: 'swarmdev/task-1-fixture',
+    branchName: 'loxo/task-1-fixture',
     baseRef: 'main',
     baseCommit: 'a'.repeat(40),
     ...overrides,
@@ -110,25 +106,17 @@ describe('execution workspace constraints', () => {
   });
 });
 
-describe('project repository constraints', () => {
-  it('binds at most one repository per project with default settings', async () => {
-    const binding = one(
-      await db
-        .insert(projectRepositories)
-        .values({ userId, projectId, location: 'server' })
-        .returning()
-    );
-    expect(binding.defaultBaseRef).toBe('main');
-    expect(binding.branchPrefix).toBe('swarmdev');
-    expect(binding.cleanupPolicy).toBe('manual');
+describe('repository constraints', () => {
+  it('registers a root path at most once per user with default settings', async () => {
+    const values = { userId, name: 'fixture', rootPath: '/srv/fixture', fingerprint: 'fp' };
+    const repository = one(await db.insert(repositories).values(values).returning());
+    expect(repository.defaultBranch).toBe('main');
+    expect(repository.checks).toEqual([]);
+    expect(repository.setupCommand).toBeNull();
 
-    expect(
-      await sqlState(
-        db.insert(projectRepositories).values({ userId, projectId, location: 'server' })
-      )
-    ).toBe('23505');
+    expect(await sqlState(db.insert(repositories).values(values))).toBe('23505');
 
-    await db.delete(projectRepositories).where(eq(projectRepositories.id, binding.id));
+    await db.delete(repositories).where(eq(repositories.id, repository.id));
   });
 });
 

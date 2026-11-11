@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -13,8 +11,8 @@ import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 import { storage } from '../src/storage/layout';
+import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
-const execFileAsync = promisify(execFile);
 const app = createApp();
 const T = 30_000;
 
@@ -22,7 +20,8 @@ let token = '';
 let userId = '';
 let workerId = '';
 let inspectorId = '';
-let projectId = '';
+let repositoryId = '';
+let sandbox = '';
 
 interface SeenTurn {
   workspace: string;
@@ -32,27 +31,10 @@ interface SeenTurn {
 const seen: SeenTurn[] = [];
 let onTurn: (req: TurnRequest) => void = () => {};
 
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, windowsHide: true });
-  return stdout.trim();
-}
-
-async function initProjectRepo(): Promise<string> {
-  const dir = storage.projectWorkspace(userId, projectId);
-  await git(dir, 'init', '-b', 'main');
-  await git(dir, 'config', 'user.email', 'fixture@swarmdev.test');
-  await git(dir, 'config', 'user.name', 'SwarmDev Fixture');
-  await git(dir, 'config', 'commit.gpgsign', 'false');
-  fs.writeFileSync(path.join(dir, 'README.md'), '# project\n');
-  await git(dir, 'add', '.');
-  await git(dir, 'commit', '-m', 'initial');
-  return dir;
-}
-
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
 async function createTaskIn(title: string): Promise<{ id: string; number: number }> {
-  const res = await request(app).post('/api/tasks').set(auth()).send({ title, projectId });
+  const res = await request(app).post('/api/tasks').set(auth()).send({ title, repositoryId });
   expect(res.status).toBe(201);
   return res.body.task;
 }
@@ -103,15 +85,12 @@ beforeAll(async () => {
     else inspectorId = res.body.agent.id;
   }
 
-  const project = await request(app)
-    .post('/api/projects')
-    .set(auth())
-    .send({ name: 'LedgerLite' });
-  projectId = project.body.project.id;
+  sandbox = makeSandbox('runs');
 });
 
 afterAll(() => {
   setTaskTurnExecutorForTests(null);
+  removeSandbox(sandbox);
 });
 
 afterEach(async () => {
@@ -119,45 +98,22 @@ afterEach(async () => {
   onTurn = () => {};
 });
 
-describe('project repository binding', () => {
-  it('rejects binding before the workspace is a Git repository', { timeout: T }, async () => {
-    const res = await request(app)
-      .put(`/api/projects/${projectId}/repository`)
-      .set(auth())
-      .send({ location: 'server' });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('not_a_repository');
-  });
-
-  it('rejects code execution on the default project', { timeout: T }, async () => {
-    const fallbackTask = await request(app)
-      .post('/api/tasks')
-      .set(auth())
-      .send({ title: 'Default project fixture' });
-    const res = await request(app)
-      .put(`/api/projects/${fallbackTask.body.task.projectId}/repository`)
-      .set(auth())
-      .send({ location: 'server' });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('default_project');
-  });
-
-  it('binds the server repository and inspects it', { timeout: T }, async () => {
-    await initProjectRepo();
-    const bind = await request(app)
-      .put(`/api/projects/${projectId}/repository`)
-      .set(auth())
-      .send({ location: 'server' });
-    expect(bind.status).toBe(200);
-    expect(bind.body.repository.defaultBaseRef).toBe('main');
-    expect(bind.body.repository.repositoryFingerprint).toMatch(/^[0-9a-f]{64}$/);
+describe('repository registration', () => {
+  it('registers a local repository and inspects it', { timeout: T }, async () => {
+    const dir = await initFixtureRepo(path.join(sandbox, 'ledgerlite'));
+    const created = await request(app).post('/api/repositories').set(auth()).send({ rootPath: dir });
+    expect(created.status).toBe(201);
+    expect(created.body.repository.defaultBranch).toBe('main');
+    expect(created.body.repository.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    repositoryId = created.body.repository.id;
 
     const inspect = await request(app)
-      .post(`/api/projects/${projectId}/repository/inspect`)
+      .post(`/api/repositories/${repositoryId}/inspect`)
       .set(auth());
     expect(inspect.status).toBe(200);
-    expect(inspect.body.valid).toBe(true);
-    expect(inspect.body.dirty).toBe(false);
+    expect(inspect.body.inspection.valid).toBe(true);
+    expect(inspect.body.inspection.dirty).toBe(false);
+    expect(inspect.body.inspection.sameRepository).toBe(true);
   });
 });
 
@@ -170,13 +126,12 @@ describe('runs in isolated task workspaces', () => {
     await wake(workerId, task.id, 'manual');
 
     const turn = seen[seen.length - 1]!;
-    expect(turn.workspace).toContain(path.join('worktrees', task.id));
-    expect(turn.workspace).not.toBe(storage.projectWorkspace(userId, projectId));
+    expect(turn.workspace).toBe(path.join(storage.worktreesRoot(userId), task.id));
     expect(turn.permission).toBe('edit');
 
     const ws = await workspaceOf(task.id);
     expect(ws?.status).toBe('dirty');
-    expect(ws?.branchName).toBe(`swarmdev/task-${task.number}-${task.id.replace(/-/g, '').slice(0, 6)}`);
+    expect(ws?.branchName).toBe(`loxo/task-${task.number}-${task.id.replace(/-/g, '').slice(0, 6)}`);
 
     const changes = await request(app).get(`/api/tasks/${task.id}/changes`).set(auth());
     expect(changes.status).toBe(200);
@@ -267,7 +222,7 @@ describe('runs in isolated task workspaces', () => {
     expect(timeline.some((c) => c.body.includes('Read-only policy violation'))).toBe(true);
   });
 
-  it('rejects an API worker on a code project with a visible failure', { timeout: T }, async () => {
+  it('rejects an API worker on a code task with a visible failure', { timeout: T }, async () => {
     const apiAgent = await request(app)
       .post('/api/agents')
       .set(auth())
@@ -311,7 +266,7 @@ describe('review binding and lifecycle guards', () => {
     expect(after.body.task.closedAt ?? null).toBeNull();
   });
 
-  it('blocks task and project deletion while workspaces are active', { timeout: T }, async () => {
+  it('blocks task and repository removal while workspaces are active', { timeout: T }, async () => {
     const task = await createTaskIn('Deletion guard');
     await wake(workerId, task.id, 'manual');
 
@@ -319,14 +274,12 @@ describe('review binding and lifecycle guards', () => {
     expect(delTask.status).toBe(409);
     expect(delTask.body.code).toBe('workspace_active');
 
-    const delProject = await request(app).delete(`/api/projects/${projectId}`).set(auth());
-    expect(delProject.status).toBe(409);
-
-    const unbind = await request(app).delete(`/api/projects/${projectId}/repository`).set(auth());
-    expect(unbind.status).toBe(409);
+    const removeRepo = await request(app).delete(`/api/repositories/${repositoryId}`).set(auth());
+    expect(removeRepo.status).toBe(409);
+    expect(removeRepo.body.code).toBe('workspace_active');
   });
 
-  it('leaves non-code projects on the legacy approval path', { timeout: T }, async () => {
+  it('leaves tasks without a repository on the plain approval path', { timeout: T }, async () => {
     const res = await request(app)
       .post('/api/tasks')
       .set(auth())

@@ -61,7 +61,7 @@ Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `up
 | **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted task while retaining a link to its source. |
 | **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, and permission levels. |
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, task, and captured workspace evidence. |
-| **Projects** | Groups tasks, repositories, and workspaces. |
+| **Repositories** | Registers local git repositories; agents work in managed worktrees on `loxo/` branches beside your checkout. |
 
 ![Task detail — every task renders as a thermal-printer work order; the rubber stamp is the status control](docs/screenshots/task-detail.png)
 
@@ -129,10 +129,10 @@ npm run dev:frontend
 Open `http://localhost:3000`, register an account, and then:
 
 1. Configure a provider or verify a local CLI runtime.
-2. Create an agent and a project.
+2. Create an agent and register a local git repository.
 3. Create a task, assign it, and inspect the resulting run and evidence.
 
-For code work, bind a Git repository to the project.
+Tasks without a repository run in the agent's own workspace.
 
 ## Testing
 

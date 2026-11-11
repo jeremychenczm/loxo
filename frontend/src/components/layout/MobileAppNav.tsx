@@ -3,12 +3,12 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-type MobileTabKey = 'tasks' | 'agents' | 'projects' | 'me';
+type MobileTabKey = 'tasks' | 'agents' | 'repositories' | 'me';
 
 const MOBILE_TABS: Array<{ key: MobileTabKey; label: string; accent: string; href: string }> = [
   { key: 'tasks', label: 'Tasks', accent: 'bg-pixel-yellow', href: '/tasks' },
   { key: 'agents', label: 'Agents', accent: 'bg-pixel-yellow', href: '/agents' },
-  { key: 'projects', label: 'Projects', accent: 'bg-pixel-yellow', href: '/projects' },
+  { key: 'repositories', label: 'Repos', accent: 'bg-pixel-yellow', href: '/repositories' },
   { key: 'me', label: 'Me', accent: 'bg-pixel-gray', href: '/settings/providers' },
 ];
 
@@ -45,7 +45,7 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
 function activeTabForRoute(pathname: string): MobileTabKey | null {
   if (pathname.startsWith('/tasks')) return 'tasks';
   if (pathname.startsWith('/agents') || pathname.startsWith('/upload')) return 'agents';
-  if (pathname.startsWith('/projects')) return 'projects';
+  if (pathname.startsWith('/repositories')) return 'repositories';
   if (pathname.startsWith('/settings')) return 'me';
   return null;
 }

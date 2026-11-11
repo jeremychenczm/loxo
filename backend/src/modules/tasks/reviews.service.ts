@@ -9,7 +9,7 @@ import {
   type ReviewDecision,
 } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
-import { getProjectRepository, latestTaskSnapshot } from '../code-workspaces/workspace.service';
+import { latestTaskSnapshot } from '../code-workspaces/workspace.service';
 import { addAgentComment, addHumanComment } from './comments.service';
 import { moveTask } from './tasks.service';
 
@@ -98,10 +98,10 @@ export async function createReview(
     reviewerUserId = userId;
   }
 
-  // Code projects: the verdict applies to an exact captured change set. A
-  // later workspace change makes an approval stale without another status.
-  const codeProject = (await getProjectRepository(userId, task.projectId)) !== null;
-  const changeSnapshotId = codeProject
+  // Code tasks: the verdict applies to an exact captured change set. A later
+  // workspace change makes an approval stale without another status.
+  const codeTask = task.repositoryId !== null;
+  const changeSnapshotId = codeTask
     ? ((await latestTaskSnapshot(userId, taskId))?.id ?? null)
     : null;
 
@@ -129,10 +129,10 @@ export async function createReview(
 
   // in_review -> done | in_progress are both legal transitions; moving to
   // in_progress re-wakes the assignee through the existing move hook. On a
-  // code project an approval never closes the task by itself: it stays in
+  // code task an approval never closes the task by itself: it stays in
   // review until merge or keep-branch succeeds against this snapshot.
   if (options.applyTransition !== false) {
-    if (input.decision === 'approved' && codeProject) {
+    if (input.decision === 'approved' && codeTask) {
       return review!;
     }
     await moveTask(userId, taskId, {
