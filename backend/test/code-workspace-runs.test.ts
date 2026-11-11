@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, runChangeSnapshots, runs, turns } from '../src/db/schema';
+import { agents, changeSnapshots, runs, turns } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { recordApproval } from '../src/modules/tasks/approvals.service';
 import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
@@ -190,8 +190,8 @@ describe('runs in isolated task workspaces', () => {
     expect(run!.status).toBe('failed');
     const [snapshot] = await db
       .select()
-      .from(runChangeSnapshots)
-      .where(eq(runChangeSnapshots.runId, run!.id));
+      .from(changeSnapshots)
+      .where(eq(changeSnapshots.runId, run!.id));
     expect(snapshot).toBeDefined();
     expect(snapshot!.changedFiles).toBe(1);
     expect((await workspaceOf(task.id))?.status).toBe('dirty');
@@ -211,8 +211,8 @@ describe('runs in isolated task workspaces', () => {
       .where(and(eq(runs.taskId, task.id), eq(runs.trigger, 'review')));
     const [snapshot] = await db
       .select()
-      .from(runChangeSnapshots)
-      .where(eq(runChangeSnapshots.runId, reviewRun[0]!.id));
+      .from(changeSnapshots)
+      .where(eq(changeSnapshots.runId, reviewRun[0]!.id));
     expect(snapshot!.policyViolation).toBe(true);
 
     const timeline = await db

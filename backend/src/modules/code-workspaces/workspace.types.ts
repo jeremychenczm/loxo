@@ -107,7 +107,7 @@ export interface CaptureChangesInput {
   limits?: CaptureLimits;
 }
 
-export interface ChangeSnapshot {
+export interface CapturedChanges {
   afterHead: string;
   summary: ChangeSummary;
   /** Full counts before summary truncation; includes untracked files. */
@@ -180,14 +180,14 @@ export interface RemoveWorkspaceInput {
  * Location-agnostic workspace operations; task and run services never know
  * where Git executes.
  */
-export interface ExecutionWorkspaceDriver {
+export interface WorkspaceDriver {
   inspectRepository(input: InspectRepositoryInput): Promise<RepositoryInfo>;
   prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceResult>;
   snapshotWorkingTree(input: {
     worktreePath: string;
     limits?: CaptureLimits;
   }): Promise<WorkingTreeSnapshot>;
-  captureChanges(input: CaptureChangesInput): Promise<ChangeSnapshot>;
+  captureChanges(input: CaptureChangesInput): Promise<CapturedChanges>;
   reportBaseDrift(input: BaseDriftInput): Promise<BaseDriftReport>;
   inspectPrimaryCheckout(repositoryRoot: string): Promise<PrimaryCheckoutState>;
   commitCheckpoint(input: CheckpointInput): Promise<CheckpointResult>;

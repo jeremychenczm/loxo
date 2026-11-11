@@ -15,7 +15,7 @@ import {
 import {
   captureRunChanges,
   findRepository,
-  resolveExecutionWorkspace,
+  resolveWorkspace,
   snapshotBeforeRun,
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
@@ -173,7 +173,7 @@ async function resolveCodeWorkspace(
       'cli_failed'
     );
   }
-  return resolveExecutionWorkspace(run.userId, task);
+  return resolveWorkspace(run.userId, task);
 }
 
 async function settleRunCapture(

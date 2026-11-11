@@ -235,10 +235,17 @@ describe('migration upgrade from the pre-reshape schema', () => {
     const [task] = await q(`SELECT repository_id FROM tasks WHERE id = $1`, [ids.issue]);
     expect(task).toEqual({ repository_id: null });
     const [workspace] = await q(
-      `SELECT task_id, repository_id, status FROM execution_workspaces WHERE id = $1`,
+      `SELECT task_id, repository_id, status, kind, agent_id FROM workspaces WHERE id = $1`,
       [ids.workspace]
     );
-    expect(workspace).toEqual({ task_id: ids.issue, repository_id: null, status: 'merged' });
+    // The single shared branch of the old model is the integration workspace.
+    expect(workspace).toEqual({
+      task_id: ids.issue,
+      repository_id: null,
+      status: 'merged',
+      kind: 'integration',
+      agent_id: null,
+    });
     const repositories = await q(`SELECT 1 FROM repositories`);
     expect(repositories).toHaveLength(0);
     const legacy = await q(

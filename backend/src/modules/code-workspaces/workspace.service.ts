@@ -4,16 +4,16 @@ import path from 'node:path';
 import { and, desc, eq, isNull, notInArray } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
-  EXECUTION_WORKSPACE_TERMINAL_STATUSES,
-  executionWorkspaces,
+  WORKSPACE_TERMINAL_STATUSES,
+  workspaces,
   approvals,
   tasks,
   repositories,
-  runChangeSnapshots,
-  type ExecutionWorkspace,
+  changeSnapshots,
+  type Workspace,
   type Task,
   type Repository,
-  type RunChangeSnapshot,
+  type ChangeSnapshot,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
@@ -28,7 +28,7 @@ import {
   type WorkingTreeSnapshot,
 } from './workspace.types';
 
-const TERMINALS = [...EXECUTION_WORKSPACE_TERMINAL_STATUSES];
+const TERMINALS = [...WORKSPACE_TERMINAL_STATUSES];
 
 /** Every managed branch lives under this namespace in the user's repository. */
 export const MANAGED_BRANCH_PREFIX = 'loxo';
@@ -55,18 +55,20 @@ export async function findRepository(
   return row ?? null;
 }
 
+/** The task's active integration workspace: the branch that gets delivered. */
 export async function getTaskWorkspace(
   userId: string,
   taskId: string
-): Promise<ExecutionWorkspace | null> {
+): Promise<Workspace | null> {
   const [row] = await db
     .select()
-    .from(executionWorkspaces)
+    .from(workspaces)
     .where(
       and(
-        eq(executionWorkspaces.taskId, taskId),
-        eq(executionWorkspaces.userId, userId),
-        notInArray(executionWorkspaces.status, TERMINALS)
+        eq(workspaces.taskId, taskId),
+        eq(workspaces.userId, userId),
+        eq(workspaces.kind, 'integration'),
+        notInArray(workspaces.status, TERMINALS)
       )
     )
     .limit(1);
@@ -78,38 +80,38 @@ export async function hasActiveWorkspaces(
 ): Promise<boolean> {
   const filter =
     'taskId' in scope
-      ? eq(executionWorkspaces.taskId, scope.taskId)
-      : eq(executionWorkspaces.repositoryId, scope.repositoryId);
+      ? eq(workspaces.taskId, scope.taskId)
+      : eq(workspaces.repositoryId, scope.repositoryId);
   const [row] = await db
-    .select({ id: executionWorkspaces.id })
-    .from(executionWorkspaces)
-    .where(and(filter, notInArray(executionWorkspaces.status, TERMINALS)))
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(and(filter, notInArray(workspaces.status, TERMINALS)))
     .limit(1);
   return row !== undefined;
 }
 
 async function updateWorkspace(
   id: string,
-  patch: Partial<typeof executionWorkspaces.$inferInsert>
-): Promise<ExecutionWorkspace> {
+  patch: Partial<typeof workspaces.$inferInsert>
+): Promise<Workspace> {
   const [row] = await db
-    .update(executionWorkspaces)
+    .update(workspaces)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(executionWorkspaces.id, id))
+    .where(eq(workspaces.id, id))
     .returning();
   return row!;
 }
 
 /** Once cumulative changes existed, a later zero-change observation never resets to ready. */
 function ratchetStatus(
-  current: ExecutionWorkspace['status'],
+  current: Workspace['status'],
   observed: 'ready' | 'dirty'
 ): 'ready' | 'dirty' {
   return current === 'dirty' && observed === 'ready' ? 'dirty' : observed;
 }
 
 export interface ResolvedWorkspace {
-  workspace: ExecutionWorkspace;
+  workspace: Workspace;
   repository: Repository;
 }
 
@@ -118,7 +120,7 @@ export interface ResolvedWorkspace {
  * no code workspace; a task with one gets its isolated worktree, created or
  * reused idempotently.
  */
-export async function resolveExecutionWorkspace(
+export async function resolveWorkspace(
   userId: string,
   task: Task
 ): Promise<ResolvedWorkspace | null> {
@@ -138,7 +140,7 @@ export async function prepareTaskWorkspace(
   userId: string,
   task: Task,
   boundRepository?: Repository
-): Promise<ExecutionWorkspace> {
+): Promise<Workspace> {
   const repository = boundRepository ?? (await findRepository(userId, task.repositoryId));
   if (!repository) throw notFound('Task has no repository');
   const root = repository.rootPath;
@@ -152,11 +154,12 @@ export async function prepareTaskWorkspace(
       .catch(rethrowGitError);
     try {
       const [created] = await db
-        .insert(executionWorkspaces)
+        .insert(workspaces)
         .values({
           userId,
           taskId: task.id,
           repositoryId: repository.id,
+          kind: 'integration',
           worktreePath: path.join(worktreesRoot, task.id),
           branchName,
           baseRef: repository.defaultBranch,
@@ -209,7 +212,7 @@ export async function prepareTaskWorkspace(
 export async function reconcileTaskWorkspace(
   userId: string,
   taskId: string
-): Promise<ExecutionWorkspace> {
+): Promise<Workspace> {
   const row = await getTaskWorkspace(userId, taskId);
   if (!row) throw notFound('Task has no active workspace');
   const repository = await findRepository(userId, row.repositoryId);
@@ -238,7 +241,7 @@ export async function reconcileTaskWorkspace(
 }
 
 export async function snapshotBeforeRun(
-  workspace: ExecutionWorkspace
+  workspace: Workspace
 ): Promise<WorkingTreeSnapshot> {
   return localGitDriver.snapshotWorkingTree({ worktreePath: workspace.worktreePath });
 }
@@ -246,13 +249,13 @@ export async function snapshotBeforeRun(
 export interface CaptureRunInput {
   runId: string;
   userId: string;
-  workspace: ExecutionWorkspace;
+  workspace: Workspace;
   before: WorkingTreeSnapshot;
   permission: TurnPermission;
 }
 
 export interface CaptureRunResult {
-  snapshot: RunChangeSnapshot;
+  snapshot: ChangeSnapshot;
   policyViolation: boolean;
 }
 
@@ -277,10 +280,10 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
 
   const policyViolation = input.permission === 'read_only' && captured.trackedChanges;
   const [snapshot] = await db
-    .insert(runChangeSnapshots)
+    .insert(changeSnapshots)
     .values({
       runId: input.runId,
-      executionWorkspaceId: input.workspace.id,
+      workspaceId: input.workspace.id,
       beforeHead: input.before.head,
       afterHead: captured.afterHead,
       changedFiles: captured.changedFiles,
@@ -309,14 +312,14 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
 export async function latestTaskSnapshot(
   userId: string,
   taskId: string
-): Promise<RunChangeSnapshot | null> {
+): Promise<ChangeSnapshot | null> {
   const workspace = await getTaskWorkspace(userId, taskId);
   if (!workspace) return null;
   const [row] = await db
     .select()
-    .from(runChangeSnapshots)
-    .where(eq(runChangeSnapshots.executionWorkspaceId, workspace.id))
-    .orderBy(desc(runChangeSnapshots.capturedAt))
+    .from(changeSnapshots)
+    .where(eq(changeSnapshots.workspaceId, workspace.id))
+    .orderBy(desc(changeSnapshots.capturedAt))
     .limit(1);
   return row ?? null;
 }
@@ -331,7 +334,7 @@ export function registerLiveMergeOperationForTests(operationId: string): void {
 
 async function acquireMergeLock(
   repository: Repository,
-  workspace: ExecutionWorkspace,
+  workspace: Workspace,
   preHead: string
 ): Promise<string> {
   const operationId = crypto.randomUUID();
@@ -396,8 +399,8 @@ async function recoverStaleMergeLock(
   const preHead = repository.activeMergePreHead;
   const [workspace] = await db
     .select()
-    .from(executionWorkspaces)
-    .where(eq(executionWorkspaces.id, repository.activeMergeWorkspaceId))
+    .from(workspaces)
+    .where(eq(workspaces.id, repository.activeMergeWorkspaceId))
     .limit(1);
 
   const clearLock = async () => {
@@ -477,7 +480,7 @@ export interface FinalizeInput {
 }
 
 export interface FinalizeResult {
-  workspace: ExecutionWorkspace;
+  workspace: Workspace;
   taskStatus: string;
 }
 
@@ -722,8 +725,8 @@ async function latestApproval(
 }
 
 export interface TaskChangesView {
-  workspace: ExecutionWorkspace;
-  snapshot: RunChangeSnapshot | null;
+  workspace: Workspace;
+  snapshot: ChangeSnapshot | null;
   drift: BaseDriftReport | null;
 }
 

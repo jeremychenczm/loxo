@@ -3,10 +3,11 @@ import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import {
-  executionWorkspaces,
+  workspaces,
   approvals,
   repositories,
-  runChangeSnapshots,
+  turns,
+  changeSnapshots,
   runs,
 } from '../src/db/schema';
 import { createApp } from '../src/http/app';
@@ -58,10 +59,11 @@ beforeAll(async () => {
   taskId = task.body.task.id;
 });
 
-function workspaceRow(overrides: Partial<typeof executionWorkspaces.$inferInsert> = {}) {
+function workspaceRow(overrides: Partial<typeof workspaces.$inferInsert> = {}) {
   return {
     userId,
     taskId,
+    kind: 'integration' as const,
     worktreePath: `worktrees/${taskId}`,
     branchName: 'loxo/task-1-fixture',
     baseRef: 'main',
@@ -70,39 +72,96 @@ function workspaceRow(overrides: Partial<typeof executionWorkspaces.$inferInsert
   };
 }
 
-describe('execution workspace constraints', () => {
-  it('allows at most one non-terminal workspace per task', async () => {
+describe('workspace constraints', () => {
+  it('allows at most one non-terminal integration workspace per task', async () => {
     const first = one(
-      await db.insert(executionWorkspaces).values(workspaceRow({ status: 'ready' })).returning()
+      await db.insert(workspaces).values(workspaceRow({ status: 'ready' })).returning()
     );
     expect(first.status).toBe('ready');
 
-    expect(await sqlState(db.insert(executionWorkspaces).values(workspaceRow()))).toBe('23505');
+    expect(await sqlState(db.insert(workspaces).values(workspaceRow()))).toBe('23505');
 
     // dirty is still active; the index guards every non-terminal status.
     await db
-      .update(executionWorkspaces)
+      .update(workspaces)
       .set({ status: 'dirty' })
-      .where(eq(executionWorkspaces.id, first.id));
-    expect(await sqlState(db.insert(executionWorkspaces).values(workspaceRow()))).toBe('23505');
+      .where(eq(workspaces.id, first.id));
+    expect(await sqlState(db.insert(workspaces).values(workspaceRow()))).toBe('23505');
 
     // A terminal row frees the slot for a fresh workspace.
     await db
-      .update(executionWorkspaces)
+      .update(workspaces)
       .set({ status: 'merged' })
-      .where(eq(executionWorkspaces.id, first.id));
+      .where(eq(workspaces.id, first.id));
     const second = one(
-      await db.insert(executionWorkspaces).values(workspaceRow({ status: 'preparing' })).returning()
+      await db.insert(workspaces).values(workspaceRow({ status: 'preparing' })).returning()
     );
     expect(second.id).not.toBe(first.id);
 
     // Terminal rows coexist: merged history plus a retained one.
     await db
-      .update(executionWorkspaces)
+      .update(workspaces)
       .set({ status: 'retained' })
-      .where(eq(executionWorkspaces.id, second.id));
-    const third = one(await db.insert(executionWorkspaces).values(workspaceRow()).returning());
+      .where(eq(workspaces.id, second.id));
+    const third = one(await db.insert(workspaces).values(workspaceRow()).returning());
     expect(third.status).toBe('preparing');
+  });
+});
+
+describe('multiple workspaces per task', () => {
+  it('holds one active workspace per member and kind beside the integration one', async () => {
+    const other = await request(app)
+      .post('/api/agents')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({ name: 'Second member', runtime: 'claude-code' });
+    const otherId = other.body.agent.id as string;
+    const task = await request(app)
+      .post('/api/tasks')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({ title: 'Parallel members' });
+    const parallelTask = task.body.task.id as string;
+    const row = (kind: 'integration' | 'member' | 'review', agent: string | null) => ({
+      ...workspaceRow({ taskId: parallelTask, kind, agentId: agent }),
+      worktreePath: `worktrees/${parallelTask}/${kind}-${agent ?? 'none'}`,
+    });
+
+    await db.insert(workspaces).values(row('integration', null));
+    await db.insert(workspaces).values(row('member', agentId));
+    await db.insert(workspaces).values(row('member', otherId));
+    await db.insert(workspaces).values(row('review', agentId));
+
+    expect(await sqlState(db.insert(workspaces).values(row('member', agentId)))).toBe('23505');
+    expect(await sqlState(db.insert(workspaces).values(row('integration', null)))).toBe('23505');
+  });
+
+  it('admits one running writer per workspace while readers run freely', async () => {
+    const task = await request(app)
+      .post('/api/tasks')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({ title: 'Single writer' });
+    const writerTask = task.body.task.id as string;
+    const workspace = one(
+      await db
+        .insert(workspaces)
+        .values({ ...workspaceRow({ taskId: writerTask }), worktreePath: `worktrees/${writerTask}` })
+        .returning()
+    );
+    let seq = 0;
+    const turn = (permission: 'read_only' | 'edit' | 'full', status: 'running' | 'completed') => {
+      seq += 1;
+      return db
+        .insert(turns)
+        .values({ taskId: writerTask, seq, kind: 'agent', agentId, workspaceId: workspace.id, permission, status })
+        .returning();
+    };
+
+    const writer = one(await turn('edit', 'running'));
+    expect(await sqlState(turn('full', 'running'))).toBe('23505');
+    expect(await sqlState(turn('read_only', 'running'))).toBeUndefined();
+    expect(await sqlState(turn('read_only', 'running'))).toBeUndefined();
+
+    await db.update(turns).set({ status: 'completed' }).where(eq(turns.id, writer.id));
+    expect(await sqlState(turn('edit', 'running'))).toBeUndefined();
   });
 });
 
@@ -131,7 +190,7 @@ describe('run change snapshots and approval binding', () => {
 
     const snapshot = one(
       await db
-        .insert(runChangeSnapshots)
+        .insert(changeSnapshots)
         .values({
           runId: run.id,
           beforeHead: 'b'.repeat(40),
@@ -145,7 +204,7 @@ describe('run change snapshots and approval binding', () => {
 
     expect(
       await sqlState(
-        db.insert(runChangeSnapshots).values({
+        db.insert(changeSnapshots).values({
           runId: run.id,
           beforeHead: 'd'.repeat(40),
           afterHead: 'e'.repeat(40),
@@ -170,7 +229,7 @@ describe('run change snapshots and approval binding', () => {
     expect(approval.changeSnapshotId).toBe(snapshot.id);
 
     // The pinned fingerprint outlives the snapshot row, so staleness checks keep working.
-    await db.delete(runChangeSnapshots).where(eq(runChangeSnapshots.id, snapshot.id));
+    await db.delete(changeSnapshots).where(eq(changeSnapshots.id, snapshot.id));
     const after = one(await db.select().from(approvals).where(eq(approvals.id, approval.id)));
     expect(after.changeSnapshotId).toBeNull();
     expect(after.fingerprint).toBe('fp-fixture');

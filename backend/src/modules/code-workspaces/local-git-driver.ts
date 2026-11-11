@@ -20,10 +20,10 @@ import {
   type BaseDriftReport,
   type CaptureChangesInput,
   type CaptureLimits,
-  type ChangeSnapshot,
+  type CapturedChanges,
   type CheckpointInput,
   type CheckpointResult,
-  type ExecutionWorkspaceDriver,
+  type WorkspaceDriver,
   type InspectRepositoryInput,
   type MergeOutcome,
   type MergeWorkspaceInput,
@@ -120,7 +120,7 @@ async function branchCommit(repositoryRoot: string, branch: string): Promise<str
   return out === null ? null : line(out);
 }
 
-export class LocalGitWorkspaceDriver implements ExecutionWorkspaceDriver {
+export class LocalGitWorkspaceDriver implements WorkspaceDriver {
   async inspectRepository(input: InspectRepositoryInput): Promise<RepositoryInfo> {
     const baseRef = assertSafeRefName(input.baseRef);
     let stat: fs.Stats;
@@ -266,7 +266,7 @@ export class LocalGitWorkspaceDriver implements ExecutionWorkspaceDriver {
     return { head, summary };
   }
 
-  async captureChanges(input: CaptureChangesInput): Promise<ChangeSnapshot> {
+  async captureChanges(input: CaptureChangesInput): Promise<CapturedChanges> {
     const beforeHead = assertCommitId(input.beforeHead);
     const baseCommit = assertCommitId(input.baseCommit);
     const limits = input.limits ?? DEFAULT_CAPTURE_LIMITS;
