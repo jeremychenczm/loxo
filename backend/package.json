@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@swarmdev/shared": "*",
     "adm-zip": "^0.5.18",
@@ -28,6 +29,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@swarmdev/fake-agent": "*",
     "@types/adm-zip": "^0.5.8",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
