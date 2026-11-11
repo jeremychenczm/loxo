@@ -1,0 +1,18 @@
+{
+  "name": "swarmdev",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "db:migrate": "npm run db:migrate -w backend",
+    "typecheck": "npm run typecheck -w backend -w frontend",
+    "test": "npm test -w backend",
+    "build": "npm run build -w frontend"
+  }
+}

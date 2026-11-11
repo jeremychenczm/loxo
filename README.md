@@ -103,30 +103,27 @@ flowchart LR
 
 Prerequisites: Node.js 20+, Docker, and Git.
 
-Start Postgres from the repository root:
+From the repository root, install every workspace and start Postgres:
 
 ```bash
+npm install
 docker compose up -d
 ```
 
-Start the backend in one terminal:
+Configure the environment files:
 
 ```bash
-cd backend
-cp .env.example .env   # PowerShell: Copy-Item .env.example .env
-# Set JWT_SECRET and SECRETS_KEY; generation guidance is in the file.
-npm install
-npm run db:migrate
-npm run dev
+cp backend/.env.example backend/.env     # PowerShell: Copy-Item backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+# Set JWT_SECRET and SECRETS_KEY in backend/.env; generation guidance is in the file.
 ```
 
-Start the frontend in a second terminal:
+Apply migrations, then start the backend and frontend in separate terminals:
 
 ```bash
-cd frontend
-cp .env.example .env   # PowerShell: Copy-Item .env.example .env
-npm install
-npm run dev
+npm run db:migrate
+npm run dev:backend
+npm run dev:frontend
 ```
 
 Open `http://localhost:3000`, register an account, and then:
@@ -140,7 +137,8 @@ For code work, bind a Git repository to the project.
 ## Testing
 
 ```bash
-cd backend && npm test    # 294 tests — API, runs, governance, and workspaces
+npm test             # 294 backend tests — API, runs, governance, and workspaces
+npm run typecheck    # backend and frontend
 ```
 
 The suite covers admission and cross-surface claims, workspace capture, permission enforcement, and snapshot-bound review.
