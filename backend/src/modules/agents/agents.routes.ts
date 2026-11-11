@@ -13,15 +13,11 @@ import { checkCliForPlatform } from '../providers/runtime-health';
 import { getProviderCredentials } from '../providers/providers.service';
 import {
   createAgent,
-  createGroup,
   deleteAgent,
-  deleteGroup,
   getAgent,
   listAgents,
-  listGroups,
   updateAgent,
   updateAgentConfig,
-  updateGroup,
   VENDORS_FOR_RUNTIME,
 } from './agents.service';
 import { importAgent, unpackArchive, type ImportFile } from './agent-import.service';
@@ -75,7 +71,6 @@ const updateSchema = z.object({
   name: z.string().min(1).max(80).optional(),
   description: z.string().max(2000).optional(),
   tags: z.array(z.string().min(1)).max(16).optional(),
-  groupId: z.string().uuid().nullable().optional(),
 });
 
 const configSchema = z.object({
@@ -94,9 +89,7 @@ function parseOr400<T>(schema: z.ZodType<T>, body: unknown): T {
 
 agentsRouter.get('/', async (req: AuthedRequest, res, next) => {
   try {
-    const groupId = typeof req.query.groupId === 'string' ? req.query.groupId : undefined;
-    const filter = groupId === 'none' ? { ungrouped: true } : groupId ? { groupId } : {};
-    res.json({ agents: await listAgents(req.auth!.userId, filter) });
+    res.json({ agents: await listAgents(req.auth!.userId) });
   } catch (error) {
     next(error);
   }
@@ -274,54 +267,6 @@ agentsRouter.get('/:id/diagnostics', async (req: AuthedRequest, res, next) => {
       cli,
       provider,
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Groups
-
-export const groupsRouter = Router();
-groupsRouter.use(requireAuth);
-
-const groupSchema = z.object({
-  name: z.string().min(1).max(64),
-  color: z
-    .string()
-    .regex(/^#[0-9a-fA-F]{6}$/)
-    .optional(),
-});
-
-groupsRouter.get('/', async (req: AuthedRequest, res, next) => {
-  try {
-    res.json({ groups: await listGroups(req.auth!.userId) });
-  } catch (error) {
-    next(error);
-  }
-});
-
-groupsRouter.post('/', async (req: AuthedRequest, res, next) => {
-  try {
-    const input = parseOr400(groupSchema, req.body);
-    res.status(201).json({ group: await createGroup(req.auth!.userId, input) });
-  } catch (error) {
-    next(error);
-  }
-});
-
-groupsRouter.patch('/:id', async (req: AuthedRequest, res, next) => {
-  try {
-    const input = parseOr400(groupSchema.partial().extend({ sortOrder: z.number().int().optional() }), req.body);
-    res.json({ group: await updateGroup(req.auth!.userId, String(req.params.id), input) });
-  } catch (error) {
-    next(error);
-  }
-});
-
-groupsRouter.delete('/:id', async (req: AuthedRequest, res, next) => {
-  try {
-    await deleteGroup(req.auth!.userId, String(req.params.id));
-    res.json({ ok: true });
   } catch (error) {
     next(error);
   }

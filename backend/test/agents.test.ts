@@ -24,39 +24,6 @@ beforeAll(async () => {
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-describe('agent groups', () => {
-  let groupId = '';
-
-  it('creates and lists groups', async () => {
-    const created = await request(app)
-      .post('/api/agent-groups')
-      .set(auth())
-      .send({ name: 'Research', color: '#10b981' });
-    expect(created.status).toBe(201);
-    groupId = created.body.group.id;
-
-    const list = await request(app).get('/api/agent-groups').set(auth());
-    expect(list.body.groups).toHaveLength(1);
-  });
-
-  it('detaches member agents on group delete instead of deleting them', async () => {
-    const agent = await request(app)
-      .post('/api/agents')
-      .set(auth())
-      .send({ name: 'Grouped', runtime: 'api' });
-    await request(app)
-      .patch(`/api/agents/${agent.body.agent.id}`)
-      .set(auth())
-      .send({ groupId });
-
-    await request(app).delete(`/api/agent-groups/${groupId}`).set(auth());
-
-    const after = await request(app).get(`/api/agents/${agent.body.agent.id}`).set(auth());
-    expect(after.status).toBe(200);
-    expect(after.body.agent.groupId).toBeNull();
-  });
-});
-
 describe('agent CRUD and config', () => {
   let agentId = '';
   let anthropicProviderId = '';
@@ -118,11 +85,6 @@ describe('agent CRUD and config', () => {
       .send({ providerId: anthropicProviderId, model: 'claude-sonnet-5' });
     expect(res.status).toBe(200);
     expect(res.body.agent.model).toBe('claude-sonnet-5');
-  });
-
-  it('filters agents by group', async () => {
-    const ungrouped = await request(app).get('/api/agents?groupId=none').set(auth());
-    expect(ungrouped.body.agents.length).toBeGreaterThan(0);
   });
 
   it('reports diagnostics with cli and provider status', async () => {

@@ -48,20 +48,6 @@ export const providers = pgTable('providers', {
 
 export type Provider = typeof providers.$inferSelect;
 
-export const agentGroups = pgTable('agent_groups', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  color: text('color').notNull().default('#38bdf8'),
-  sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type AgentGroup = typeof agentGroups.$inferSelect;
-
 /** Optional packaging metadata read from agent.json at import time. */
 export interface AgentManifest {
   name?: string;
@@ -98,7 +84,6 @@ export const agents = pgTable('agents', {
   runtime: text('runtime').notNull(), // claude-code | codex | opencode | hermes | openclaw | api
   manifest: jsonb('manifest').$type<AgentManifest>().notNull().default({}),
   tags: jsonb('tags').$type<string[]>().notNull().default([]),
-  groupId: uuid('group_id').references(() => agentGroups.id, { onDelete: 'set null' }),
   providerId: uuid('provider_id').references(() => providers.id, { onDelete: 'set null' }),
   model: text('model'),
   avatarFile: text('avatar_file'),
@@ -117,6 +102,41 @@ export const agents = pgTable('agents', {
 });
 
 export type Agent = typeof agents.$inferSelect;
+
+/** Saved roster of agents; a task copies its members from a crew when it is created. */
+export const crews = pgTable('crews', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type Crew = typeof crews.$inferSelect;
+
+export const crewMembers = pgTable(
+  'crew_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    crewId: uuid('crew_id')
+      .notNull()
+      .references(() => crews.id, { onDelete: 'cascade' }),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** Roster order; deleting a member agent can leave gaps. */
+    position: integer('position').notNull(),
+  },
+  (t) => [
+    uniqueIndex('crew_members_crew_agent').on(t.crewId, t.agentId),
+    uniqueIndex('crew_members_crew_position').on(t.crewId, t.position),
+  ]
+);
+
+export type CrewMember = typeof crewMembers.$inferSelect;
 
 export const conversations = pgTable('conversations', {
   id: uuid('id').primaryKey().defaultRandom(),

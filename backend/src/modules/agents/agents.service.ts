@@ -1,13 +1,6 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
-import {
-  agentGroups,
-  agents,
-  providers,
-  type Agent,
-  type AgentGroup,
-  type AgentManifest,
-} from '../../db/schema';
+import { agents, providers, type Agent, type AgentManifest } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
 import { copyDir, removeDir } from '../../storage/file-ops';
 import { storage } from '../../storage/layout';
@@ -48,16 +41,8 @@ export async function createAgent(userId: string, input: CreateAgentInput): Prom
   return agent!;
 }
 
-export type GroupFilter = { groupId?: string; ungrouped?: boolean };
-
-export async function listAgents(userId: string, filter: GroupFilter = {}): Promise<Agent[]> {
-  const conditions = [eq(agents.userId, userId)];
-  if (filter.ungrouped) {
-    conditions.push(isNull(agents.groupId));
-  } else if (filter.groupId) {
-    conditions.push(eq(agents.groupId, filter.groupId));
-  }
-  return db.select().from(agents).where(and(...conditions)).orderBy(agents.createdAt);
+export async function listAgents(userId: string): Promise<Agent[]> {
+  return db.select().from(agents).where(eq(agents.userId, userId)).orderBy(agents.createdAt);
 }
 
 export async function getAgent(userId: string, agentId: string): Promise<Agent> {
@@ -74,7 +59,6 @@ export interface UpdateAgentInput {
   name?: string;
   description?: string;
   tags?: string[];
-  groupId?: string | null;
   avatarFile?: string;
 }
 
@@ -84,15 +68,6 @@ export async function updateAgent(
   input: UpdateAgentInput
 ): Promise<Agent> {
   await getAgent(userId, agentId);
-
-  if (input.groupId) {
-    const [group] = await db
-      .select({ id: agentGroups.id })
-      .from(agentGroups)
-      .where(and(eq(agentGroups.id, input.groupId), eq(agentGroups.userId, userId)))
-      .limit(1);
-    if (!group) throw notFound('Group not found');
-  }
 
   const [updated] = await db
     .update(agents)
@@ -186,50 +161,4 @@ export function captureBaseline(userId: string, agentId: string): void {
   const paths = storage.agentPaths(userId, agentId);
   removeDir(paths.baseline);
   copyDir(paths.workspace, paths.baseline);
-}
-
-// Groups
-
-export async function listGroups(userId: string): Promise<AgentGroup[]> {
-  return db
-    .select()
-    .from(agentGroups)
-    .where(eq(agentGroups.userId, userId))
-    .orderBy(agentGroups.sortOrder, agentGroups.createdAt);
-}
-
-export async function createGroup(
-  userId: string,
-  input: { name: string; color?: string }
-): Promise<AgentGroup> {
-  const existing = await listGroups(userId);
-  const sortOrder = existing.length > 0 ? Math.max(...existing.map((g) => g.sortOrder)) + 1 : 0;
-  const [group] = await db
-    .insert(agentGroups)
-    .values({ userId, name: input.name, color: input.color ?? '#38bdf8', sortOrder })
-    .returning();
-  return group!;
-}
-
-export async function updateGroup(
-  userId: string,
-  groupId: string,
-  input: { name?: string; color?: string; sortOrder?: number }
-): Promise<AgentGroup> {
-  const [updated] = await db
-    .update(agentGroups)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(agentGroups.id, groupId), eq(agentGroups.userId, userId)))
-    .returning();
-  if (!updated) throw notFound('Group not found');
-  return updated;
-}
-
-/** Member agents are detached (group_id set null by FK), never deleted. */
-export async function deleteGroup(userId: string, groupId: string): Promise<void> {
-  const deleted = await db
-    .delete(agentGroups)
-    .where(and(eq(agentGroups.id, groupId), eq(agentGroups.userId, userId)))
-    .returning({ id: agentGroups.id });
-  if (deleted.length === 0) throw notFound('Group not found');
 }

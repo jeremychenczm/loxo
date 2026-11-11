@@ -13,20 +13,12 @@ export interface Agent {
   description: string;
   runtime: Runtime;
   tags: string[];
-  groupId: string | null;
   providerId: string | null;
   model: string | null;
   avatarFile: string | null;
   status: string;
   execution: AgentExecution;
   createdAt: string;
-}
-
-export interface AgentGroup {
-  id: string;
-  name: string;
-  color: string;
-  sortOrder: number;
 }
 
 export interface SkillSummary {
@@ -42,15 +34,13 @@ export interface Diagnostics {
   provider: { vendor: string; vendorMatch: boolean; modelCount: number } | null;
 }
 
-export const fetchAgents = (groupId?: string) =>
-  apiFetch<{ agents: Agent[] }>(`/api/agents${groupId ? `?groupId=${groupId}` : ''}`).then(
-    (r) => r.agents
-  );
+export const fetchAgents = () =>
+  apiFetch<{ agents: Agent[] }>('/api/agents').then((r) => r.agents);
 
 export const fetchAgent = (id: string) =>
   apiFetch<{ agent: Agent }>(`/api/agents/${id}`).then((r) => r.agent);
 
-export const updateAgent = (id: string, input: Partial<Pick<Agent, 'name' | 'description' | 'tags' | 'groupId'>>) =>
+export const updateAgent = (id: string, input: Partial<Pick<Agent, 'name' | 'description' | 'tags'>>) =>
   apiFetch<{ agent: Agent }>(`/api/agents/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
@@ -71,18 +61,6 @@ export const updateAgentConfig = (
 
 export const deleteAgent = (id: string) =>
   apiFetch<{ ok: boolean }>(`/api/agents/${id}`, { method: 'DELETE' });
-
-export const fetchGroups = () =>
-  apiFetch<{ groups: AgentGroup[] }>('/api/agent-groups').then((r) => r.groups);
-
-export const createGroup = (input: { name: string; color?: string }) =>
-  apiFetch<{ group: AgentGroup }>('/api/agent-groups', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  }).then((r) => r.group);
-
-export const deleteGroup = (id: string) =>
-  apiFetch<{ ok: boolean }>(`/api/agent-groups/${id}`, { method: 'DELETE' });
 
 export const fetchSkills = (agentId: string) =>
   apiFetch<{ skills: SkillSummary[] }>(`/api/agents/${agentId}/skills`).then((r) => r.skills);
