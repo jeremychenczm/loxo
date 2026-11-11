@@ -47,6 +47,7 @@ class ApiSession implements AgentSession {
   readonly runtimeSessionId = null;
   private readonly history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   private active: AbortController | null = null;
+  private closed = false;
 
   constructor(
     private readonly config: ApiHostConfig,
@@ -55,6 +56,7 @@ class ApiSession implements AgentSession {
 
   async prompt(turn: TurnInput): Promise<TurnOutcome> {
     if (this.active) throw new Error('A turn is already running in this session');
+    if (this.closed) throw new Error('The session is closed');
     const controller = new AbortController();
     this.active = controller;
     const tools = [
@@ -124,6 +126,7 @@ class ApiSession implements AgentSession {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     this.active?.abort();
   }
 }

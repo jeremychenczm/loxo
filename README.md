@@ -154,6 +154,13 @@ npm test             # 306 backend tests — API, runs, governance, workspaces, 
 npm run typecheck    # backend and frontend
 ```
 
+Every agent host passes one shared contract (`backend/test/conformance/host-contract.ts`): it completes and streams a turn, runs one turn at a time, cancels promptly, reports failures as outcomes, and closes cleanly. A scripted ACP agent (`packages/fake-agent`) drives the hosts through stalls, crashes, malformed output, and permission requests. To run the same contract against the real Claude Code and Codex CLIs — this spends model tokens — install the adapters and opt in:
+
+```bash
+npm run runtimes:install
+LOXO_REAL_CLI=1 npm test -- test/real-cli.test.ts   # PowerShell: $env:LOXO_REAL_CLI=1; npm test -- test/real-cli.test.ts
+```
+
 The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
 
 ## Status and roadmap
