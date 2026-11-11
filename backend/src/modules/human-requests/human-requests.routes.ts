@@ -24,7 +24,7 @@ humanRequestsRouter.get('/', async (req: AuthedRequest, res, next) => {
 humanRequestsRouter.post('/:id/answer', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
-      choice: z.string().trim().min(1).max(200),
+      choice: z.string().trim().min(1).max(4000),
       note: z.string().trim().max(2000).optional(),
     });
     const parsed = schema.safeParse(req.body);

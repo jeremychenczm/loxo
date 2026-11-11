@@ -25,12 +25,12 @@ export interface OpenRequestInput {
   taskId: string;
   kind: HumanRequestKind;
   payload: Record<string, unknown>;
+  /** Allowed answers; empty means a free-text answer. */
   choices: string[];
   ttlMs: number;
 }
 
 export async function openHumanRequest(input: OpenRequestInput): Promise<HumanRequest> {
-  if (input.choices.length === 0) throw new Error('A human request needs at least one choice');
   const [row] = await db
     .insert(humanRequests)
     .values({
@@ -72,7 +72,7 @@ export async function answerHumanRequest(
   input: { choice: string; note?: string }
 ): Promise<HumanRequest> {
   const request = await ownedRequest(userId, requestId);
-  if (!request.choices.includes(input.choice)) {
+  if (request.choices.length > 0 && !request.choices.includes(input.choice)) {
     throw badRequest('invalid_choice', `Choose one of: ${request.choices.join(', ')}`);
   }
   // The status guard makes answering and expiring race-safe: exactly one wins.
