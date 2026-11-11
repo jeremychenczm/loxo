@@ -14,8 +14,8 @@ beforeAll(async () => {
   setTaskTurnExecutorForTests(async () => ({ text: 'stub report', durationMs: 5 }));
 
   const reg = await request(app).post('/auth/register').send({
-    email: 'reviews@example.com',
-    username: 'reviewsuser',
+    email: 'approvals@example.com',
+    username: 'approvalsuser',
     password: 'a-strong-password',
   });
   token = reg.body.token;
@@ -33,8 +33,8 @@ afterAll(() => {
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-async function createTask(title: string) {
-  const res = await request(app).post('/api/tasks').set(auth()).send({ title });
+async function createTask(title: string, body: Record<string, unknown> = {}) {
+  const res = await request(app).post('/api/tasks').set(auth()).send({ title, ...body });
   return res.body.task as { id: string; number: number; repositoryId: string | null };
 }
 
@@ -50,17 +50,19 @@ async function walkToReview(taskId: string) {
   await moveTo(taskId, 'in_review');
 }
 
-function review(taskId: string, decision: string, body: string) {
-  return request(app)
-    .post(`/api/tasks/${taskId}/reviews`)
-    .set(auth())
-    .send({ decision, body });
+function decide(taskId: string, decision: string, body: string) {
+  return request(app).post(`/api/tasks/${taskId}/approvals`).set(auth()).send({ decision, body });
 }
 
-describe('task reviews', () => {
-  it('rejects a review unless the task is in review', async () => {
+async function timeline(taskId: string): Promise<string[]> {
+  const res = await request(app).get(`/api/tasks/${taskId}/turns`).set(auth());
+  return res.body.turns.map((t: { content: string }) => t.content);
+}
+
+describe('task approvals', () => {
+  it('rejects a decision unless the task is in review', async () => {
     const task = await createTask('Not ready');
-    const res = await review(task.id, 'approved', 'nice');
+    const res = await decide(task.id, 'approved', 'nice');
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('not_in_review');
   });
@@ -68,60 +70,44 @@ describe('task reviews', () => {
   it('requires a decision and a non-empty comment', async () => {
     const task = await createTask('Strict input');
     await walkToReview(task.id);
-    expect((await review(task.id, 'approved', '   ')).status).toBe(400);
-    expect(
-      (
-        await request(app)
-          .post(`/api/tasks/${task.id}/reviews`)
-          .set(auth())
-          .send({ decision: 'maybe', body: 'x' })
-      ).status
-    ).toBe(400);
+    expect((await decide(task.id, 'approved', '   ')).status).toBe(400);
+    expect((await decide(task.id, 'maybe', 'x')).status).toBe(400);
   });
 
-  it('approve closes the task and stamps the timeline', async () => {
+  it('approval closes a task without code and stamps the timeline', async () => {
     const task = await createTask('Ship it');
     await walkToReview(task.id);
 
-    const res = await review(task.id, 'approved', 'Looks good, verified locally.');
+    const res = await decide(task.id, 'approved', 'Looks good, verified locally.');
     expect(res.status).toBe(201);
-    expect(res.body.review.decision).toBe('approved');
-    expect(res.body.review.reviewerType).toBe('human');
+    expect(res.body.approval).toMatchObject({ decision: 'approved', fingerprint: null });
 
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.status).toBe('done');
     expect(detail.body.task.closedAt).not.toBeNull();
+    expect(await timeline(task.id)).toContain('[APPROVED] Looks good, verified locally.');
 
-    const comments = await request(app).get(`/api/tasks/${task.id}/comments`).set(auth());
-    const bodies = comments.body.comments.map((c: { body: string }) => c.body);
-    expect(bodies).toContain('[APPROVED] Looks good, verified locally.');
-
-    const listed = await request(app).get(`/api/tasks/${task.id}/reviews`).set(auth());
-    expect(listed.body.reviews).toHaveLength(1);
+    const listed = await request(app).get(`/api/tasks/${task.id}/approvals`).set(auth());
+    expect(listed.body.approvals).toHaveLength(1);
   });
 
-  it('request changes reopens work and re-wakes the assignee', async () => {
-    const task = await createTask('Needs rework');
-    await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: { agentId } });
+  it('requested changes reopen work and re-wake the lead', async () => {
+    const task = await createTask('Needs rework', { leadAgentId: agentId });
     await moveTo(task.id, 'todo');
-    await drainRunsForTests(); // assignment wake settles
+    await drainRunsForTests();
 
     await moveTo(task.id, 'in_progress');
     await moveTo(task.id, 'in_review');
 
-    const res = await review(task.id, 'changes_requested', 'The button is still misaligned on mobile.');
+    const res = await decide(task.id, 'changes_requested', 'The button is still misaligned on mobile.');
     expect(res.status).toBe(201);
     await drainRunsForTests();
 
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.status).toBe('in_progress');
-
-    const comments = await request(app).get(`/api/tasks/${task.id}/comments`).set(auth());
-    const bodies = comments.body.comments.map((c: { body: string }) => c.body);
-    expect(bodies).toContain('[CHANGES REQUESTED] The button is still misaligned on mobile.');
+    expect(await timeline(task.id)).toContain(
+      '[CHANGES REQUESTED] The button is still misaligned on mobile.'
+    );
 
     // The rework wake produced a second run.
     const runs = await request(app).get(`/api/runs?taskId=${task.id}`).set(auth());
@@ -129,16 +115,16 @@ describe('task reviews', () => {
     expect(runs.body.runs.every((r: { status: string }) => r.status === 'succeeded')).toBe(true);
   });
 
-  it('scopes reviews to the owning user', async () => {
+  it('scopes approvals to the owning user', async () => {
     const other = await request(app).post('/auth/register').send({
-      email: 'reviews-other@example.com',
-      username: 'reviewsother',
+      email: 'approvals-other@example.com',
+      username: 'approvalsother',
       password: 'a-strong-password',
     });
     const task = await createTask('Private');
     await walkToReview(task.id);
     const res = await request(app)
-      .post(`/api/tasks/${task.id}/reviews`)
+      .post(`/api/tasks/${task.id}/approvals`)
       .set({ Authorization: `Bearer ${other.body.token}` })
       .send({ decision: 'approved', body: 'sneaky' });
     expect(res.status).toBe(404);

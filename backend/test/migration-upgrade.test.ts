@@ -76,18 +76,34 @@ async function seedLegacyRows(): Promise<void> {
   await q(`UPDATE users SET issue_counter = 7 WHERE id = $1`, [ids.user]);
   await q(`INSERT INTO projects (id, user_id, name) VALUES ($1, $2, 'Legacy')`, [ids.project, ids.user]);
   await q(
-    `INSERT INTO issues (id, user_id, project_id, issue_number, title, description, status, assignee_agent_id)
-     VALUES ($1, $2, $3, 7, 'Port the exporter', 'CSV first', 'in_progress', $4)`,
-    [ids.issue, ids.user, ids.project, ids.agent1]
+    `INSERT INTO issues (id, user_id, project_id, issue_number, title, description, status, assignee_agent_id, reviewer_agent_id)
+     VALUES ($1, $2, $3, 7, 'Port the exporter', 'CSV first', 'in_progress', $4, $5)`,
+    [ids.issue, ids.user, ids.project, ids.agent1, ids.agent2]
   );
   await q(
-    `INSERT INTO issue_comments (issue_id, author_type, author_user_id, body) VALUES ($1, 'human', $2, 'Please add tests')`,
+    `INSERT INTO issue_comments (issue_id, author_type, author_user_id, body, created_at)
+     VALUES ($1, 'human', $2, 'Please add tests', now() - interval '2 minutes')`,
     [ids.issue, ids.user]
+  );
+  await q(
+    `INSERT INTO issue_comments (issue_id, author_type, author_agent_id, body, created_at)
+     VALUES ($1, 'agent', $2, '[CHANGES REQUESTED] Missing tests', now() - interval '1 minute')`,
+    [ids.issue, ids.agent2]
   );
   await q(
     `INSERT INTO runs (id, user_id, agent_id, agent_name, issue_id, trigger, status)
      VALUES ($1, $2, $3, 'First', $4, 'assignment', 'succeeded')`,
     [ids.run, ids.user, ids.agent1, ids.issue]
+  );
+  await q(
+    `INSERT INTO issue_reviews (user_id, issue_id, reviewer_type, reviewer_agent_id, run_id, decision, body)
+     VALUES ($1, $2, 'agent', $3, $4, 'changes_requested', 'Missing tests')`,
+    [ids.user, ids.issue, ids.agent2, ids.run]
+  );
+  await q(
+    `INSERT INTO issue_reviews (user_id, issue_id, reviewer_type, reviewer_user_id, decision, body)
+     VALUES ($1, $2, 'human', $1, 'approved', 'Ship it')`,
+    [ids.user, ids.issue]
   );
   await q(`INSERT INTO conversations (id, user_id, agent_id) VALUES ($1, $2, $3)`, [
     ids.conversation,
@@ -159,6 +175,60 @@ describe('migration upgrade from the pre-reshape schema', () => {
       [ids.conversation]
     );
     expect(message!.meta).toEqual({ source: 'filing', taskId: ids.issue });
+  });
+
+  it('turns the assignee into the lead and a distinct reviewer into a member', async () => {
+    const [task] = await q(`SELECT lead_agent_id, turn_counter FROM tasks WHERE id = $1`, [ids.issue]);
+    expect(task).toEqual({ lead_agent_id: ids.agent1, turn_counter: 2 });
+    const members = await q(
+      `SELECT agent_id, position, state FROM task_members WHERE task_id = $1 ORDER BY position`,
+      [ids.issue]
+    );
+    expect(members).toEqual([
+      { agent_id: ids.agent1, position: 0, state: 'active' },
+      { agent_id: ids.agent2, position: 1, state: 'active' },
+    ]);
+  });
+
+  it('turns comments into ordered turns and agent verdicts into turn reports', async () => {
+    const turns = await q(
+      `SELECT seq, kind, agent_id, author_user_id, status, content, report, run_id
+       FROM turns WHERE task_id = $1 ORDER BY seq`,
+      [ids.issue]
+    );
+    expect(turns).toEqual([
+      {
+        seq: 1,
+        kind: 'human',
+        agent_id: null,
+        author_user_id: ids.user,
+        status: 'completed',
+        content: 'Please add tests',
+        report: null,
+        run_id: null,
+      },
+      {
+        seq: 2,
+        kind: 'agent',
+        agent_id: ids.agent2,
+        author_user_id: null,
+        status: 'completed',
+        content: '[CHANGES REQUESTED] Missing tests',
+        report: { type: 'review', decision: 'changes_requested' },
+        run_id: ids.run,
+      },
+    ]);
+  });
+
+  it('keeps only human decisions as approvals', async () => {
+    const approvals = await q(`SELECT user_id, decision, body FROM approvals WHERE task_id = $1`, [
+      ids.issue,
+    ]);
+    expect(approvals).toEqual([{ user_id: ids.user, decision: 'approved', body: 'Ship it' }]);
+    const legacy = await q(
+      `SELECT table_name FROM information_schema.tables WHERE table_name IN ('task_comments', 'task_reviews')`
+    );
+    expect(legacy).toHaveLength(0);
   });
 
   it('detaches tasks and workspaces from the removed project bindings', async () => {

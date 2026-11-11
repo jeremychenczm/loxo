@@ -258,18 +258,16 @@ describe('api-lane task run', () => {
     await request(app)
       .patch(`/api/tasks/${taskId}`)
       .set(auth())
-      .send({ assignee: { agentId } });
+      .send({ leadAgentId: agentId, memberAgentIds: [agentId] });
     await drainRunsForTests();
 
     const detail = await request(app).get(`/api/tasks/${taskId}`).set(auth());
     expect(detail.body.task.status).toBe('in_review');
 
-    const comments = await request(app).get(`/api/tasks/${taskId}/comments`).set(auth());
-    const agentComments = comments.body.comments.filter(
-      (c: { authorType: string }) => c.authorType === 'agent'
-    );
-    expect(agentComments).toHaveLength(1);
-    expect(agentComments[0].body).toBe('Done via tool loop');
+    const turns = await request(app).get(`/api/tasks/${taskId}/turns`).set(auth());
+    const agentTurns = turns.body.turns.filter((t: { kind: string }) => t.kind === 'agent');
+    expect(agentTurns).toHaveLength(1);
+    expect(agentTurns[0].content).toBe('Done via tool loop');
 
     const runs = await request(app).get(`/api/runs?taskId=${taskId}`).set(auth());
     expect(runs.body.runs[0].status).toBe('succeeded');

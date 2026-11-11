@@ -6,7 +6,7 @@ import { db } from '../../db/client';
 import {
   EXECUTION_WORKSPACE_TERMINAL_STATUSES,
   executionWorkspaces,
-  taskReviews,
+  approvals,
   tasks,
   repositories,
   runChangeSnapshots,
@@ -17,7 +17,7 @@ import {
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
-import { addSystemComment } from '../tasks/comments.service';
+import { addSystemTurn } from '../tasks/turns.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { taskBranchName } from './branch-name';
@@ -431,7 +431,7 @@ async function recoverStaleMergeLock(
     if (provable) {
       await updateWorkspace(workspace.id, { status: 'merged', mergedAt: new Date() });
       await moveTask(userId, workspace.taskId, { status: 'done' }).catch(() => {});
-      await addSystemComment(
+      await addSystemTurn(
         userId,
         workspace.taskId,
         'Merge recovered after an interruption: the base branch already contains this workspace.'
@@ -509,8 +509,8 @@ export async function finalizeTaskWorkspace(
   let repository = await findRepository(userId, workspace.repositoryId);
   if (!repository) throw conflict('repository_removed', 'The task repository was removed');
 
-  const approval = await latestHumanApproval(userId, taskId);
-  if (!approval?.snapshot) {
+  const approval = await latestApproval(userId, taskId);
+  if (!approval?.fingerprint) {
     throw conflict('approval_required', 'A human approval bound to a change snapshot is required');
   }
 
@@ -523,7 +523,7 @@ export async function finalizeTaskWorkspace(
     });
 
   let current = await recapture().catch(rethrowGitError);
-  if (current.fingerprint !== approval.snapshot.changeFingerprint) {
+  if (current.fingerprint !== approval.fingerprint) {
     throw conflict(
       'stale_approval',
       'The workspace changed after approval; request a new review before finalizing'
@@ -552,7 +552,7 @@ export async function finalizeTaskWorkspace(
       })
       .catch(rethrowGitError);
     current = await recapture().catch(rethrowGitError);
-    if (current.fingerprint !== approval.snapshot.changeFingerprint) {
+    if (current.fingerprint !== approval.fingerprint) {
       throw conflict(
         'checkpoint_mismatch',
         'The checkpoint commit altered the approved content; finalization aborted'
@@ -570,7 +570,7 @@ export async function finalizeTaskWorkspace(
       retainedAt: new Date(),
     });
     const moved = await moveTask(userId, taskId, { status: 'done' });
-    await addSystemComment(
+    await addSystemTurn(
       userId,
       taskId,
       `Branch ${workspace.branchName} retained; the managed worktree was removed.`
@@ -607,7 +607,7 @@ export async function finalizeTaskWorkspace(
         mergedAt: new Date(),
       });
       const moved = await moveTask(userId, taskId, { status: 'done' });
-      await addSystemComment(
+      await addSystemTurn(
         userId,
         taskId,
         `Merged ${workspace.branchName} into ${repository.defaultBranch} (${outcome.newHead.slice(0, 12)}).`
@@ -620,7 +620,7 @@ export async function finalizeTaskWorkspace(
         status: 'conflicted',
         lastError: `Merge into ${repository.defaultBranch} conflicted; the base checkout was restored`,
       });
-      await addSystemComment(
+      await addSystemTurn(
         userId,
         taskId,
         `Merge of ${workspace.branchName} conflicted; the base checkout was restored and the task stays in review.`
@@ -693,7 +693,7 @@ export async function abandonTaskWorkspace(
     const moved = await moveTask(userId, taskId, { status: 'cancelled' });
     taskStatus = moved.status;
   }
-  await addSystemComment(
+  await addSystemTurn(
     userId,
     taskId,
     `Workspace abandoned; branch ${workspace.branchName} and its worktree were discarded from management.`
@@ -701,31 +701,24 @@ export async function abandonTaskWorkspace(
   return { workspace: updated, taskStatus };
 }
 
-async function latestHumanApproval(
+/** The newest approving decision; only people record approvals. */
+async function latestApproval(
   userId: string,
   taskId: string
-): Promise<{ reviewId: string; snapshot: RunChangeSnapshot | null } | null> {
-  const [review] = await db
-    .select()
-    .from(taskReviews)
+): Promise<{ id: string; fingerprint: string | null } | null> {
+  const [row] = await db
+    .select({ id: approvals.id, fingerprint: approvals.fingerprint })
+    .from(approvals)
     .where(
       and(
-        eq(taskReviews.taskId, taskId),
-        eq(taskReviews.userId, userId),
-        eq(taskReviews.reviewerType, 'human'),
-        eq(taskReviews.decision, 'approved')
+        eq(approvals.taskId, taskId),
+        eq(approvals.userId, userId),
+        eq(approvals.decision, 'approved')
       )
     )
-    .orderBy(desc(taskReviews.createdAt))
+    .orderBy(desc(approvals.createdAt))
     .limit(1);
-  if (!review) return null;
-  if (!review.changeSnapshotId) return { reviewId: review.id, snapshot: null };
-  const [snapshot] = await db
-    .select()
-    .from(runChangeSnapshots)
-    .where(eq(runChangeSnapshots.id, review.changeSnapshotId))
-    .limit(1);
-  return { reviewId: review.id, snapshot: snapshot ?? null };
+  return row ?? null;
 }
 
 export interface TaskChangesView {

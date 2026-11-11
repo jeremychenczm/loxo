@@ -1,12 +1,12 @@
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { db, pool } from '../src/db/client';
-import { taskReviews } from '../src/db/schema';
+import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { mintRunToken } from '../src/modules/runs/run-token';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
+import { addAgentTurn } from '../src/modules/tasks/turns.service';
 
 const app = createApp();
 let token = '';
@@ -91,15 +91,19 @@ async function moveTo(taskId: string, status: string) {
   expect(res.status).toBe(200);
 }
 
-async function setPrincipals(taskId: string, assignee?: string, reviewer?: string) {
+/** Non-lead members review; a reviewer-only task has members but no lead. */
+async function setRoster(taskId: string, lead: string | undefined, reviewer?: string) {
+  const members = [...new Set([lead, reviewer].filter((id): id is string => Boolean(id)))];
   const res = await request(app)
     .patch(`/api/tasks/${taskId}`)
     .set(auth())
-    .send({
-      ...(assignee ? { assignee: { agentId: assignee } } : {}),
-      ...(reviewer ? { reviewer: { agentId: reviewer } } : {}),
-    });
+    .send({ leadAgentId: lead ?? null, memberAgentIds: members });
   expect(res.status).toBe(200);
+}
+
+async function timeline(taskId: string) {
+  const res = await request(app).get(`/api/tasks/${taskId}/turns`).set(auth());
+  return res.body.turns as Array<{ kind: string; content: string; report: Record<string, unknown> | null }>;
 }
 
 async function runsFor(taskId: string) {
@@ -122,13 +126,8 @@ function mcpCall(runToken: string, method: string, params?: Record<string, unkno
 
 async function seedRejections(taskId: string, count: number) {
   for (let i = 0; i < count; i += 1) {
-    await db.insert(taskReviews).values({
-      userId,
-      taskId,
-      reviewerType: 'agent',
-      reviewerAgentId: inspectorId,
-      decision: 'changes_requested',
-      body: `seeded rejection ${i + 1}`,
+    await addAgentTurn(userId, taskId, inspectorId, `[CHANGES REQUESTED] seeded rejection ${i + 1}`, {
+      report: { type: 'review', decision: 'changes_requested' },
     });
   }
 }
@@ -136,7 +135,7 @@ async function seedRejections(taskId: string, count: number) {
 describe('reviewer routing', () => {
   it('wakes the reviewer with a review-flavored run when the task enters review', async () => {
     const task = await createTask('Review wake');
-    await setPrincipals(task.id, undefined, inspectorId);
+    await setRoster(task.id, undefined, inspectorId);
     await moveTo(task.id, 'todo');
     await moveTo(task.id, 'in_progress');
     await moveTo(task.id, 'in_review');
@@ -153,9 +152,9 @@ describe('reviewer routing', () => {
     expect(lastPermission).toBe('read_only');
   });
 
-  it('skips the reviewer wake when reviewer and assignee are the same agent', async () => {
+  it('never asks the lead to review its own work', async () => {
     const task = await createTask('Self review');
-    await setPrincipals(task.id, workerId, workerId);
+    await setRoster(task.id, workerId);
     await moveTo(task.id, 'todo');
     await drainRunsForTests();
     await moveTo(task.id, 'in_progress');
@@ -169,7 +168,7 @@ describe('reviewer routing', () => {
   it('serves the reviewer toolset and records approval without closing', async () => {
     const gated = gateReviewRun();
     const task = await createTask('Approve recommendation');
-    await setPrincipals(task.id, undefined, inspectorId);
+    await setRoster(task.id, undefined, inspectorId);
     await moveTo(task.id, 'todo');
     await moveTo(task.id, 'in_progress');
     await moveTo(task.id, 'in_review');
@@ -193,18 +192,22 @@ describe('reviewer routing', () => {
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.status).toBe('in_review');
 
-    const reviews = await request(app).get(`/api/tasks/${task.id}/reviews`).set(auth());
-    expect(reviews.body.reviews).toHaveLength(1);
-    expect(reviews.body.reviews[0].decision).toBe('approved');
-    expect(reviews.body.reviews[0].reviewerType).toBe('agent');
+    const verdicts = (await timeline(task.id)).filter((t) => t.report?.type === 'review');
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]!.kind).toBe('agent');
+    expect(verdicts[0]!.report).toEqual({ type: 'review', decision: 'approved' });
+
+    // Agent opinions never count as approvals.
+    const approvals = await request(app).get(`/api/tasks/${task.id}/approvals`).set(auth());
+    expect(approvals.body.approvals).toHaveLength(0);
 
     gated.release();
   });
 
-  it('agent rejection reopens work and re-wakes the assignee', async () => {
+  it('agent rejection reopens work and re-wakes the lead', async () => {
     const gated = gateReviewRun();
     const task = await createTask('Reject and rework');
-    await setPrincipals(task.id, workerId, inspectorId);
+    await setRoster(task.id, workerId, inspectorId);
     await moveTo(task.id, 'todo');
     await moveTo(task.id, 'in_progress');
     await moveTo(task.id, 'in_review');
@@ -223,8 +226,7 @@ describe('reviewer routing', () => {
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.status).toBe('in_progress');
 
-    const comments = await request(app).get(`/api/tasks/${task.id}/comments`).set(auth());
-    const bodies = comments.body.comments.map((c: { body: string }) => c.body);
+    const bodies = (await timeline(task.id)).map((t) => t.content);
     expect(bodies).toContain('[CHANGES REQUESTED] Tests are missing for the edge case.');
 
     const workerRuns = (await runsFor(task.id)).filter((r) => r.agentId === workerId);
@@ -233,7 +235,7 @@ describe('reviewer routing', () => {
 
   it('stops waking the reviewer once the automated-cycle fuse blows', async () => {
     const task = await createTask('Fuse blown');
-    await setPrincipals(task.id, undefined, inspectorId);
+    await setRoster(task.id, undefined, inspectorId);
     await seedRejections(task.id, 3);
     await moveTo(task.id, 'todo');
     await moveTo(task.id, 'in_progress');
@@ -246,7 +248,7 @@ describe('reviewer routing', () => {
   it('halts a beyond-cap rejection instead of reopening work', async () => {
     const gated = gateReviewRun();
     const task = await createTask('Halted verdict');
-    await setPrincipals(task.id, undefined, inspectorId);
+    await setRoster(task.id, undefined, inspectorId);
     await seedRejections(task.id, 3);
     await moveTo(task.id, 'todo');
     await moveTo(task.id, 'in_progress');
@@ -273,8 +275,7 @@ describe('reviewer routing', () => {
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.status).toBe('in_review');
 
-    const comments = await request(app).get(`/api/tasks/${task.id}/comments`).set(auth());
-    const bodies = comments.body.comments.map((c: { body: string }) => c.body);
+    const bodies = (await timeline(task.id)).map((t) => t.content);
     expect(bodies.some((b: string) => b.startsWith('[REVIEW HALTED]'))).toBe(true);
 
     gated.release();

@@ -94,11 +94,12 @@ async function moveTo(taskId: string, status: string) {
   return res.body.task;
 }
 
+/** Makes the agent the sole member and lead. */
 async function assign(taskId: string, agentId: string) {
   const res = await request(app)
     .patch(`/api/tasks/${taskId}`)
     .set(auth())
-    .send({ assignee: { agentId } });
+    .send({ leadAgentId: agentId, memberAgentIds: [agentId] });
   expect(res.status).toBe(200);
   return res.body.task;
 }
@@ -135,12 +136,11 @@ describe('wake admission', () => {
     expect(run!.output).toBe('stub work report');
     expect(run!.sessionRef).toBe('sess-stub');
 
-    const comments = await request(app).get(`/api/tasks/${task.id}/comments`).set(auth());
-    const agentComments = comments.body.comments.filter(
-      (c: { authorType: string }) => c.authorType === 'agent'
-    );
-    expect(agentComments).toHaveLength(1);
-    expect(agentComments[0].body).toBe('stub work report');
+    const turns = await request(app).get(`/api/tasks/${task.id}/turns`).set(auth());
+    const agentTurns = turns.body.turns.filter((t: { kind: string }) => t.kind === 'agent');
+    expect(agentTurns).toHaveLength(1);
+    expect(agentTurns[0].content).toBe('stub work report');
+    expect(agentTurns[0].runId).toBe(run!.id);
 
     const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(detail.body.task.activeRunId).toBeNull();
@@ -154,7 +154,7 @@ describe('wake admission', () => {
     expect(await runsFor(task.id)).toHaveLength(0);
   });
 
-  it('wakes when a backlog task with an assignee moves to todo', async () => {
+  it('wakes when a backlog task with a lead moves to todo', async () => {
     const task = await createTask('Move triggers');
     await assign(task.id, agentA);
     await moveTo(task.id, 'todo');
@@ -255,10 +255,10 @@ describe('wake admission', () => {
     expect(await agentStatus(agentA)).toBe('idle');
   });
 
-  it('rejects a manual wake when no agent is assigned', async () => {
+  it('rejects a manual wake when the task has no lead', async () => {
     const task = await createTask('Nobody home');
     const res = await request(app).post(`/api/tasks/${task.id}/wake`).set(auth()).send({});
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe('no_agent_assignee');
+    expect(res.body.code).toBe('no_lead');
   });
 });

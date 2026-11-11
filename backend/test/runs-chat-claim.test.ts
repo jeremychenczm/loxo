@@ -100,7 +100,7 @@ describe('shared agent claim', () => {
     await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
-      .send({ assignee: { agentId } });
+      .send({ leadAgentId: agentId, memberAgentIds: [agentId] });
     await gated.invoked;
 
     await expect(runChatTurn(userId, conversationId, 'quick question')).rejects.toMatchObject({
@@ -124,7 +124,7 @@ describe('shared agent claim', () => {
     await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
-      .send({ assignee: { agentId } });
+      .send({ leadAgentId: agentId, memberAgentIds: [agentId] });
     expect((await runsFor(task.id))[0]!.status).toBe('queued');
 
     gated.release();
@@ -150,7 +150,7 @@ describe('shared agent claim', () => {
     await request(app)
       .patch(`/api/tasks/${task.id}`)
       .set(auth())
-      .send({ assignee: { agentId } });
+      .send({ leadAgentId: agentId, memberAgentIds: [agentId] });
     await drainRunsForTests();
     expect((await runsFor(task.id))[0]!.status).toBe('succeeded');
   });

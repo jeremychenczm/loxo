@@ -49,7 +49,8 @@ describe('POST /api/conversations/:id/file-task', () => {
     expect(task.status).toBe('backlog');
     expect(task.title).toBe('Ship the export command');
     expect(task.brief).toBe('CSV first, JSON later.');
-    expect(task.assigneeAgentId).toBe(agentId);
+    expect(task.leadAgentId).toBe(agentId);
+    expect(task.memberAgentIds).toEqual([agentId]);
     expect(task.sourceConversationId).toBe(conversationId);
     expect(task.number).toBeGreaterThan(0);
   });
@@ -65,19 +66,17 @@ describe('POST /api/conversations/:id/file-task', () => {
     expect(runs.rowCount).toBe(0);
   });
 
-  it('leaves a timeline comment on the task', async () => {
+  it('leaves a timeline turn on the task', async () => {
     const conversationId = await newConversation();
     const filed = await request(app)
       .post(`/api/conversations/${conversationId}/file-task`)
       .set(auth())
       .send({ title: 'Comment breadcrumb' });
 
-    const comments = await request(app)
-      .get(`/api/tasks/${filed.body.task.id}/comments`)
-      .set(auth());
-    expect(comments.body.comments).toHaveLength(1);
-    expect(comments.body.comments[0].authorType).toBe('human');
-    expect(comments.body.comments[0].body).toContain('Filed from the chat');
+    const turns = await request(app).get(`/api/tasks/${filed.body.task.id}/turns`).set(auth());
+    expect(turns.body.turns).toHaveLength(1);
+    expect(turns.body.turns[0].kind).toBe('human');
+    expect(turns.body.turns[0].content).toContain('Filed from the chat');
   });
 
   it('posts a system message into the conversation pointing at the task', async () => {

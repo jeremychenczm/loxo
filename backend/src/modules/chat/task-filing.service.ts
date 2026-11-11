@@ -1,14 +1,14 @@
 import { type Task } from '../../db/schema';
-import { addHumanComment } from '../tasks/comments.service';
 import { createTask } from '../tasks/tasks.service';
+import { addHumanTurn } from '../tasks/turns.service';
 import { appendMessage, getConversation } from './conversations.service';
 
 /**
  * Files a confirmed draft as a task. The task lands in the backlog — filing
- * captures work, moving it to todo dispatches it — assigned to the
+ * captures work, moving it to todo dispatches it — led by the
  * conversation's agent by default since the chat context is theirs. Leaves a
- * breadcrumb on both sides: a timeline comment on the task and a system
- * message in the chat. A conversation may file any number of tasks.
+ * breadcrumb on both sides: a timeline turn on the task and a system message
+ * in the chat. A conversation may file any number of tasks.
  */
 export async function fileTaskFromConversation(
   userId: string,
@@ -21,14 +21,14 @@ export async function fileTaskFromConversation(
     title: input.title,
     brief: input.brief,
     repositoryId: input.repositoryId,
-    assignee: { agentId: conversation.agentId },
+    leadAgentId: conversation.agentId,
     sourceConversationId: conversation.id,
   });
 
   // Breadcrumbs are best-effort: the task is already committed, and a failed
   // annotation must not surface as a failed conversion.
   try {
-    await addHumanComment(userId, task.id, `Filed from the chat "${conversation.title}".`);
+    await addHumanTurn(userId, task.id, `Filed from the chat "${conversation.title}".`);
     await appendMessage(
       conversationId,
       'system',

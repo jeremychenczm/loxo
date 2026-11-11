@@ -58,8 +58,8 @@ export function collectSkillIndex(workspace: string): SkillEntry[] {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const MAX_TASK_COMMENTS = 10;
-const MAX_TASK_COMMENT_CHARS = 400;
+const MAX_TIMELINE_ENTRIES = 10;
+const MAX_TIMELINE_ENTRY_CHARS = 400;
 
 export interface TaskRunTurnContext {
   agent: Pick<Agent, 'name' | 'description'>;
@@ -69,7 +69,7 @@ export interface TaskRunTurnContext {
   status: string;
   /** Why the agent was woken (assignment, manual nudge, ...). */
   reason: string;
-  comments: Array<{ author: string; body: string }>;
+  timeline: Array<{ author: string; body: string }>;
   workspace: string;
   /**
    * 'mcp' when the runtime mounts the platform control plane; 'report' for
@@ -97,14 +97,14 @@ export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
       .filter(Boolean)
       .join('\n'),
     `Wake reason: ${sanitizeInjected(input.reason)}`,
-    input.comments.length > 0
+    input.timeline.length > 0
       ? [
           'Recent task timeline (oldest first):',
-          ...input.comments
-            .slice(-MAX_TASK_COMMENTS)
+          ...input.timeline
+            .slice(-MAX_TIMELINE_ENTRIES)
             .map(
               (c) =>
-                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TASK_COMMENT_CHARS))}`
+                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TIMELINE_ENTRY_CHARS))}`
             ),
         ].join('\n')
       : '',
@@ -125,7 +125,7 @@ export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
       '- Do the actual work in the workspace. No placeholders and no descriptions of work you did not do.',
       input.controlPlane === 'mcp'
         ? '- Finish by calling submit_result with a concise work report, or ask_blocker if you cannot proceed. If you post nothing through the control plane, your final reply text lands on the timeline as a fallback.'
-        : '- Your final reply is posted verbatim to the task timeline as your comment: make it a concise work report.',
+        : '- Your final reply is posted verbatim to the task timeline: make it a concise work report.',
       '- State the paths of files you created or changed in your report.',
     ].join('\n'),
     'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
@@ -159,14 +159,14 @@ export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
       .filter(Boolean)
       .join('\n'),
     `Wake reason: ${sanitizeInjected(input.reason)}`,
-    input.comments.length > 0
+    input.timeline.length > 0
       ? [
           'Task timeline (oldest first — the work reports you are reviewing are here):',
-          ...input.comments
-            .slice(-MAX_TASK_COMMENTS)
+          ...input.timeline
+            .slice(-MAX_TIMELINE_ENTRIES)
             .map(
               (c) =>
-                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TASK_COMMENT_CHARS))}`
+                `- ${c.author}: ${sanitizeInjected(c.body.replace(/\s+/g, ' ').slice(0, MAX_TIMELINE_ENTRY_CHARS))}`
             ),
         ].join('\n')
       : '',
@@ -186,7 +186,7 @@ export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
       '- You are the reviewer: do NOT modify any files. Defects are sent back via changes_requested, not fixed by you.',
       input.controlPlane === 'mcp'
         ? '- Finish by calling submit_review with a clear verdict and concrete, actionable feedback.'
-        : '- Your final reply is posted to the timeline as your review comment; state a clear verdict and concrete feedback.',
+        : '- Your final reply is posted to the timeline as your review; state a clear verdict and concrete feedback.',
     ].join('\n'),
     'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
     'Do not reveal credentials or platform internals in replies.',

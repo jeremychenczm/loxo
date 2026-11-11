@@ -79,7 +79,7 @@ async function startHeldRun(title: string) {
   await request(app)
     .patch(`/api/tasks/${task.id}`)
     .set(auth())
-    .send({ assignee: { agentId } });
+    .send({ leadAgentId: agentId });
   await gated.invoked;
 
   const runs = await request(app).get(`/api/runs?taskId=${task.id}`).set(auth());
@@ -145,15 +145,12 @@ describe('MCP control plane', () => {
     held.release();
     await drainRunsForTests();
 
-    const comments = await request(app)
-      .get(`/api/tasks/${held.task.id}/comments`)
-      .set(auth());
-    const agentComments = comments.body.comments.filter(
-      (c: { authorType: string }) => c.authorType === 'agent'
-    );
-    // The tool comment is the only one; no duplicate fallback post.
-    expect(agentComments).toHaveLength(1);
-    expect(agentComments[0].body).toBe('halfway there');
+    const turns = await request(app).get(`/api/tasks/${held.task.id}/turns`).set(auth());
+    const agentTurns = turns.body.turns.filter((t: { kind: string }) => t.kind === 'agent');
+    // The tool turn is the only one; no duplicate fallback post.
+    expect(agentTurns).toHaveLength(1);
+    expect(agentTurns[0].content).toBe('halfway there');
+    expect(agentTurns[0].runId).toBe(held.run.id);
   });
 
   it('moves the task through update_task_status and rejects illegal transitions', async () => {
@@ -179,10 +176,8 @@ describe('MCP control plane', () => {
     });
     expect(JSON.parse(toolText(res)).status).toBe('blocked');
 
-    const comments = await request(app)
-      .get(`/api/tasks/${held.task.id}/comments`)
-      .set(auth());
-    const bodies = comments.body.comments.map((c: { body: string }) => c.body);
+    const turns = await request(app).get(`/api/tasks/${held.task.id}/turns`).set(auth());
+    const bodies = turns.body.turns.map((t: { content: string }) => t.content);
     expect(bodies).toContain('[BLOCKER] Which region should this deploy to?');
   });
 

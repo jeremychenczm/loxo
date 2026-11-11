@@ -4,9 +4,9 @@ import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, taskComments, runChangeSnapshots, runs } from '../src/db/schema';
+import { agents, runChangeSnapshots, runs, turns } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { createReview } from '../src/modules/tasks/reviews.service';
+import { recordApproval } from '../src/modules/tasks/approvals.service';
 import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
@@ -141,9 +141,9 @@ describe('runs in isolated task workspaces', () => {
 
     const timeline = await db
       .select()
-      .from(taskComments)
-      .where(and(eq(taskComments.taskId, task.id), eq(taskComments.authorType, 'system')));
-    expect(timeline.some((c) => c.body.includes('Code changes captured'))).toBe(true);
+      .from(turns)
+      .where(and(eq(turns.taskId, task.id), eq(turns.kind, 'system')));
+    expect(timeline.some((t) => t.content.includes('Code changes captured'))).toBe(true);
   });
 
   it('reuses the same worktree for rework and for the reviewer', { timeout: T }, async () => {
@@ -217,9 +217,9 @@ describe('runs in isolated task workspaces', () => {
 
     const timeline = await db
       .select()
-      .from(taskComments)
-      .where(and(eq(taskComments.taskId, task.id), eq(taskComments.authorType, 'system')));
-    expect(timeline.some((c) => c.body.includes('Read-only policy violation'))).toBe(true);
+      .from(turns)
+      .where(and(eq(turns.taskId, task.id), eq(turns.kind, 'system')));
+    expect(timeline.some((t) => t.content.includes('Read-only policy violation'))).toBe(true);
   });
 
   it('rejects an API worker on a code task with a visible failure', { timeout: T }, async () => {
@@ -254,12 +254,11 @@ describe('review binding and lifecycle guards', () => {
     }
     await drainRunsForTests();
 
-    const review = await createReview(userId, task.id, {
+    const approval = await recordApproval(userId, task.id, {
       decision: 'approved',
       body: 'Looks correct against the captured diff.',
-      reviewer: { userId },
     });
-    expect(review.changeSnapshotId).not.toBeNull();
+    expect(approval.changeSnapshotId).not.toBeNull();
 
     const after = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(after.body.task.status).toBe('in_review');
@@ -290,12 +289,11 @@ describe('review binding and lifecycle guards', () => {
     }
     await drainRunsForTests();
 
-    const review = await createReview(userId, task.id, {
+    const approval = await recordApproval(userId, task.id, {
       decision: 'approved',
       body: 'Ship it.',
-      reviewer: { userId },
     });
-    expect(review.changeSnapshotId).toBeNull();
+    expect(approval.changeSnapshotId).toBeNull();
 
     const after = await request(app).get(`/api/tasks/${task.id}`).set(auth());
     expect(after.body.task.status).toBe('done');

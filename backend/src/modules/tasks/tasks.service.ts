@@ -1,47 +1,85 @@
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
+  taskMembers,
   tasks,
   users,
   type Task,
   type TaskStatus,
 } from '../../db/schema';
-import { badRequest, conflict, notFound } from '../../http/errors';
+import { badRequest, conflict, HttpError, notFound } from '../../http/errors';
 import { findRepository, hasActiveWorkspaces } from '../code-workspaces/workspace.service';
+import { getCrew } from '../crews/crews.service';
 import { requestWake } from '../runs/wake';
 import { isTransitionAllowed, TERMINAL_STATUSES } from './task-transitions';
-import { countAgentRejections, REVIEW_CYCLE_CAP } from './reviews.service';
+import { countAgentRejections, REVIEW_CYCLE_CAP } from './approvals.service';
 
-/** Statuses where an agent assignee is expected to act; backlog means "not ready yet". */
+/** Statuses where the lead is expected to act; backlog means "not ready yet". */
 const WAKE_STATUSES: TaskStatus[] = ['todo', 'in_progress'];
 
+export const MAX_TASK_MEMBERS = 8;
+
+export interface TaskView extends Task {
+  /** Active members in speaking order; the lead is always among them. */
+  memberAgentIds: string[];
+}
+
+/** Active member agent ids per task, ordered by position. */
+async function loadActiveMembers(taskIds: string[]): Promise<Map<string, string[]>> {
+  const members = new Map<string, string[]>(taskIds.map((id) => [id, []]));
+  if (taskIds.length === 0) return members;
+  const rows = await db
+    .select({ taskId: taskMembers.taskId, agentId: taskMembers.agentId })
+    .from(taskMembers)
+    .where(and(inArray(taskMembers.taskId, taskIds), eq(taskMembers.state, 'active')))
+    .orderBy(asc(taskMembers.position), asc(taskMembers.createdAt));
+  for (const row of rows) members.get(row.taskId)?.push(row.agentId);
+  return members;
+}
+
+export async function toTaskViews(rows: Task[]): Promise<TaskView[]> {
+  const members = await loadActiveMembers(rows.map((r) => r.id));
+  return rows.map((row) => ({ ...row, memberAgentIds: members.get(row.id)! }));
+}
+
+export async function toTaskView(row: Task): Promise<TaskView> {
+  return (await toTaskViews([row]))[0]!;
+}
+
+export async function activeMemberIds(taskId: string): Promise<string[]> {
+  return (await loadActiveMembers([taskId])).get(taskId)!;
+}
+
 /**
- * Reviewer wake on entering review. Skipped when the reviewer is also the
- * assignee (self-review is noise) and once the automated-cycle fuse has
- * blown — after that, reviews on this task are human-only.
+ * Reviewer wakes on entering review: every active member except the lead
+ * (self-review is noise), until the automated-cycle fuse has blown — after
+ * that, reviews on this task are human-only.
  */
-async function wakeReviewerAgent(task: Task): Promise<void> {
-  if (!task.reviewerAgentId || task.reviewerAgentId === task.assigneeAgentId) return;
+async function wakeReviewers(task: Task): Promise<void> {
   try {
+    const reviewers = (await activeMemberIds(task.id)).filter((id) => id !== task.leadAgentId);
+    if (reviewers.length === 0) return;
     if ((await countAgentRejections(task.id)) >= REVIEW_CYCLE_CAP) return;
-    await requestWake(task.userId, {
-      agentId: task.reviewerAgentId,
-      taskId: task.id,
-      trigger: 'review',
-      reason: `Review requested on task #${task.number}: ${task.title}`,
-    });
+    for (const agentId of reviewers) {
+      await requestWake(task.userId, {
+        agentId,
+        taskId: task.id,
+        trigger: 'review',
+        reason: `Review requested on task #${task.number}: ${task.title}`,
+      });
+    }
   } catch (error) {
     console.error(`Reviewer wake for task ${task.id} failed:`, error);
   }
 }
 
 /** Wake-ups are post-commit side effects; a failed wake never fails the write. */
-async function wakeAssignedAgent(task: Task, reason: string): Promise<void> {
-  if (!task.assigneeAgentId || !WAKE_STATUSES.includes(task.status)) return;
+async function wakeLead(task: Task, reason: string): Promise<void> {
+  if (!task.leadAgentId || !WAKE_STATUSES.includes(task.status)) return;
   try {
     await requestWake(task.userId, {
-      agentId: task.assigneeAgentId,
+      agentId: task.leadAgentId,
       taskId: task.id,
       trigger: 'assignment',
       reason,
@@ -49,12 +87,6 @@ async function wakeAssignedAgent(task: Task, reason: string): Promise<void> {
   } catch (error) {
     console.error(`Wake for task ${task.id} failed:`, error);
   }
-}
-
-export interface AssignmentPatch {
-  /** Exactly one of agentId/userId may be set; null clears the slot. */
-  agentId?: string | null;
-  userId?: string | null;
 }
 
 async function findTask(userId: string, taskId: string): Promise<Task | undefined> {
@@ -72,15 +104,6 @@ async function assertOwnedRepository(userId: string, repositoryId: string): Prom
   }
 }
 
-async function assertOwnedAgent(userId: string, agentId: string): Promise<void> {
-  const [row] = await db
-    .select({ id: agents.id })
-    .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.userId, userId)))
-    .limit(1);
-  if (!row) throw badRequest('invalid_assignee', 'Agent does not exist');
-}
-
 /** Bottom of the column: current max order + 1 within (user, status). */
 async function nextBoardOrder(userId: string, status: TaskStatus): Promise<number> {
   const [row] = await db
@@ -91,45 +114,98 @@ async function nextBoardOrder(userId: string, status: TaskStatus): Promise<numbe
 }
 
 /**
- * Resolves an assignment patch to concrete column values, enforcing the
- * single-principal rule before the database CHECK ever sees it.
+ * Normalizes a roster and its lead: the lead joins the roster at the front
+ * when missing, agents are unique and owned, and the size is bounded.
  */
-async function resolvePrincipal(
+async function resolveRoster(
   userId: string,
-  patch: AssignmentPatch,
-  slot: 'assignee' | 'reviewer'
-): Promise<{ agentId: string | null; userId: string | null }> {
-  if (patch.agentId && patch.userId) {
-    throw badRequest('invalid_input', `Set either an agent or a user as ${slot}, not both`);
+  roster: string[],
+  leadAgentId: string | null
+): Promise<{ roster: string[]; leadAgentId: string | null }> {
+  const unique = [...new Set(roster)];
+  if (unique.length !== roster.length) {
+    throw badRequest('invalid_members', 'An agent can join a task only once');
   }
-  if (patch.agentId) {
-    await assertOwnedAgent(userId, patch.agentId);
-    return { agentId: patch.agentId, userId: null };
+  const full = leadAgentId && !unique.includes(leadAgentId) ? [leadAgentId, ...unique] : unique;
+  if (full.length > MAX_TASK_MEMBERS) {
+    throw badRequest('invalid_members', `A task can have at most ${MAX_TASK_MEMBERS} members`);
   }
-  if (patch.userId) {
-    if (patch.userId !== userId) {
-      throw badRequest('invalid_assignee', 'Only the account owner can be assigned');
+  if (full.length > 0) {
+    const owned = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.userId, userId), inArray(agents.id, full)));
+    if (owned.length !== full.length) {
+      throw badRequest('invalid_members', 'One or more agents do not exist');
     }
-    return { agentId: null, userId: patch.userId };
   }
-  return { agentId: null, userId: null };
+  return { roster: full, leadAgentId };
 }
 
-export async function createTask(
-  userId: string,
-  input: {
-    title: string;
-    brief?: string;
-    repositoryId?: string;
-    assignee?: AssignmentPatch;
-    /** Validated by the caller; not exposed through the HTTP create route. */
-    sourceConversationId?: string;
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Makes `roster` the active member list in order. Members who drop out are
+ * marked removed rather than deleted, so their history stays attributable.
+ */
+async function writeRoster(tx: Tx, taskId: string, roster: string[]): Promise<void> {
+  const existing = await tx.select().from(taskMembers).where(eq(taskMembers.taskId, taskId));
+  const now = new Date();
+  for (const row of existing) {
+    if (!roster.includes(row.agentId) && row.state !== 'removed') {
+      await tx
+        .update(taskMembers)
+        .set({ state: 'removed', updatedAt: now })
+        .where(eq(taskMembers.id, row.id));
+    }
   }
-): Promise<Task> {
+  for (const [position, agentId] of roster.entries()) {
+    const row = existing.find((r) => r.agentId === agentId);
+    if (row) {
+      await tx
+        .update(taskMembers)
+        .set({ position, state: 'active', pausedReason: null, updatedAt: now })
+        .where(eq(taskMembers.id, row.id));
+    } else {
+      await tx.insert(taskMembers).values({ taskId, agentId, position });
+    }
+  }
+}
+
+async function crewRoster(userId: string, crewId: string): Promise<string[]> {
+  try {
+    return (await getCrew(userId, crewId)).agentIds;
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) {
+      throw badRequest('invalid_crew', 'Crew does not exist');
+    }
+    throw err;
+  }
+}
+
+export interface CreateTaskInput {
+  title: string;
+  brief?: string;
+  repositoryId?: string;
+  /** Copies the crew's roster; memberAgentIds is ignored when set. */
+  crewId?: string;
+  leadAgentId?: string;
+  memberAgentIds?: string[];
+  /** Validated by the caller; not exposed through the HTTP create route. */
+  sourceConversationId?: string;
+}
+
+export async function createTask(userId: string, input: CreateTaskInput): Promise<Task> {
   if (input.repositoryId) await assertOwnedRepository(userId, input.repositoryId);
-  const assignee = input.assignee
-    ? await resolvePrincipal(userId, input.assignee, 'assignee')
-    : { agentId: null, userId: null };
+
+  const requested = input.crewId
+    ? await crewRoster(userId, input.crewId)
+    : (input.memberAgentIds ?? []);
+  const { roster, leadAgentId } = await resolveRoster(
+    userId,
+    requested,
+    input.leadAgentId ?? requested[0] ?? null
+  );
 
   const boardOrder = await nextBoardOrder(userId, 'backlog');
 
@@ -150,24 +226,24 @@ export async function createTask(
         number: counter!.value,
         title: input.title,
         brief: input.brief ?? '',
-        assigneeAgentId: assignee.agentId,
-        assigneeUserId: assignee.userId,
+        leadAgentId,
         sourceConversationId: input.sourceConversationId ?? null,
         boardOrder,
       })
       .returning();
+    await writeRoster(tx, task!.id, roster);
     return task!;
   });
 }
 
 export async function listTasks(
   userId: string,
-  filter: { repositoryId?: string; status?: TaskStatus; assigneeAgentId?: string }
+  filter: { repositoryId?: string; status?: TaskStatus; leadAgentId?: string }
 ): Promise<Task[]> {
   const conditions = [eq(tasks.userId, userId)];
   if (filter.repositoryId) conditions.push(eq(tasks.repositoryId, filter.repositoryId));
   if (filter.status) conditions.push(eq(tasks.status, filter.status));
-  if (filter.assigneeAgentId) conditions.push(eq(tasks.assigneeAgentId, filter.assigneeAgentId));
+  if (filter.leadAgentId) conditions.push(eq(tasks.leadAgentId, filter.leadAgentId));
   return db
     .select()
     .from(tasks)
@@ -179,16 +255,18 @@ export async function listTasks(
 export async function getBoard(
   userId: string,
   repositoryId?: string
-): Promise<Record<TaskStatus, Task[]>> {
+): Promise<Record<TaskStatus, TaskView[]>> {
   const conditions = [eq(tasks.userId, userId)];
   if (repositoryId) conditions.push(eq(tasks.repositoryId, repositoryId));
-  const rows = await db
-    .select()
-    .from(tasks)
-    .where(and(...conditions))
-    .orderBy(asc(tasks.boardOrder));
+  const rows = await toTaskViews(
+    await db
+      .select()
+      .from(tasks)
+      .where(and(...conditions))
+      .orderBy(asc(tasks.boardOrder))
+  );
 
-  const board: Record<TaskStatus, Task[]> = {
+  const board: Record<TaskStatus, TaskView[]> = {
     backlog: [],
     todo: [],
     in_progress: [],
@@ -207,15 +285,19 @@ export async function getTask(userId: string, taskId: string): Promise<Task> {
   return task;
 }
 
+export interface UpdateTaskInput {
+  title?: string;
+  brief?: string;
+  /** Null clears the lead; the members stay. */
+  leadAgentId?: string | null;
+  /** Replaces the active roster; a lead outside it joins at the front. */
+  memberAgentIds?: string[];
+}
+
 export async function updateTask(
   userId: string,
   taskId: string,
-  input: {
-    title?: string;
-    brief?: string;
-    assignee?: AssignmentPatch | null;
-    reviewer?: AssignmentPatch | null;
-  }
+  input: UpdateTaskInput
 ): Promise<Task> {
   const existing = await findTask(userId, taskId);
   if (!existing) throw notFound('Task not found');
@@ -226,30 +308,35 @@ export async function updateTask(
     updatedAt: new Date(),
   };
 
-  if (input.assignee !== undefined) {
-    const resolved = await resolvePrincipal(userId, input.assignee ?? {}, 'assignee');
-    patch.assigneeAgentId = resolved.agentId;
-    patch.assigneeUserId = resolved.userId;
-  }
-  if (input.reviewer !== undefined) {
-    const resolved = await resolvePrincipal(userId, input.reviewer ?? {}, 'reviewer');
-    patch.reviewerAgentId = resolved.agentId;
-    patch.reviewerUserId = resolved.userId;
+  let roster: string[] | null = null;
+  if (input.memberAgentIds !== undefined || input.leadAgentId !== undefined) {
+    const current = await activeMemberIds(taskId);
+    const requested = input.memberAgentIds ?? current;
+    const lead =
+      input.leadAgentId !== undefined
+        ? input.leadAgentId
+        : existing.leadAgentId && requested.includes(existing.leadAgentId)
+          ? existing.leadAgentId
+          : (requested[0] ?? null);
+    const resolved = await resolveRoster(userId, requested, lead);
+    roster = resolved.roster;
+    patch.leadAgentId = resolved.leadAgentId;
   }
 
-  const [updated] = await db
-    .update(tasks)
-    .set(patch)
-    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(tasks)
+      .set(patch)
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+      .returning();
+    if (roster) await writeRoster(tx, taskId, roster);
+    return row!;
+  });
 
-  if (updated!.assigneeAgentId && updated!.assigneeAgentId !== existing.assigneeAgentId) {
-    await wakeAssignedAgent(
-      updated!,
-      `You were assigned task #${updated!.number}: ${updated!.title}`
-    );
+  if (updated.leadAgentId && updated.leadAgentId !== existing.leadAgentId) {
+    await wakeLead(updated, `You now lead task #${updated.number}: ${updated.title}`);
   }
-  return updated!;
+  return updated;
 }
 
 /**
@@ -292,13 +379,10 @@ export async function moveTask(
     WAKE_STATUSES.includes(input.status) &&
     !WAKE_STATUSES.includes(existing.status);
   if (enteredWakeStatus) {
-    await wakeAssignedAgent(
-      updated!,
-      `Task #${updated!.number} moved to ${input.status}: ${updated!.title}`
-    );
+    await wakeLead(updated!, `Task #${updated!.number} moved to ${input.status}: ${updated!.title}`);
   }
   if (changingStatus && input.status === 'in_review') {
-    await wakeReviewerAgent(updated!);
+    await wakeReviewers(updated!);
   }
   return updated!;
 }

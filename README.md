@@ -14,7 +14,7 @@ Task ──> Assign (wake) ──> Run ──> Review ──> Done
             └── rejection re-wakes ───┘
 ```
 
-Every task has an owner, every run leaves evidence, and every completion passes through a human-controlled boundary. Rejected work returns to the assignee with feedback; an agent approval is a recommendation, not permission to ship.
+Every task has a lead, every run leaves evidence, and every completion passes through a human-controlled boundary. Rejected work returns to the lead with feedback; an agent approval is a recommendation, not permission to ship.
 
 ## Why Loxo
 
@@ -36,7 +36,7 @@ Agents are concurrent OS processes, so correctness cannot depend on caller disci
 
 ### Human authority at the final boundary
 
-Reviewer agents can reject work, reopen the task, and re-wake the assignee. Their approvals only recommend completion; a human decides whether the task closes. A three-cycle fuse stops automated rejection loops and escalates them for human review.
+The task's other members review the lead's work. They can reject it, reopen the task, and re-wake the lead; their approvals only recommend completion, and only a person records an approval. A three-cycle fuse stops automated rejection loops and escalates them for human review.
 
 ## Execution model
 

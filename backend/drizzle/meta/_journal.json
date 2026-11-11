@@ -211,6 +211,13 @@
       "when": 1794372073538,
       "tag": "0029_projects-to-repositories",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794373102126,
+      "tag": "0030_members-turns-approvals",
+      "breakpoints": true
     }
   ]
 }

@@ -236,9 +236,9 @@ export type TaskStatus =
 
 /**
  * Unit of work. Status transitions are enforced by a static transition table
- * in the tasks service, never by direct writes. Assignee and reviewer are
- * each a single principal: agent or user, checked at the database level.
- * number is unique per user and drawn from users.taskCounter.
+ * in the tasks service, never by direct writes. The lead is always one of
+ * the task's active members. number is unique per user and drawn from
+ * users.taskCounter.
  */
 export const tasks = pgTable(
   'tasks',
@@ -256,18 +256,9 @@ export const tasks = pgTable(
     /** The requirement as the user wrote it. */
     brief: text('brief').notNull().default(''),
     status: text('status').$type<TaskStatus>().notNull().default('backlog'),
-    assigneeAgentId: uuid('assignee_agent_id').references(() => agents.id, {
-      onDelete: 'set null',
-    }),
-    assigneeUserId: uuid('assignee_user_id').references(() => users.id, {
-      onDelete: 'set null',
-    }),
-    reviewerAgentId: uuid('reviewer_agent_id').references(() => agents.id, {
-      onDelete: 'set null',
-    }),
-    reviewerUserId: uuid('reviewer_user_id').references(() => users.id, {
-      onDelete: 'set null',
-    }),
+    leadAgentId: uuid('lead_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    /** Source for turns.seq; incremented in the same transaction that inserts a turn. */
+    turnCounter: integer('turn_counter').notNull().default(0),
     /** Position within a kanban column; fractional values allow reorder without renumbering. */
     boardOrder: doublePrecision('board_order').notNull().default(0),
     /**
@@ -290,45 +281,48 @@ export const tasks = pgTable(
     uniqueIndex('tasks_user_number').on(t.userId, t.number),
     index('tasks_user_status').on(t.userId, t.status),
     index('tasks_repository_status').on(t.repositoryId, t.status),
-    index('tasks_assignee_agent').on(t.assigneeAgentId, t.status),
+    index('tasks_lead_agent').on(t.leadAgentId, t.status),
     index('tasks_source_conversation').on(t.sourceConversationId),
-    check(
-      'tasks_assignee_single_principal',
-      sql`NOT (${t.assigneeAgentId} IS NOT NULL AND ${t.assigneeUserId} IS NOT NULL)`
-    ),
-    check(
-      'tasks_reviewer_single_principal',
-      sql`NOT (${t.reviewerAgentId} IS NOT NULL AND ${t.reviewerUserId} IS NOT NULL)`
-    ),
   ]
 );
 
 export type Task = typeof tasks.$inferSelect;
 
-/** system rows are platform-generated (workspace lifecycle, capture evidence); both author links stay null. */
-export type TaskCommentAuthorType = 'human' | 'agent' | 'system';
+export type TaskMemberState = 'active' | 'paused' | 'removed';
 
 /**
- * Task activity timeline. Author columns mirror the dual-principal pattern;
- * rows are pruned with their task, author links survive as null for display.
+ * Agents taking part in a task. Removed members keep their row so their
+ * turns and runtime session stay attributable.
  */
-export const taskComments = pgTable(
-  'task_comments',
+export const taskMembers = pgTable(
+  'task_members',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     taskId: uuid('task_id')
       .notNull()
       .references(() => tasks.id, { onDelete: 'cascade' }),
-    authorType: text('author_type').$type<TaskCommentAuthorType>().notNull(),
-    authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
-    authorAgentId: uuid('author_agent_id').references(() => agents.id, { onDelete: 'set null' }),
-    body: text('body').notNull(),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /** Speaking order among members. */
+    position: integer('position').notNull(),
+    state: text('state').$type<TaskMemberState>().notNull().default('active'),
+    pausedReason: text('paused_reason'),
+    /** Runtime-native session reused across this member's turns. */
+    runtimeSessionId: text('runtime_session_id'),
+    /** Bumped when the runtime session is replaced, so context delivery starts over. */
+    sessionEpoch: integer('session_epoch').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('task_comments_task_created').on(t.taskId, t.createdAt)]
+  (t) => [
+    uniqueIndex('task_members_task_agent').on(t.taskId, t.agentId),
+    index('task_members_agent').on(t.agentId),
+  ]
 );
 
-export type TaskComment = typeof taskComments.$inferSelect;
+export type TaskMember = typeof taskMembers.$inferSelect;
+
 
 export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'review';
 
@@ -376,53 +370,82 @@ export const runs = pgTable(
 
 export type Run = typeof runs.$inferSelect;
 
-export type ReviewDecision = 'approved' | 'changes_requested';
+export type TurnKind = 'agent' | 'human' | 'system';
+
+export type TurnStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+
+/** Structured output a turn hands back; shape depends on the reporting tool. */
+export type TurnReport = Record<string, unknown>;
 
 /**
- * Structured verdict on a task in review. Every decision carries a body;
- * the body is also posted to the task timeline so the assignee's next run
- * reads the feedback naturally. Reviewer mirrors the dual-principal pattern.
+ * One contribution to a task, in dispatch order: an agent's work or
+ * statement, a person's interjection, or a platform event. seq is drawn from
+ * tasks.turnCounter, so the timeline order never depends on clock ties.
  */
-export const taskReviews = pgTable(
-  'task_reviews',
+export const turns = pgTable(
+  'turns',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
     taskId: uuid('task_id')
       .notNull()
       .references(() => tasks.id, { onDelete: 'cascade' }),
-    reviewerType: text('reviewer_type').$type<'human' | 'agent'>().notNull(),
-    reviewerUserId: uuid('reviewer_user_id').references(() => users.id, { onDelete: 'set null' }),
-    reviewerAgentId: uuid('reviewer_agent_id').references(() => agents.id, {
-      onDelete: 'set null',
-    }),
-    /** Review run that produced this verdict, when an agent reviewed. */
+    seq: integer('seq').notNull(),
+    /** Playbook phase the turn belongs to; null outside a playbook. */
+    phase: text('phase'),
+    kind: text('kind').$type<TurnKind>().notNull(),
+    agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
     runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
-    /**
-     * Code reviews: the change snapshot this verdict applies to. An approval
-     * authorizes finalization only while the workspace content still matches
-     * the snapshot's fingerprint; any later change makes it stale.
-     */
-    changeSnapshotId: uuid('change_snapshot_id').references(
-      (): AnyPgColumn => runChangeSnapshots.id,
-      { onDelete: 'set null' }
-    ),
-    decision: text('decision').$type<ReviewDecision>().notNull(),
-    body: text('body').notNull(),
+    permission: text('permission').$type<AgentPermissionLevel>(),
+    status: text('status').$type<TurnStatus>().notNull().default('pending'),
+    report: jsonb('report').$type<TurnReport>(),
+    content: text('content').notNull().default(''),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
   },
   (t) => [
-    index('task_reviews_task_created').on(t.taskId, t.createdAt),
+    uniqueIndex('turns_task_seq').on(t.taskId, t.seq),
+    index('turns_run').on(t.runId),
     check(
-      'task_reviews_single_principal',
-      sql`NOT (${t.reviewerAgentId} IS NOT NULL AND ${t.reviewerUserId} IS NOT NULL)`
+      'turns_author_matches_kind',
+      sql`(${t.kind} = 'agent' OR ${t.agentId} IS NULL) AND (${t.kind} = 'human' OR ${t.authorUserId} IS NULL)`
     ),
   ]
 );
 
-export type TaskReview = typeof taskReviews.$inferSelect;
+export type Turn = typeof turns.$inferSelect;
+
+export type ApprovalDecision = 'approved' | 'changes_requested';
+
+/**
+ * A person's decision on a task's work; agents never approve, their verdicts
+ * are turns. Code approvals pin the workspace fingerprint they were made
+ * against, so any later change makes them stale.
+ */
+export const approvals = pgTable(
+  'approvals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    decision: text('decision').$type<ApprovalDecision>().notNull(),
+    body: text('body').notNull(),
+    changeSnapshotId: uuid('change_snapshot_id').references(
+      (): AnyPgColumn => runChangeSnapshots.id,
+      { onDelete: 'set null' }
+    ),
+    /** Null for tasks without a repository. */
+    fingerprint: text('fingerprint'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('approvals_task_created').on(t.taskId, t.createdAt)]
+);
+
+export type Approval = typeof approvals.$inferSelect;
 
 export type ExecutionWorkspaceStatus =
   | 'preparing'
@@ -443,7 +466,7 @@ export const EXECUTION_WORKSPACE_TERMINAL_STATUSES = [
 
 /**
  * Task-scoped git worktree. Status records only observable filesystem and
- * Git facts — review and approval state live on the task and task_reviews.
+ * Git facts — review and approval state live on the task and approvals.
  * merged (landed on base), retained (branch kept, task done) and abandoned
  * (work discarded, task cancelled) are distinct terminal outcomes; the
  * partial unique index enforces at most one active workspace per task.

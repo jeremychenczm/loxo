@@ -11,17 +11,20 @@ import {
   prepareTaskWorkspace,
   reconcileTaskWorkspace,
 } from '../code-workspaces/workspace.service';
-import { addHumanComment, listComments } from './comments.service';
-import { createReview, listReviews } from './reviews.service';
+import { listApprovals, recordApproval } from './approvals.service';
 import {
   createTask,
   deleteTask,
   getBoard,
   getTask,
   listTasks,
+  MAX_TASK_MEMBERS,
   moveTask,
+  toTaskView,
+  toTaskViews,
   updateTask,
 } from './tasks.service';
+import { addHumanTurn, listTurns } from './turns.service';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
@@ -115,23 +118,18 @@ const taskStatus = z.enum([
   'cancelled',
 ]);
 
-const assignmentPatch = z
-  .object({
-    agentId: z.string().uuid().nullable().optional(),
-    userId: z.string().uuid().nullable().optional(),
-  })
-  .nullable();
+const memberIds = z.array(z.string().uuid()).max(MAX_TASK_MEMBERS);
 
 tasksRouter.get('/', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       repositoryId: z.string().uuid().optional(),
       status: taskStatus.optional(),
-      assigneeAgentId: z.string().uuid().optional(),
+      leadAgentId: z.string().uuid().optional(),
     });
     const parsed = schema.safeParse(req.query);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid task filter');
-    res.json({ tasks: await listTasks(req.auth!.userId, parsed.data) });
+    res.json({ tasks: await toTaskViews(await listTasks(req.auth!.userId, parsed.data)) });
   } catch (error) {
     next(error);
   }
@@ -154,10 +152,14 @@ tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
       title: z.string().trim().min(1).max(300),
       brief: z.string().max(10000).optional(),
       repositoryId: z.string().uuid().optional(),
+      crewId: z.string().uuid().optional(),
+      leadAgentId: z.string().uuid().optional(),
+      memberAgentIds: memberIds.optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Task title is required');
-    res.status(201).json({ task: await createTask(req.auth!.userId, parsed.data) });
+    const task = await createTask(req.auth!.userId, parsed.data);
+    res.status(201).json({ task: await toTaskView(task) });
   } catch (error) {
     next(error);
   }
@@ -165,7 +167,7 @@ tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
 
 tasksRouter.get('/:id', async (req: AuthedRequest, res, next) => {
   try {
-    res.json({ task: await getTask(req.auth!.userId, String(req.params.id)) });
+    res.json({ task: await toTaskView(await getTask(req.auth!.userId, String(req.params.id))) });
   } catch (error) {
     next(error);
   }
@@ -176,12 +178,13 @@ tasksRouter.patch('/:id', async (req: AuthedRequest, res, next) => {
     const schema = z.object({
       title: z.string().trim().min(1).max(300).optional(),
       brief: z.string().max(10000).optional(),
-      assignee: assignmentPatch.optional(),
-      reviewer: assignmentPatch.optional(),
+      leadAgentId: z.string().uuid().nullable().optional(),
+      memberAgentIds: memberIds.optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid task update');
-    res.json({ task: await updateTask(req.auth!.userId, String(req.params.id), parsed.data) });
+    const task = await updateTask(req.auth!.userId, String(req.params.id), parsed.data);
+    res.json({ task: await toTaskView(task) });
   } catch (error) {
     next(error);
   }
@@ -195,7 +198,8 @@ tasksRouter.post('/:id/move', async (req: AuthedRequest, res, next) => {
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid move');
-    res.json({ task: await moveTask(req.auth!.userId, String(req.params.id), parsed.data) });
+    const task = await moveTask(req.auth!.userId, String(req.params.id), parsed.data);
+    res.json({ task: await toTaskView(task) });
   } catch (error) {
     next(error);
   }
@@ -208,11 +212,11 @@ tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid wake request');
 
     const task = await getTask(req.auth!.userId, String(req.params.id));
-    if (!task.assigneeAgentId) {
-      throw badRequest('no_agent_assignee', 'Assign an agent to this task first');
+    if (!task.leadAgentId) {
+      throw badRequest('no_lead', 'Choose a lead agent for this task first');
     }
     const decision = await requestWake(req.auth!.userId, {
-      agentId: task.assigneeAgentId,
+      agentId: task.leadAgentId,
       taskId: task.id,
       trigger: 'manual',
       reason:
@@ -224,49 +228,48 @@ tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
   }
 });
 
-tasksRouter.get('/:id/comments', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/turns', async (req: AuthedRequest, res, next) => {
   try {
-    res.json({ comments: await listComments(req.auth!.userId, String(req.params.id)) });
+    res.json({ turns: await listTurns(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
     next(error);
   }
 });
 
-tasksRouter.post('/:id/comments', async (req: AuthedRequest, res, next) => {
+/** A person's interjection on the timeline; every member sees it on their next turn. */
+tasksRouter.post('/:id/turns', async (req: AuthedRequest, res, next) => {
   try {
-    const schema = z.object({ body: z.string().trim().min(1).max(20000) });
+    const schema = z.object({ content: z.string().trim().min(1).max(20000) });
     const parsed = schema.safeParse(req.body);
-    if (!parsed.success) throw badRequest('invalid_input', 'Comment body is required');
+    if (!parsed.success) throw badRequest('invalid_input', 'Turn content is required');
     res.status(201).json({
-      comment: await addHumanComment(req.auth!.userId, String(req.params.id), parsed.data.body),
+      turn: await addHumanTurn(req.auth!.userId, String(req.params.id), parsed.data.content),
     });
   } catch (error) {
     next(error);
   }
 });
 
-tasksRouter.get('/:id/reviews', async (req: AuthedRequest, res, next) => {
+tasksRouter.get('/:id/approvals', async (req: AuthedRequest, res, next) => {
   try {
-    res.json({ reviews: await listReviews(req.auth!.userId, String(req.params.id)) });
+    res.json({ approvals: await listApprovals(req.auth!.userId, String(req.params.id)) });
   } catch (error) {
     next(error);
   }
 });
 
-tasksRouter.post('/:id/reviews', async (req: AuthedRequest, res, next) => {
+tasksRouter.post('/:id/approvals', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({
       decision: z.enum(['approved', 'changes_requested']),
       body: z.string().trim().min(1).max(20000),
     });
     const parsed = schema.safeParse(req.body);
-    if (!parsed.success) throw badRequest('invalid_input', 'A review needs a decision and a comment');
-    const review = await createReview(req.auth!.userId, String(req.params.id), {
-      decision: parsed.data.decision,
-      body: parsed.data.body,
-      reviewer: { userId: req.auth!.userId },
-    });
-    res.status(201).json({ review });
+    if (!parsed.success) {
+      throw badRequest('invalid_input', 'An approval needs a decision and a comment');
+    }
+    const approval = await recordApproval(req.auth!.userId, String(req.params.id), parsed.data);
+    res.status(201).json({ approval });
   } catch (error) {
     next(error);
   }

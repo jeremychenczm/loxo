@@ -1,8 +1,7 @@
-import { and, eq, gte, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
-  taskComments,
   tasks,
   runs,
   type Agent,
@@ -11,7 +10,7 @@ import {
   type RunTrigger,
 } from '../../db/schema';
 import { badRequest } from '../../http/errors';
-import { addAgentComment } from '../tasks/comments.service';
+import { addAgentTurn, runHasTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
@@ -167,25 +166,6 @@ async function tryStartRun(run: Run): Promise<boolean> {
   return true;
 }
 
-async function agentSpokeSince(
-  taskId: string,
-  agentId: string,
-  since: Date | null
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: taskComments.id })
-    .from(taskComments)
-    .where(
-      and(
-        eq(taskComments.taskId, taskId),
-        eq(taskComments.authorAgentId, agentId),
-        gte(taskComments.createdAt, since ?? new Date(0))
-      )
-    )
-    .limit(1);
-  return row !== undefined;
-}
-
 async function performRun(run: Run): Promise<void> {
   let succeeded = false;
   try {
@@ -209,8 +189,10 @@ async function performRun(run: Run): Promise<void> {
     });
     // Fallback report: only when the agent said nothing through the control
     // plane during the run. Best-effort — the run result stands regardless.
-    if (outcome.text.trim() && !(await agentSpokeSince(task.id, agent.id, run.startedAt))) {
-      await addAgentComment(run.userId, task.id, agent.id, outcome.text).catch(() => {});
+    if (outcome.text.trim() && !(await runHasTurns(run.id))) {
+      await addAgentTurn(run.userId, task.id, agent.id, outcome.text, { runId: run.id }).catch(
+        () => {}
+      );
     }
     succeeded = true;
   } catch (error) {

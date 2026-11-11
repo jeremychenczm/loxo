@@ -1,6 +1,5 @@
 import type { Agent, Task, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
-import { listComments } from '../tasks/comments.service';
 import { getProviderCredentials } from '../providers/providers.service';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-turn';
 import { executeApiToolLoop } from '../runner/api-tool-loop';
@@ -20,7 +19,7 @@ import {
   snapshotBeforeRun,
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
-import { addSystemComment } from '../tasks/comments.service';
+import { addSystemTurn, listTurns } from '../tasks/turns.service';
 import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
 import type { CliRuntime } from '../agents/runtime-detect';
 import { config } from '../../config';
@@ -47,16 +46,16 @@ export interface TaskTurnOutcome {
 /**
  * One agent turn against a task: build the prompt from the task context
  * and run it in the task's workspace. Locking, run-state transitions, and
- * the timeline comment are the wake service's job, not this function's.
+ * the timeline entry are the wake service's job, not this function's.
  */
 export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promise<TaskTurnOutcome> {
   const credentials = agent.providerId
     ? await getProviderCredentials(run.userId, agent.providerId)
     : null;
 
-  const comments = (await listComments(run.userId, task.id)).map((c) => ({
-    author: c.authorType,
-    body: c.body,
+  const timeline = (await listTurns(run.userId, task.id)).map((t) => ({
+    author: t.kind,
+    body: t.content,
   }));
 
   // A repository binding switches the run into the task's isolated worktree;
@@ -78,7 +77,7 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
     brief: task.brief,
     status: task.status,
     reason: run.reason,
-    comments,
+    timeline,
     workspace,
     controlPlane: hasControlPlane ? 'mcp' : 'report',
   });
@@ -192,13 +191,13 @@ async function settleRunCapture(
     permission,
   });
   if (policyViolation) {
-    await addSystemComment(
+    await addSystemTurn(
       run.userId,
       task.id,
       `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
     );
   } else if (snapshot.changedFiles > 0) {
-    await addSystemComment(
+    await addSystemTurn(
       run.userId,
       task.id,
       `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`

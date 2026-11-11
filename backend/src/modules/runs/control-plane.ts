@@ -7,18 +7,18 @@ import {
   type Agent,
   type Task,
   type TaskStatus,
-  type ReviewDecision,
+  type ApprovalDecision,
   type Run,
 } from '../../db/schema';
 import { badRequest, unauthorized } from '../../http/errors';
-import { addAgentComment, listComments } from '../tasks/comments.service';
-import { moveTask } from '../tasks/tasks.service';
-import { isTransitionAllowed } from '../tasks/task-transitions';
 import {
   countAgentRejections,
-  createReview,
+  recordAgentVerdict,
   REVIEW_CYCLE_CAP,
-} from '../tasks/reviews.service';
+} from '../tasks/approvals.service';
+import { moveTask } from '../tasks/tasks.service';
+import { isTransitionAllowed } from '../tasks/task-transitions';
+import { addAgentTurn, listTurns } from '../tasks/turns.service';
 import { verifyRunToken } from './run-token';
 
 /**
@@ -93,27 +93,33 @@ export interface TaskSnapshot {
   title: string;
   brief: string;
   status: TaskStatus;
-  comments: Array<{ author: string; body: string; createdAt: string }>;
+  timeline: Array<{ seq: number; kind: string; content: string; createdAt: string }>;
 }
 
 export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot> {
   const task = await freshTask(ctx);
-  const comments = await listComments(ctx.run.userId, task.id);
+  const timeline = await listTurns(ctx.run.userId, task.id);
   return {
     taskNumber: task.number,
     title: task.title,
     brief: task.brief,
     status: task.status,
-    comments: comments.map((c) => ({
-      author: c.authorType,
-      body: c.body,
-      createdAt: c.createdAt.toISOString(),
+    timeline: timeline.map((t) => ({
+      seq: t.seq,
+      kind: t.kind,
+      content: t.content,
+      createdAt: t.createdAt.toISOString(),
     })),
   };
 }
 
+/** Every timeline entry an agent makes is tied to the run that produced it. */
+async function postAsAgent(ctx: RunToolContext, content: string): Promise<void> {
+  await addAgentTurn(ctx.run.userId, ctx.task.id, ctx.agent.id, content, { runId: ctx.run.id });
+}
+
 export async function commentOnTask(ctx: RunToolContext, body: string): Promise<void> {
-  await addAgentComment(ctx.run.userId, ctx.task.id, ctx.agent.id, body);
+  await postAsAgent(ctx, body);
 }
 
 /** Status writes go through the same transition table as every other path. */
@@ -123,14 +129,14 @@ export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus):
 
 /** Flags the run's task as blocked with the question on the timeline. */
 export async function askBlocker(ctx: RunToolContext, question: string): Promise<Task> {
-  await addAgentComment(ctx.run.userId, ctx.task.id, ctx.agent.id, `[BLOCKER] ${question}`);
+  await postAsAgent(ctx, `[BLOCKER] ${question}`);
   return advanceTo(ctx, 'blocked');
 }
 
 /** Posts the result and hands the task to review. */
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<Task> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
-  await addAgentComment(ctx.run.userId, ctx.task.id, ctx.agent.id, summary);
+  await postAsAgent(ctx, summary);
   return advanceTo(ctx, 'in_review');
 }
 
@@ -147,25 +153,16 @@ export interface ReviewVerdictOutcome {
  */
 export async function submitReviewVerdict(
   ctx: RunToolContext,
-  decision: ReviewDecision,
+  decision: ApprovalDecision,
   feedback: string
 ): Promise<ReviewVerdictOutcome> {
   if (ctx.run.trigger !== 'review') {
     throw badRequest('not_a_review_run', 'Only review runs can submit review verdicts');
   }
+  const verdict = { agentId: ctx.agent.id, runId: ctx.run.id, decision, body: feedback };
 
   if (decision === 'approved') {
-    await createReview(
-      ctx.run.userId,
-      ctx.task.id,
-      {
-        decision,
-        body: feedback,
-        reviewer: { agentId: ctx.agent.id },
-        runId: ctx.run.id,
-      },
-      { applyTransition: false }
-    );
+    await recordAgentVerdict(ctx.run.userId, ctx.task.id, verdict);
     return {
       status: 'in_review',
       halted: false,
@@ -175,22 +172,10 @@ export async function submitReviewVerdict(
 
   const priorRejections = await countAgentRejections(ctx.task.id);
   const halted = priorRejections >= REVIEW_CYCLE_CAP;
-  await createReview(
-    ctx.run.userId,
-    ctx.task.id,
-    {
-      decision,
-      body: feedback,
-      reviewer: { agentId: ctx.agent.id },
-      runId: ctx.run.id,
-    },
-    { applyTransition: !halted }
-  );
+  await recordAgentVerdict(ctx.run.userId, ctx.task.id, verdict, { reopen: !halted });
   if (halted) {
-    await addAgentComment(
-      ctx.run.userId,
-      ctx.task.id,
-      ctx.agent.id,
+    await postAsAgent(
+      ctx,
       `[REVIEW HALTED] ${REVIEW_CYCLE_CAP} automated review cycles reached; a human reviewer needs to take over.`
     );
     return {
@@ -200,7 +185,7 @@ export async function submitReviewVerdict(
     };
   }
   const task = await freshTask(ctx);
-  return { status: task.status, halted: false, note: 'Changes requested; the assignee has been re-woken.' };
+  return { status: task.status, halted: false, note: 'Changes requested; the lead has been re-woken.' };
 }
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -274,7 +259,7 @@ export function buildControlPlaneToolDefs(ctx: RunToolContext): ControlPlaneTool
           required: ['decision', 'feedback'],
         },
         execute: async (args) => {
-          const decision = requireString(args, 'decision') as ReviewDecision;
+          const decision = requireString(args, 'decision') as ApprovalDecision;
           if (decision !== 'approved' && decision !== 'changes_requested') {
             throw badRequest('invalid_input', `Unknown decision "${decision}"`);
           }

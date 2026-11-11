@@ -175,64 +175,107 @@ describe('status transitions', () => {
   });
 });
 
-describe('assignment', () => {
-  it('assigns an owned agent and clears it again', async () => {
-    const task = await create({ title: 'For the agent', repositoryId });
-    const assigned = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: { agentId } });
-    expect(assigned.body.task.assigneeAgentId).toBe(agentId);
-    expect(assigned.body.task.assigneeUserId).toBeNull();
+async function newAgent(name: string, t = token): Promise<string> {
+  const res = await request(app)
+    .post('/api/agents')
+    .set({ Authorization: `Bearer ${t}` })
+    .send({ name, runtime: 'api' });
+  return res.body.agent.id;
+}
 
-    const cleared = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: null });
-    expect(cleared.body.task.assigneeAgentId).toBeNull();
+async function patch(id: string, body: Record<string, unknown>) {
+  return request(app).patch(`/api/tasks/${id}`).set(auth()).send(body);
+}
+
+describe('lead and members', () => {
+  it('creates with a lead, who always heads the roster', async () => {
+    const helper = await newAgent('Helper');
+    const task = await create({ title: 'Pair work', leadAgentId: agentId, memberAgentIds: [helper] });
+    expect(task.leadAgentId).toBe(agentId);
+    expect(task.memberAgentIds).toEqual([agentId, helper]);
   });
 
-  it('assigns the owner as a human assignee', async () => {
-    const task = await create({ title: 'For me', repositoryId });
-    const res = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: { userId } });
-    expect(res.body.task.assigneeUserId).toBe(userId);
-    expect(res.body.task.assigneeAgentId).toBeNull();
+  it('defaults the lead to the first member', async () => {
+    const helper = await newAgent('First in line');
+    const task = await create({ title: 'Implicit lead', memberAgentIds: [helper, agentId] });
+    expect(task.leadAgentId).toBe(helper);
   });
 
-  it('rejects agent and user in the same slot', async () => {
-    const task = await create({ title: 'Greedy', repositoryId });
-    const res = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: { agentId, userId } });
-    expect(res.status).toBe(400);
+  it('sets and clears the lead without losing members', async () => {
+    const task = await create({ title: 'For the agent' });
+    expect(task.leadAgentId).toBeNull();
+    expect(task.memberAgentIds).toEqual([]);
+
+    const led = await patch(task.id, { leadAgentId: agentId });
+    expect(led.body.task.leadAgentId).toBe(agentId);
+    expect(led.body.task.memberAgentIds).toEqual([agentId]);
+
+    const cleared = await patch(task.id, { leadAgentId: null });
+    expect(cleared.body.task.leadAgentId).toBeNull();
+    expect(cleared.body.task.memberAgentIds).toEqual([agentId]);
   });
 
-  it("rejects another user's agent", async () => {
-    const foreignAgent = await request(app)
-      .post('/api/agents')
-      .set(otherAuth())
-      .send({ name: 'Foreign worker', runtime: 'api' });
-    const task = await create({ title: 'Stolen labor', repositoryId });
-    const res = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .set(auth())
-      .send({ assignee: { agentId: foreignAgent.body.agent.id } });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('invalid_assignee');
+  it('replaces the roster and keeps removed members on record', async () => {
+    const a = await newAgent('Roster A');
+    const b = await newAgent('Roster B');
+    const task = await create({ title: 'Rotating crew', memberAgentIds: [a, b] });
+
+    const swapped = await patch(task.id, { memberAgentIds: [b] });
+    expect(swapped.body.task.memberAgentIds).toEqual([b]);
+    // The previous lead left the roster, so the lead moves to the new first member.
+    expect(swapped.body.task.leadAgentId).toBe(b);
+
+    const { rows } = await pool.query(
+      'SELECT agent_id, state FROM task_members WHERE task_id = $1 ORDER BY position',
+      [task.id]
+    );
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { agent_id: a, state: 'removed' },
+        { agent_id: b, state: 'active' },
+      ])
+    );
+
+    const back = await patch(task.id, { memberAgentIds: [a, b] });
+    expect(back.body.task.memberAgentIds).toEqual([a, b]);
+    const count = await pool.query('SELECT count(*)::int AS n FROM task_members WHERE task_id = $1', [
+      task.id,
+    ]);
+    expect(count.rows[0].n).toBe(2);
   });
 
-  it('sets a reviewer independently of the assignee', async () => {
-    const task = await create({ title: 'Reviewed', repositoryId });
-    const res = await request(app)
-      .patch(`/api/tasks/${task.id}`)
+  it('rejects foreign and duplicate members', async () => {
+    const foreign = await newAgent('Foreign worker', otherToken);
+    const task = await create({ title: 'Stolen labor' });
+    const stolen = await patch(task.id, { leadAgentId: foreign });
+    expect(stolen.status).toBe(400);
+    expect(stolen.body.code).toBe('invalid_members');
+
+    const duplicate = await patch(task.id, { memberAgentIds: [agentId, agentId] });
+    expect(duplicate.body.code).toBe('invalid_members');
+  });
+
+  it('copies a crew roster at creation', async () => {
+    const a = await newAgent('Crew A');
+    const b = await newAgent('Crew B');
+    const crew = await request(app)
+      .post('/api/crews')
       .set(auth())
-      .send({ assignee: { agentId }, reviewer: { userId } });
-    expect(res.body.task.assigneeAgentId).toBe(agentId);
-    expect(res.body.task.reviewerUserId).toBe(userId);
+      .send({ name: 'Builders', agentIds: [a, b] });
+    const crewId = crew.body.crew.id as string;
+
+    const task = await create({ title: 'From crew', crewId });
+    expect(task.memberAgentIds).toEqual([a, b]);
+    expect(task.leadAgentId).toBe(a);
+
+    const led = await create({ title: 'Crew plus lead', crewId, leadAgentId: agentId });
+    expect(led.memberAgentIds).toEqual([agentId, a, b]);
+
+    const missing = await request(app)
+      .post('/api/tasks')
+      .set(auth())
+      .send({ title: 'No crew', crewId: '00000000-0000-4000-8000-000000000000' });
+    expect(missing.body.code).toBe('invalid_crew');
   });
 });
 

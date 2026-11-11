@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import {
   executionWorkspaces,
-  taskReviews,
+  approvals,
   repositories,
   runChangeSnapshots,
   runs,
@@ -120,8 +120,8 @@ describe('repository constraints', () => {
   });
 });
 
-describe('run change snapshots and review binding', () => {
-  it('stores one snapshot per run and detaches reviews when the snapshot goes away', async () => {
+describe('run change snapshots and approval binding', () => {
+  it('stores one snapshot per run and keeps the approval fingerprint when the snapshot goes away', async () => {
     const run = one(
       await db
         .insert(runs)
@@ -154,25 +154,26 @@ describe('run change snapshots and review binding', () => {
       )
     ).toBe('23505');
 
-    const review = one(
+    const approval = one(
       await db
-        .insert(taskReviews)
+        .insert(approvals)
         .values({
           userId,
           taskId,
-          reviewerType: 'human',
-          reviewerUserId: userId,
           changeSnapshotId: snapshot.id,
+          fingerprint: snapshot.changeFingerprint,
           decision: 'approved',
           body: 'Verified against the snapshot fingerprint.',
         })
         .returning()
     );
-    expect(review.changeSnapshotId).toBe(snapshot.id);
+    expect(approval.changeSnapshotId).toBe(snapshot.id);
 
+    // The pinned fingerprint outlives the snapshot row, so staleness checks keep working.
     await db.delete(runChangeSnapshots).where(eq(runChangeSnapshots.id, snapshot.id));
-    const after = one(await db.select().from(taskReviews).where(eq(taskReviews.id, review.id)));
+    const after = one(await db.select().from(approvals).where(eq(approvals.id, approval.id)));
     expect(after.changeSnapshotId).toBeNull();
+    expect(after.fingerprint).toBe('fp-fixture');
   });
 });
 

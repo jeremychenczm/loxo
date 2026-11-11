@@ -1,24 +1,25 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useAuthStore } from '@/store/auth';
 import type { Agent } from '@/lib/agents';
 import { BracketButton, CircularStamp, PAPER, Rule, TornEdge } from './task-detail-parts';
 import {
   CLIENT_TRANSITIONS,
   STATUS_META,
-  addComment,
+  addTurn,
   deleteTask,
-  fetchComments,
+  fetchApprovals,
   fetchTask,
-  fetchReviews,
+  fetchTurns,
   moveTask,
-  submitReview,
+  reviewDecisionOf,
+  submitApproval,
   updateTask,
+  type Approval,
+  type ApprovalDecision,
   type Task,
-  type TaskComment,
-  type TaskReview,
   type TaskStatus,
+  type Turn,
 } from '@/lib/tasks';
 import { ACTIVE_RUN_STATUSES, fetchRuns, wakeTask, type Run, type RunStatus } from '@/lib/runs';
 
@@ -38,8 +39,8 @@ const DECISION_META = {
   changes_requested: { label: 'CHANGES REQUESTED', text: 'text-pixel-red' },
 } as const;
 
-/** Verdict comments carry a stamp prefix; tint them to match the decision. */
-function commentTone(body: string): string {
+/** Verdict turns carry a stamp prefix; tint them to match the decision. */
+function turnTone(body: string): string {
   if (body.startsWith('[APPROVED]')) return 'text-pixel-green';
   if (body.startsWith('[CHANGES REQUESTED]') || body.startsWith('[REVIEW HALTED]')) {
     return 'text-pixel-red';
@@ -62,12 +63,6 @@ function formatTime(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function principalValue(agentId: string | null, userId: string | null): string {
-  if (agentId) return `agent:${agentId}`;
-  if (userId) return `user:${userId}`;
-  return '';
 }
 
 /** Deterministic pseudo-barcode drawn from the task id. */
@@ -112,11 +107,10 @@ export function TaskDetail({
   onClose,
   onChanged,
 }: TaskDetailProps) {
-  const me = useAuthStore((s) => s.user);
   const [task, setTask] = useState<Task | null>(null);
-  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [reviews, setReviews] = useState<TaskReview[]>([]);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
@@ -133,19 +127,19 @@ export function TaskDetail({
   }, [printEntrance]);
 
   const load = useCallback(async () => {
-    const [{ task: fetched }, { comments: timeline }, { runs: ledger }, { reviews: verdicts }] =
+    const [{ task: fetched }, { turns: timeline }, { runs: ledger }, { approvals: decisions }] =
       await Promise.all([
         fetchTask(taskId),
-        fetchComments(taskId),
+        fetchTurns(taskId),
         fetchRuns({ taskId }),
-        fetchReviews(taskId),
+        fetchApprovals(taskId),
       ]);
     setTask(fetched);
     setTitle(fetched.title);
     setBrief(fetched.brief);
-    setComments(timeline);
+    setTurns(timeline);
     setRuns(ledger);
-    setReviews(verdicts);
+    setApprovals(decisions);
   }, [taskId]);
 
   useEffect(() => {
@@ -209,9 +203,22 @@ export function TaskDetail({
   const canCancel = CLIENT_TRANSITIONS[task.status].includes('cancelled');
   const agentName = (id: string | null) => agents.find((a) => a.id === id)?.name ?? 'agent';
   const orderNo = `ORD-${String(task.number).padStart(4, '0')}`;
-  const agentRejections = reviews.filter(
-    (r) => r.reviewerType === 'agent' && r.decision === 'changes_requested'
+  const agentVerdicts = turns.filter((t) => reviewDecisionOf(t) !== null);
+  const agentRejections = agentVerdicts.filter(
+    (t) => reviewDecisionOf(t) === 'changes_requested'
   ).length;
+  const verdicts: Array<{ id: string; at: string; who: string; agent: boolean; decision: ApprovalDecision }> = [
+    ...agentVerdicts.map((t) => ({
+      id: t.id,
+      at: t.createdAt,
+      who: agentName(t.agentId).toUpperCase(),
+      agent: true,
+      decision: reviewDecisionOf(t)!,
+    })),
+    ...approvals.map((a) => ({ id: a.id, at: a.createdAt, who: 'YOU', agent: false, decision: a.decision })),
+  ].sort((x, y) => x.at.localeCompare(y.at));
+  const reviewers = task.memberAgentIds.filter((id) => id !== task.leadAgentId);
+  const candidates = agents.filter((a) => !task.memberAgentIds.includes(a.id));
 
   const saveTitle = () => {
     const next = title.trim();
@@ -227,24 +234,25 @@ export function TaskDetail({
     void mutate(() => updateTask(task.id, { brief }));
   };
 
-  const changePrincipal = (slot: 'assignee' | 'reviewer', value: string) => {
-    const patch =
-      value === ''
-        ? null
-        : value.startsWith('agent:')
-          ? { agentId: value.slice(6) }
-          : { userId: value.slice(5) };
-    void mutate(() => updateTask(task.id, { [slot]: patch }));
+  const changeLead = (value: string) => {
+    void mutate(() => updateTask(task.id, { leadAgentId: value || null }));
   };
 
-  const postComment = () => {
+  const setReviewers = (next: string[]) => {
+    const lead = task.leadAgentId ? [task.leadAgentId] : [];
+    void mutate(() =>
+      updateTask(task.id, { leadAgentId: task.leadAgentId, memberAgentIds: [...lead, ...next] })
+    );
+  };
+
+  const postTurn = () => {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
-    void mutate(() => addComment(task.id, body));
+    void mutate(() => addTurn(task.id, body));
   };
 
-  const wakeAssignee = () => {
+  const wakeLead = () => {
     void mutate(() => wakeTask(task.id));
   };
 
@@ -254,7 +262,7 @@ export function TaskDetail({
     const body = verdictNote.trim() || (decision === 'approved' ? 'Approved.' : '');
     if (!body) return;
     setVerdictNote('');
-    void mutate(() => submitReview(task.id, { decision, body }));
+    void mutate(() => submitApproval(task.id, { decision, body }));
   };
 
   const cancelTask = () => {
@@ -365,36 +373,50 @@ export function TaskDetail({
                 {repositoryName ?? '-'}
               </span>
             </Row>
-            <Row label="Assignee">
+            <Row label="Lead">
               <select
-                value={principalValue(task.assigneeAgentId, task.assigneeUserId)}
-                onChange={(e) => changePrincipal('assignee', e.target.value)}
+                value={task.leadAgentId ?? ''}
+                onChange={(e) => changeLead(e.target.value)}
                 className={VALUE_SELECT}
               >
                 <option value="">None</option>
-                {me && <option value={`user:${me.id}`}>{me.username} (me)</option>}
                 {agents.map((a) => (
-                  <option key={a.id} value={`agent:${a.id}`}>
-                    {a.name} (agent)
+                  <option key={a.id} value={a.id}>
+                    {a.name}
                   </option>
                 ))}
               </select>
             </Row>
-            <Row label="Reviewer">
+            <Row label="Reviewers">
               <select
-                value={principalValue(task.reviewerAgentId, task.reviewerUserId)}
-                onChange={(e) => changePrincipal('reviewer', e.target.value)}
+                value=""
+                onChange={(e) => e.target.value && setReviewers([...reviewers, e.target.value])}
                 className={VALUE_SELECT}
+                disabled={candidates.length === 0}
               >
-                <option value="">None</option>
-                {me && <option value={`user:${me.id}`}>{me.username} (me)</option>}
-                {agents.map((a) => (
-                  <option key={a.id} value={`agent:${a.id}`}>
-                    {a.name} (agent)
+                <option value="">{candidates.length === 0 ? '-' : '+ add'}</option>
+                {candidates.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
                   </option>
                 ))}
               </select>
             </Row>
+            {reviewers.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1">
+                {reviewers.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setReviewers(reviewers.filter((r) => r !== id))}
+                    className="border border-dashed border-pixel-gray/60 px-1.5 font-pixel text-xs text-pixel-black hover:border-pixel-red hover:text-pixel-red"
+                    title="Remove reviewer"
+                  >
+                    {agentName(id)} ×
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <Rule dashed />
@@ -419,18 +441,30 @@ export function TaskDetail({
             Activity log
           </p>
           <div className="flex flex-col gap-2">
-            {comments.map((c) => (
-              <div key={c.id} className="font-pixel text-sm">
-                <span className="text-pixel-gray">{formatTime(c.createdAt).slice(6)}</span>{' '}
-                <span className={c.authorType === 'agent' ? 'text-pixel-orange' : 'text-pixel-black'}>
-                  {c.authorType === 'agent' ? agentName(c.authorAgentId).toUpperCase() : 'YOU'}
+            {turns.map((t) => (
+              <div key={t.id} className="font-pixel text-sm">
+                <span className="text-pixel-gray">{formatTime(t.createdAt).slice(6)}</span>{' '}
+                <span
+                  className={
+                    t.kind === 'agent'
+                      ? 'text-pixel-orange'
+                      : t.kind === 'system'
+                        ? 'text-pixel-gray'
+                        : 'text-pixel-black'
+                  }
+                >
+                  {t.kind === 'agent'
+                    ? agentName(t.agentId).toUpperCase()
+                    : t.kind === 'system'
+                      ? 'SYSTEM'
+                      : 'YOU'}
                 </span>
-                <p className={`whitespace-pre-wrap break-words pl-4 text-sm ${commentTone(c.body)}`}>
-                  {c.body}
+                <p className={`whitespace-pre-wrap break-words pl-4 text-sm ${turnTone(t.content)}`}>
+                  {t.content}
                 </p>
               </div>
             ))}
-            {comments.length === 0 && (
+            {turns.length === 0 && (
               <p className="font-pixel text-xs text-pixel-gray">(no entries)</p>
             )}
           </div>
@@ -442,7 +476,7 @@ export function TaskDetail({
               placeholder="Add entry..."
               className="min-w-0 flex-1 resize-none border border-dashed border-pixel-gray/60 bg-transparent p-1.5 font-pixel text-xs text-pixel-black focus:border-pixel-black focus:outline-none"
             />
-            <BracketButton onClick={postComment} disabled={!draft.trim()}>
+            <BracketButton onClick={postTurn} disabled={!draft.trim()}>
               POST
             </BracketButton>
           </div>
@@ -454,9 +488,9 @@ export function TaskDetail({
             <p className="font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
               Runs
             </p>
-            {task.assigneeAgentId && (
+            {task.leadAgentId && (
               <BracketButton
-                onClick={wakeAssignee}
+                onClick={wakeLead}
                 disabled={runs.some((r) => ACTIVE_RUN_STATUSES.includes(r.status))}
               >
                 WAKE
@@ -530,25 +564,23 @@ export function TaskDetail({
             )}
           </div>
           <div className="flex flex-col gap-1">
-            {reviews.map((r) => (
-              <div key={r.id} className="flex items-end gap-1 font-pixel text-sm">
-                <span className="shrink-0 text-pixel-gray">
-                  {formatTime(r.createdAt).slice(6)}
-                </span>
+            {verdicts.map((v) => (
+              <div key={v.id} className="flex items-end gap-1 font-pixel text-sm">
+                <span className="shrink-0 text-pixel-gray">{formatTime(v.at).slice(6)}</span>
                 <span
-                  className={`shrink-0 truncate ${r.reviewerType === 'agent' ? 'text-pixel-orange' : 'text-pixel-black'}`}
+                  className={`shrink-0 truncate ${v.agent ? 'text-pixel-orange' : 'text-pixel-black'}`}
                 >
-                  {r.reviewerType === 'agent' ? agentName(r.reviewerAgentId).toUpperCase() : 'YOU'}
+                  {v.who}
                 </span>
                 <span className="mb-[3px] min-w-2 flex-1 border-b border-dotted border-pixel-gray/50" />
                 <span
-                  className={`shrink-0 text-xs font-bold uppercase ${DECISION_META[r.decision].text}`}
+                  className={`shrink-0 text-xs font-bold uppercase ${DECISION_META[v.decision].text}`}
                 >
-                  {DECISION_META[r.decision].label}
+                  {DECISION_META[v.decision].label}
                 </span>
               </div>
             ))}
-            {reviews.length === 0 && (
+            {verdicts.length === 0 && (
               <p className="font-pixel text-xs text-pixel-gray">(no verdicts yet)</p>
             )}
           </div>

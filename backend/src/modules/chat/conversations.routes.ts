@@ -12,6 +12,7 @@ import {
   renameConversation,
 } from './conversations.service';
 import { draftTaskFromConversation } from './task-draft.service';
+import { toTaskView } from '../tasks/tasks.service';
 import { fileTaskFromConversation } from './task-filing.service';
 
 export const conversationsRouter = Router();
@@ -106,7 +107,7 @@ conversationsRouter.post('/:id/file-task', async (req: AuthedRequest, res, next)
       String(req.params.id),
       parsed.data
     );
-    res.status(201).json({ task });
+    res.status(201).json({ task: await toTaskView(task) });
   } catch (error) {
     next(error);
   }

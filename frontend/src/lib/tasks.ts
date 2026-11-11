@@ -16,46 +16,50 @@ export interface Task {
   title: string;
   brief: string;
   status: TaskStatus;
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
-  reviewerAgentId: string | null;
-  reviewerUserId: string | null;
+  leadAgentId: string | null;
+  /** Active members in speaking order; the lead is among them. */
+  memberAgentIds: string[];
   boardOrder: number;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
 }
 
-export interface TaskComment {
+export type TurnKind = 'agent' | 'human' | 'system';
+
+export interface Turn {
   id: string;
   taskId: string;
-  authorType: 'human' | 'agent';
+  seq: number;
+  kind: TurnKind;
+  agentId: string | null;
   authorUserId: string | null;
-  authorAgentId: string | null;
-  body: string;
+  runId: string | null;
+  status: string;
+  report: Record<string, unknown> | null;
+  content: string;
   createdAt: string;
 }
 
-export type ReviewDecision = 'approved' | 'changes_requested';
+export type ApprovalDecision = 'approved' | 'changes_requested';
 
-export interface TaskReview {
+export interface Approval {
   id: string;
   taskId: string;
-  reviewerType: 'human' | 'agent';
-  reviewerUserId: string | null;
-  reviewerAgentId: string | null;
-  runId: string | null;
-  decision: ReviewDecision;
+  decision: ApprovalDecision;
   body: string;
+  fingerprint: string | null;
   createdAt: string;
+}
+
+/** Agent review turns carry the verdict in their report. */
+export function reviewDecisionOf(turn: Turn): ApprovalDecision | null {
+  if (turn.kind !== 'agent' || turn.report?.type !== 'review') return null;
+  const decision = turn.report.decision;
+  return decision === 'approved' || decision === 'changes_requested' ? decision : null;
 }
 
 export type Board = Record<TaskStatus, Task[]>;
-
-export interface AssignmentPatch {
-  agentId?: string | null;
-  userId?: string | null;
-}
 
 export function fetchBoard(repositoryId?: string) {
   const query = repositoryId ? `?repositoryId=${repositoryId}` : '';
@@ -78,6 +82,9 @@ export function createTask(input: {
   title: string;
   brief?: string;
   repositoryId?: string;
+  crewId?: string;
+  leadAgentId?: string;
+  memberAgentIds?: string[];
 }) {
   return apiFetch<{ task: Task }>('/api/tasks', {
     method: 'POST',
@@ -90,8 +97,8 @@ export function updateTask(
   input: {
     title?: string;
     brief?: string;
-    assignee?: AssignmentPatch | null;
-    reviewer?: AssignmentPatch | null;
+    leadAgentId?: string | null;
+    memberAgentIds?: string[];
   }
 ) {
   return apiFetch<{ task: Task }>(`/api/tasks/${id}`, {
@@ -111,23 +118,23 @@ export function deleteTask(id: string) {
   return apiFetch<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' });
 }
 
-export function fetchComments(taskId: string) {
-  return apiFetch<{ comments: TaskComment[] }>(`/api/tasks/${taskId}/comments`);
+export function fetchTurns(taskId: string) {
+  return apiFetch<{ turns: Turn[] }>(`/api/tasks/${taskId}/turns`);
 }
 
-export function addComment(taskId: string, body: string) {
-  return apiFetch<{ comment: TaskComment }>(`/api/tasks/${taskId}/comments`, {
+export function addTurn(taskId: string, content: string) {
+  return apiFetch<{ turn: Turn }>(`/api/tasks/${taskId}/turns`, {
     method: 'POST',
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ content }),
   });
 }
 
-export function fetchReviews(taskId: string) {
-  return apiFetch<{ reviews: TaskReview[] }>(`/api/tasks/${taskId}/reviews`);
+export function fetchApprovals(taskId: string) {
+  return apiFetch<{ approvals: Approval[] }>(`/api/tasks/${taskId}/approvals`);
 }
 
-export function submitReview(taskId: string, input: { decision: ReviewDecision; body: string }) {
-  return apiFetch<{ review: TaskReview }>(`/api/tasks/${taskId}/reviews`, {
+export function submitApproval(taskId: string, input: { decision: ApprovalDecision; body: string }) {
+  return apiFetch<{ approval: Approval }>(`/api/tasks/${taskId}/approvals`, {
     method: 'POST',
     body: JSON.stringify(input),
   });

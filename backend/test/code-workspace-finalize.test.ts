@@ -8,7 +8,7 @@ import { db, pool } from '../src/db/client';
 import { repositories } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { registerLiveMergeOperationForTests } from '../src/modules/code-workspaces/workspace.service';
-import { createReview } from '../src/modules/tasks/reviews.service';
+import { recordApproval } from '../src/modules/tasks/approvals.service';
 import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import type { TurnRequest } from '../src/modules/runner/runner';
@@ -56,12 +56,12 @@ async function workedTask(title: string, work: (workspace: string) => void): Pro
 }
 
 async function approve(taskId: string): Promise<void> {
-  const review = await createReview(userId, taskId, {
+  const approval = await recordApproval(userId, taskId, {
     decision: 'approved',
     body: 'Verified against the captured change set.',
-    reviewer: { userId },
   });
-  expect(review.changeSnapshotId).not.toBeNull();
+  expect(approval.changeSnapshotId).not.toBeNull();
+  expect(approval.fingerprint).toMatch(/^[0-9a-f]{64}$/);
 }
 
 async function taskStatus(taskId: string): Promise<string> {
