@@ -4,7 +4,7 @@
 
 Loxo coordinates continuous work across CLI coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 294 automated tests*
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 306 automated tests*
 
 ## Core loop
 
@@ -80,7 +80,7 @@ flowchart LR
         RUNNER[Agent runner<br/>5 CLI runtimes and API mode]
     end
     subgraph Data
-        PG[(Postgres 16<br/>15 tables and Drizzle ORM)]
+        PG[(Postgres 16<br/>26 tables and Drizzle ORM)]
         FS[Workspace storage<br/>git worktrees and manifests]
     end
     LLM[OpenAI and Anthropic APIs]
@@ -97,7 +97,7 @@ flowchart LR
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
 - **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, and review state.
 - **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
-- **Monorepo:** `backend/` contains 10 domain modules, `frontend/` contains 11 App Router routes, and `packages/shared/` holds the shared runner core.
+- **Monorepo:** npm workspaces; `backend/` contains 11 domain modules, `frontend/` contains 10 App Router routes, and `packages/shared/` holds the shared runner core.
 
 ## Getting started
 
@@ -137,20 +137,20 @@ Tasks without a repository run in the agent's own workspace.
 ## Testing
 
 ```bash
-npm test             # 294 backend tests — API, runs, governance, and workspaces
+npm test             # 306 backend tests — API, runs, governance, workspaces, and migrations
 npm run typecheck    # backend and frontend
 ```
 
-The suite covers admission and cross-surface claims, workspace capture, permission enforcement, and snapshot-bound review.
+The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
 
 ## Status and roadmap
 
-Loxo is a working platform under active solo development. The core loop — tasks, wakes, runs, reviews, and workspaces — is implemented and tested end to end. Planned operational work includes:
+Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end, and the data model for multi-agent work (crews, members, turns, plans, work packages, findings, candidates, and sign-offs) is in place. Next up:
 
-- **Observability** — structured traces and latency/error metrics, per-agent budget alerts and hard stops, and heartbeat checks for long-lived agents.
-- **Approvals and triage** — a notification inbox, approval center, task priorities, and sorting controls.
-- **Scale-out** — reporting lines for larger agent organizations, group messaging, and a shared document library.
-- **Distribution** — a desktop build, multi-tenant deployment, and a plugin system.
+- **Runtime layer** — long-lived agent sessions with streamed tool events, platform-decided permissions, and token and cost accounting.
+- **Task engine** — declarative playbooks that take a crew through explore, plan, parallel build, integration, cross-review, and sign-off.
+- **Delivery** — local merge or a GitHub pull request, gated on a person's approval of the signed candidate.
+- **Local mode** — one command with embedded Postgres, plus desktop builds.
 
 ## Repository layout
 
