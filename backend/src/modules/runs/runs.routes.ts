@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { badRequest } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
+import { listRunEvents } from './run-events.service';
 import { getRun, listRuns } from './runs.service';
 
 export const runsRouter = Router();
@@ -25,6 +26,20 @@ runsRouter.get('/', async (req: AuthedRequest, res, next) => {
 runsRouter.get('/:id', async (req: AuthedRequest, res, next) => {
   try {
     res.json({ run: await getRun(req.auth!.userId, String(req.params.id)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Event history after `after` (exclusive), for replay and for backfilling a live view. */
+runsRouter.get('/:id/events', async (req: AuthedRequest, res, next) => {
+  try {
+    const schema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) throw badRequest('invalid_input', 'after must be a non-negative integer');
+    res.json({
+      events: await listRunEvents(req.auth!.userId, String(req.params.id), parsed.data.after ?? 0),
+    });
   } catch (error) {
     next(error);
   }

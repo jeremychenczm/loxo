@@ -24,6 +24,10 @@ export interface RunOutcome {
   tokensIn?: number | null;
   tokensOut?: number | null;
   costUsd?: number | null;
+  /** acp, process, or api. */
+  transport?: string | null;
+  /** Why the turn ended, as reported by the host. */
+  stopReason?: string | null;
 }
 
 export async function createQueuedRun(userId: string, input: CreateRunInput): Promise<Run> {
@@ -94,6 +98,8 @@ export async function finishRun(runId: string, outcome: RunOutcome): Promise<Run
       ...(outcome.tokensIn !== undefined ? { tokensIn: outcome.tokensIn } : {}),
       ...(outcome.tokensOut !== undefined ? { tokensOut: outcome.tokensOut } : {}),
       ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
+      ...(outcome.transport !== undefined ? { transport: outcome.transport } : {}),
+      ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
       finishedAt: new Date(),
     })
     .where(and(eq(runs.id, runId), inArray(runs.status, [...ACTIVE_RUN_STATUSES])))

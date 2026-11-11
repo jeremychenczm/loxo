@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { verifyToken } from '../modules/auth/tokens';
 import { handleChatFrame } from './chat-channel';
+import { handleTaskFrame, releaseTaskSubscriptions } from './task-channel';
 
 export interface WsGateway {
   wss: WebSocketServer;
@@ -63,8 +64,11 @@ export function attachWsGateway(server: Server): WsGateway {
       }
       if (typeof message.type === 'string' && message.type.startsWith('chat.')) {
         void handleChatFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
+      } else if (typeof message.type === 'string' && message.type.startsWith('task.')) {
+        void handleTaskFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
       }
     });
+    ws.on('close', () => releaseTaskSubscriptions(ws));
   });
 
   const heartbeat = setInterval(() => {
