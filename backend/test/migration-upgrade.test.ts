@@ -164,8 +164,20 @@ describe('migration upgrade from the pre-reshape schema', () => {
   });
 
   it('carries issues over as tasks with their number, brief, and history', async () => {
-    const [task] = await q(`SELECT number, title, brief, status FROM tasks WHERE id = $1`, [ids.issue]);
-    expect(task).toEqual({ number: 7, title: 'Port the exporter', brief: 'CSV first', status: 'in_progress' });
+    const [task] = await q(
+      `SELECT number, title, brief, status, playbook, settings, snapshot FROM tasks WHERE id = $1`,
+      [ids.issue]
+    );
+    // Pre-engine work runs as a single-member Solo task.
+    expect(task).toEqual({
+      number: 7,
+      title: 'Port the exporter',
+      brief: 'CSV first',
+      status: 'in_progress',
+      playbook: 'solo',
+      settings: {},
+      snapshot: null,
+    });
     const [user] = await q(`SELECT task_counter FROM users WHERE id = $1`, [ids.user]);
     expect(user).toEqual({ task_counter: 7 });
     const [run] = await q(`SELECT task_id FROM runs WHERE id = $1`, [ids.run]);
