@@ -7,6 +7,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@agentclientprotocol/sdk": "2.6.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "tsx": "^4.19.2"
   }
 }

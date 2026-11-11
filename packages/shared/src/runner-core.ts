@@ -38,6 +38,22 @@ function killTree(pid: number | undefined, fallback: () => void): void {
 }
 
 /**
+ * Kills a child and everything it spawned. On POSIX the child must have been
+ * started with `detached: true` so that it leads its own process group.
+ */
+export function killProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals): boolean }): void {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // Not a group leader or already gone; fall back to the child alone.
+    }
+  }
+  killTree(child.pid, () => child.kill('SIGKILL'));
+}
+
+/**
  * Runs a CLI process to completion. Prompts are passed via stdin, never argv:
  * argv is size-limited on Windows and quoting large multiline text through
  * cmd.exe is not reliable.

@@ -10,7 +10,7 @@ import {
   type ClientContext,
   type SessionUpdate,
 } from '@agentclientprotocol/sdk/unstable';
-import { FAKE_AGENT_ENTRY, type Scenario } from '@swarmdev/fake-agent';
+import { fakeAgentCommand, type Scenario } from '@swarmdev/fake-agent';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { makeSandbox, removeSandbox } from './fixtures/git-repo';
 
@@ -37,8 +37,10 @@ interface Harness {
 }
 
 function launch(scenario: Scenario, answer: 'allow' | 'reject' | 'cancelled' = 'allow'): Harness {
-  const child = spawn(process.execPath, ['--import', 'tsx', FAKE_AGENT_ENTRY], {
-    env: { ...process.env, LOXO_FAKE_AGENT_SCENARIO: JSON.stringify(scenario) },
+  const cmd = fakeAgentCommand(scenario);
+  const child = spawn(cmd.command, cmd.args, {
+    cwd: sandbox,
+    env: { ...process.env, ...cmd.env },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -194,7 +196,8 @@ describe('fake ACP agent', () => {
   });
 
   it('rejects a malformed scenario before speaking', { timeout: T }, async () => {
-    const child = spawn(process.execPath, ['--import', 'tsx', FAKE_AGENT_ENTRY], {
+    const cmd = fakeAgentCommand({ turns: [{ steps: [] }] });
+    const child = spawn(cmd.command, cmd.args, {
       env: { ...process.env, LOXO_FAKE_AGENT_SCENARIO: JSON.stringify({ turns: [{ steps: [{ dance: true }] }] }) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
