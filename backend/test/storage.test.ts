@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { copyDir, dirDigest } from '../src/storage/file-ops';
 import { windowsToWslPath, wslToWindowsPath } from '../src/storage/host-path';
 import { createStorageLayout } from '../src/storage/layout';
 import { cleanRelativePath, PathEscapeError, resolveInside } from '../src/storage/path-safety';
@@ -53,28 +52,10 @@ describe('storage layout', () => {
   it('creates agent directories with state beside the workspace', () => {
     const layout = createStorageLayout(path.join(tmpRoot, 'storage'));
     const paths = layout.agentPaths('user1', 'agent1');
-    for (const dir of [paths.workspace, paths.baseline, paths.snapshots, paths.state]) {
+    for (const dir of [paths.workspace, paths.state]) {
       expect(fs.existsSync(dir)).toBe(true);
     }
     expect(path.dirname(paths.state)).toBe(paths.root);
     expect(paths.state.startsWith(paths.workspace)).toBe(false);
-  });
-});
-
-describe('file ops', () => {
-  it('copies directories and produces stable digests', () => {
-    const src = path.join(tmpRoot, 'src');
-    fs.mkdirSync(path.join(src, 'nested'), { recursive: true });
-    fs.writeFileSync(path.join(src, 'a.txt'), 'alpha');
-    fs.writeFileSync(path.join(src, 'nested', 'b.txt'), 'beta');
-
-    const dst = path.join(tmpRoot, 'dst');
-    copyDir(src, dst);
-
-    expect(fs.readFileSync(path.join(dst, 'nested', 'b.txt'), 'utf8')).toBe('beta');
-    expect(dirDigest(src)).toBe(dirDigest(dst));
-
-    fs.writeFileSync(path.join(dst, 'a.txt'), 'changed');
-    expect(dirDigest(src)).not.toBe(dirDigest(dst));
   });
 });

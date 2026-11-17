@@ -48,23 +48,11 @@ export const providers = pgTable('providers', {
 
 export type Provider = typeof providers.$inferSelect;
 
-/** Optional packaging metadata read from agent.json at import time. */
+/** Runtime-specific settings that do not warrant their own columns. */
 export interface AgentManifest {
-  name?: string;
-  version?: string;
-  description?: string;
-  capabilities?: string[];
-  /** API-hosted agents: protocol and defaults recorded at deploy time. */
+  /** API-hosted agents only. */
   api?: {
-    protocol?: 'openai' | 'anthropic';
-    model?: string;
     systemPrompt?: string;
-    catalogId?: string;
-  };
-  /** Team-template provenance; drives duplicate detection at adopt time. */
-  template?: {
-    id?: string;
-    roleCode?: string;
   };
 }
 

@@ -44,7 +44,7 @@ function MobileNavIcon({ tab }: { tab: MobileTabKey }) {
 
 function activeTabForRoute(pathname: string): MobileTabKey | null {
   if (pathname.startsWith('/tasks')) return 'tasks';
-  if (pathname.startsWith('/agents') || pathname.startsWith('/upload')) return 'agents';
+  if (pathname.startsWith('/agents')) return 'agents';
   if (pathname.startsWith('/repositories')) return 'repositories';
   if (pathname.startsWith('/settings')) return 'me';
   return null;
@@ -54,7 +54,7 @@ export function MobileAppNav() {
   const pathname = usePathname();
 
   // Full-screen agent routes hide the tab bar.
-  if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/agents/')) {
+  if (pathname.startsWith('/login') || pathname.startsWith('/register') || (pathname.startsWith('/agents/') && pathname !== '/agents/new')) {
     return null;
   }
 

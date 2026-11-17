@@ -1,10 +1,10 @@
+import fs from 'node:fs';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { agents, providers, type Agent, type AgentManifest } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
-import { copyDir, removeDir } from '../../storage/file-ops';
 import { storage } from '../../storage/layout';
-import type { AgentRuntime } from './runtime-detect';
+import type { AgentRuntime } from './runtimes';
 
 /** Provider vendors accepted by each runtime. */
 export const VENDORS_FOR_RUNTIME: Record<AgentRuntime, string[]> = {
@@ -149,12 +149,5 @@ export async function deleteAgent(userId: string, agentId: string): Promise<void
     .returning({ id: agents.id });
   if (deleted.length === 0) throw notFound('Agent not found');
 
-  removeDir(storage.agentPaths(userId, agentId).root);
-}
-
-/** Re-seeds the baseline snapshot from the current workspace contents. */
-export function captureBaseline(userId: string, agentId: string): void {
-  const paths = storage.agentPaths(userId, agentId);
-  removeDir(paths.baseline);
-  copyDir(paths.workspace, paths.baseline);
+  fs.rmSync(storage.agentPaths(userId, agentId).root, { recursive: true, force: true });
 }

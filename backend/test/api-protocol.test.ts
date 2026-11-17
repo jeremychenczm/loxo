@@ -31,34 +31,21 @@ describe('normalizeApiMessages', () => {
 });
 
 describe('resolveApiModel', () => {
-  const agent = (model: string | null, presetModel?: string) => ({
-    name: 'Helper',
-    model,
-    manifest: { api: presetModel ? { model: presetModel } : {} },
-  });
+  const agent = (model: string | null) => ({ name: 'Helper', model });
 
-  it('adapts a mismatched preset model to the provider vendor', () => {
-    expect(resolveApiModel(agent(null, 'claude-sonnet-5'), 'openai')).toBe('gpt-4o-mini');
-    expect(resolveApiModel(agent(null, 'gpt-4o-mini'), 'anthropic')).toBe('claude-sonnet-5');
-  });
-
-  it('keeps a matching or unrecognized preset model', () => {
-    expect(resolveApiModel(agent(null, 'claude-sonnet-5'), 'anthropic')).toBe('claude-sonnet-5');
-    expect(resolveApiModel(agent(null, 'my-relay-model'), 'openai')).toBe('my-relay-model');
-  });
-
-  it('rejects an explicit user pick that contradicts the vendor', () => {
-    expect(() => resolveApiModel(agent('claude-sonnet-5'), 'openai')).toThrow(RunnerError);
+  it('keeps a matching or unrecognized explicit model', () => {
     expect(resolveApiModel(agent('o3-mini'), 'openai')).toBe('o3-mini');
+    expect(resolveApiModel(agent('claude-sonnet-5'), 'anthropic')).toBe('claude-sonnet-5');
+    expect(resolveApiModel(agent('my-relay-model'), 'openai')).toBe('my-relay-model');
   });
 
-  it('treats a model copied from the catalog preset as a preset, not a user pick', () => {
-    expect(resolveApiModel(agent('claude-sonnet-5', 'claude-sonnet-5'), 'openai')).toBe('gpt-4o-mini');
-    expect(resolveApiModel(agent('gpt-4o-mini', 'gpt-4o-mini'), 'anthropic')).toBe('claude-sonnet-5');
+  it('rejects an explicit model that contradicts the vendor', () => {
+    expect(() => resolveApiModel(agent('claude-sonnet-5'), 'openai')).toThrow(RunnerError);
+    expect(() => resolveApiModel(agent('gpt-4o-mini'), 'anthropic')).toThrow(RunnerError);
   });
 
-  it('falls back to the vendor default when nothing is configured', () => {
+  it('falls back to the vendor default when no model is set', () => {
     expect(resolveApiModel(agent(null), 'openai')).toBe('gpt-4o-mini');
-    expect(resolveApiModel(agent(null), 'anthropic')).toBe('claude-sonnet-5');
+    expect(resolveApiModel(agent('  '), 'anthropic')).toBe('claude-sonnet-5');
   });
 });

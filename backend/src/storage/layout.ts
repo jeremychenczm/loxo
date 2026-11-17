@@ -7,7 +7,7 @@ import { toHostPath } from './host-path';
  *
  *   <root>/
  *     users/<userId>/
- *       agents/<agentId>/{workspace,baseline,snapshots,state}
+ *       agents/<agentId>/{workspace,state}
  *       worktrees/<taskId>
  *       runs/<runId>/
  *
@@ -17,8 +17,6 @@ import { toHostPath } from './host-path';
 export interface AgentPaths {
   root: string;
   workspace: string;
-  baseline: string;
-  snapshots: string;
   state: string;
 }
 
@@ -46,8 +44,6 @@ export function createStorageLayout(rootInput: string): StorageLayout {
       return {
         root: ensured(agentRoot),
         workspace: ensured(path.join(agentRoot, 'workspace')),
-        baseline: ensured(path.join(agentRoot, 'baseline')),
-        snapshots: ensured(path.join(agentRoot, 'snapshots')),
         state: ensured(path.join(agentRoot, 'state')),
       };
     },

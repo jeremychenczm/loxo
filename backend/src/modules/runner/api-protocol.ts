@@ -21,38 +21,21 @@ export function impliedVendor(model: string): ApiProtocol | null {
 }
 
 /**
- * Model for an API turn. Catalog presets pin a model for one vendor; when the
- * bound provider is the other vendor that preset would 404 there. An explicit
- * user pick fails loudly on a mismatch; a preset default adapts to the
- * provider's vendor; unrecognized ids pass through (relays accept anything).
+ * Model for an API turn: the agent's explicit pick, or the vendor default.
+ * A pick that clearly belongs to the other vendor fails loudly; unrecognized
+ * ids pass through because relays accept anything.
  */
-export function resolveApiModel(
-  agent: { name: string; model: string | null; manifest: { api?: { model?: string } } },
-  vendor: ApiProtocol
-): string {
+export function resolveApiModel(agent: { name: string; model: string | null }, vendor: ApiProtocol): string {
   const explicit = agent.model?.trim();
-  const preset = agent.manifest.api?.model?.trim();
-
-  // Catalog deploys copy the preset into the agent's model field; only a
-  // value that diverges from the preset is a deliberate user pick.
-  if (explicit && explicit !== preset) {
-    const implied = impliedVendor(explicit);
-    if (implied && implied !== vendor) {
-      throw new RunnerError(
-        `Model "${explicit}" is ${implied === 'anthropic' ? 'an Anthropic' : 'an OpenAI'} model, but agent "${agent.name}" uses ${vendor === 'anthropic' ? 'an Anthropic' : 'an OpenAI'} provider. Pick a matching model or switch the provider.`,
-        'api_failed'
-      );
-    }
-    return explicit;
+  if (!explicit) return VENDOR_DEFAULT_MODELS[vendor];
+  const implied = impliedVendor(explicit);
+  if (implied && implied !== vendor) {
+    throw new RunnerError(
+      `Model "${explicit}" is ${implied === 'anthropic' ? 'an Anthropic' : 'an OpenAI'} model, but agent "${agent.name}" uses ${vendor === 'anthropic' ? 'an Anthropic' : 'an OpenAI'} provider. Pick a matching model or switch the provider.`,
+      'api_failed'
+    );
   }
-
-  const candidate = preset ?? explicit;
-  if (candidate) {
-    const implied = impliedVendor(candidate);
-    if (implied && implied !== vendor) return VENDOR_DEFAULT_MODELS[vendor];
-    return candidate;
-  }
-  return VENDOR_DEFAULT_MODELS[vendor];
+  return explicit;
 }
 
 /**

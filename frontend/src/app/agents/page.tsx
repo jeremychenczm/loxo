@@ -6,16 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { PixelPortrait } from '@/components/agent/PixelPortrait';
 import { BackButton } from '@/components/ui/BackButton';
-import { avatarUrl, fetchAgents, type Agent, type Runtime } from '@/lib/agents';
-
-const RUNTIME_LABELS: Record<Runtime, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  hermes: 'Hermes',
-  openclaw: 'OpenClaw',
-  api: 'Hosted API',
-};
+import { avatarUrl, fetchAgents, RUNTIME_LABELS, type Agent } from '@/lib/agents';
 
 /** Badge headline under the portrait: the agent's own role tag, else its runtime. */
 function roleLine(agent: Agent): string {
@@ -176,7 +167,7 @@ function AgentsPageInner() {
           </p>
         </div>
         <Link
-          href="/upload"
+          href="/agents/new"
           className="hidden rounded-md border-2 border-dashed border-pixel-black/30 px-5 py-2 font-sans text-sm text-pixel-black/60 transition-colors hover:border-pixel-black hover:text-pixel-black md:block"
         >
           + New agent
@@ -187,7 +178,7 @@ function AgentsPageInner() {
         <div className="py-24 text-center">
           <p className="mb-6 font-sans text-lg text-pixel-black/60">Nobody on the roster yet.</p>
           <Link
-            href="/upload"
+            href="/agents/new"
             className="rounded-md bg-pixel-black px-6 py-3 font-sans text-sm text-pixel-white"
           >
             Hire your first agent
@@ -211,7 +202,7 @@ function AgentsPageInner() {
               />
             ))}
             <Link
-              href="/upload"
+              href="/agents/new"
               className="flex items-center rounded-md border-2 border-dashed border-pixel-black/25 px-6 py-4 font-sans text-sm text-pixel-black/50 transition-colors hover:border-pixel-black hover:text-pixel-black md:hidden"
             >
               + New agent

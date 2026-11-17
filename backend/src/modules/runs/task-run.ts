@@ -22,7 +22,7 @@ import {
 } from '../code-workspaces/workspace.service';
 import { addSystemTurn, listTurns } from '../tasks/turns.service';
 import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
-import type { CliRuntime } from '../agents/runtime-detect';
+import type { CliRuntime } from '../agents/runtimes';
 import { config } from '../../config';
 import { mintRunToken } from './run-token';
 import { AcpHost, HostStartupError } from '../hosts/acp-host';

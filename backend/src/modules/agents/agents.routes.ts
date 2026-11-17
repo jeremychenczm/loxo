@@ -20,21 +20,11 @@ import {
   updateAgentConfig,
   VENDORS_FOR_RUNTIME,
 } from './agents.service';
-import { importAgent, unpackArchive, type ImportFile } from './agent-import.service';
-import { addSkillFromMarkdown, addSkillsFromArchive, listSkills } from './agent-skills.service';
-import { CLI_RUNTIMES, isAgentRuntime, type AgentRuntime } from './runtime-detect';
+import { CLI_RUNTIMES, isAgentRuntime, type AgentRuntime } from './runtimes';
 
-const importUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { files: 1000, fileSize: 50 * 1024 * 1024 },
-});
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
-});
-const skillUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 export const agentsRouter = Router();
@@ -108,45 +98,6 @@ agentsRouter.post('/', async (req: AuthedRequest, res, next) => {
   }
 });
 
-// Import: zip archive (field "archive") or individual files (field "files",
-// filenames carry workspace-relative paths).
-agentsRouter.post(
-  '/import',
-  importUpload.fields([
-    { name: 'archive', maxCount: 1 },
-    { name: 'files', maxCount: 1000 },
-  ]),
-  async (req: AuthedRequest, res, next) => {
-    try {
-      const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
-      if (!name) throw badRequest('invalid_input', 'Agent name is required');
-      const runtime = typeof req.body.runtime === 'string' ? req.body.runtime : undefined;
-      const description =
-        typeof req.body.description === 'string' ? req.body.description : undefined;
-
-      const uploaded = req.files as Record<string, Express.Multer.File[]> | undefined;
-      let files: ImportFile[];
-      if (uploaded?.archive?.[0]) {
-        files = unpackArchive(uploaded.archive[0].buffer);
-      } else if (uploaded?.files?.length) {
-        files = uploaded.files.map((f) => ({ relativePath: f.originalname, content: f.buffer }));
-        for (const file of files) {
-          if (!/^[^\0]+$/.test(file.relativePath)) {
-            throw badRequest('unsafe_path', 'Invalid file path');
-          }
-        }
-      } else {
-        throw badRequest('invalid_input', 'Provide an archive or files to import');
-      }
-
-      const result = await importAgent(req.auth!.userId, files, { name, description, runtime });
-      res.status(201).json({ agent: result.agent, fileCount: result.fileCount });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
 agentsRouter.get('/:id', async (req: AuthedRequest, res, next) => {
   try {
     res.json({ agent: await getAgent(req.auth!.userId, String(req.params.id)) });
@@ -204,35 +155,6 @@ agentsRouter.post(
 
       await updateAgent(req.auth!.userId, agentId, { avatarFile: filename });
       res.json({ ok: true, avatarUrl: `/api/agents/${agentId}/avatar` });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-agentsRouter.get('/:id/skills', async (req: AuthedRequest, res, next) => {
-  try {
-    res.json({ skills: await listSkills(req.auth!.userId, String(req.params.id)) });
-  } catch (error) {
-    next(error);
-  }
-});
-
-agentsRouter.post(
-  '/:id/skills',
-  skillUpload.single('skill'),
-  async (req: AuthedRequest, res, next) => {
-    try {
-      if (!req.file) throw badRequest('invalid_input', 'Skill file is required');
-      const agentId = String(req.params.id);
-      const name = typeof req.body.name === 'string' ? req.body.name : undefined;
-      const ext = path.extname(req.file.originalname).toLowerCase();
-
-      const skills =
-        ext === '.zip'
-          ? await addSkillsFromArchive(req.auth!.userId, agentId, req.file.buffer)
-          : await addSkillFromMarkdown(req.auth!.userId, agentId, req.file, name);
-      res.status(201).json({ skills });
     } catch (error) {
       next(error);
     }

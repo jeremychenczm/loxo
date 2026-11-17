@@ -2,7 +2,6 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { config } from '../config';
 import { agentsRouter } from '../modules/agents/agents.routes';
-import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { crewsRouter } from '../modules/crews/crews.routes';
 import { humanRequestsRouter } from '../modules/human-requests/human-requests.routes';
@@ -38,7 +37,6 @@ export function createApp(): express.Express {
   app.use('/auth', authRouter);
   app.use('/api/providers', providersRouter);
   app.use('/api/agents', agentsRouter);
-  app.use('/api/agent-presets', apiPresetsRouter);
   app.use('/api/crews', crewsRouter);
   app.use('/api/repositories', repositoriesRouter);
   app.use('/api/tasks', tasksRouter);

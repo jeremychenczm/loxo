@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { AgentSprite } from '@/components/agent/AgentSprite';
@@ -10,17 +10,12 @@ import { PixelButton } from '@/components/ui/PixelButton';
 import {
   fetchAgent,
   fetchDiagnostics,
-  fetchSkills,
+  RUNTIME_LABELS,
   updateAgentConfig,
-  uploadSkill,
   type Agent,
   type Diagnostics,
-  type SkillSummary,
 } from '@/lib/agents';
 import { fetchProviders, type ProviderView } from '@/lib/providers';
-import { RUNTIME_LABELS } from '@/lib/runtime-detect';
-
-type TabType = 'monitor' | 'skills';
 
 function MonitorView({
   agent,
@@ -72,61 +67,6 @@ function MonitorView({
   );
 }
 
-function SkillsView({ agentId }: { agentId: string }) {
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [error, setError] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const reload = useCallback(() => {
-    fetchSkills(agentId).then(setSkills).catch(() => setSkills([]));
-  }, [agentId]);
-
-  useEffect(reload, [reload]);
-
-  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setError('');
-    try {
-      await uploadSkill(agentId, file);
-      reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Skill upload failed');
-    }
-  };
-
-  return (
-    <div className="mx-auto max-w-2xl space-y-3 p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="font-sans text-xl font-bold text-pixel-black">■ Skills</h2>
-        <PixelButton variant="secondary" size="sm" onClick={() => inputRef.current?.click()}>
-          + Add skill
-        </PixelButton>
-        <input ref={inputRef} type="file" accept=".md,.zip" className="hidden" onChange={handleUpload} />
-      </div>
-      <p className="font-sans text-xs text-pixel-black/55">
-        SKILL.md files under the agent workspace.
-      </p>
-      {error && <p className="font-sans text-sm text-pixel-red">{error}</p>}
-      {skills.map((skill) => (
-        <div
-          key={skill.id}
-          className="border border-pixel-line bg-pixel-white px-4 py-3"
-          style={{ boxShadow: '3px 3px 0 rgba(17,17,17,0.10)' }}
-        >
-          <p className="font-sans text-sm font-bold text-pixel-black">{skill.name}</p>
-          <p className="mt-1 font-sans text-xs text-pixel-black/60">{skill.description || 'No description'}</p>
-        </div>
-      ))}
-      {skills.length === 0 && (
-        <p className="border border-dashed border-pixel-black/30 p-6 text-center font-sans text-sm text-pixel-black/45">
-          No skills yet — upload a SKILL.md or a zip of skill folders.
-        </p>
-      )}
-    </div>
-  );
-}
-
 function AgentDetailInner() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -135,7 +75,6 @@ function AgentDetailInner() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
-  const [activeTab, setActiveTab] = useState<TabType>('monitor');
   const [savingModel, setSavingModel] = useState(false);
 
   useEffect(() => {
@@ -257,40 +196,10 @@ function AgentDetailInner() {
           )}
         </div>
 
-        <div className="flex border-t border-pixel-line">
-          {(
-            [
-              ['monitor', 'Monitor'],
-              ['skills', 'Skills'],
-            ] as Array<[TabType, string]>
-          ).map(([tab, label], index) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 px-4 py-2 font-sans text-sm transition-colors ${index < 1 ? 'border-r border-pixel-line' : ''} ${
-                activeTab === tab
-                  ? 'bg-pixel-black text-pixel-white'
-                  : 'bg-pixel-white text-pixel-black hover:bg-pixel-black/10'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
       </motion.div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {activeTab === 'monitor' && (
-          <div className="min-h-0 flex-1 overflow-y-auto bg-pixel-cream">
-            <MonitorView agent={agent} diagnostics={diagnostics} busy={busy} />
-          </div>
-        )}
-
-        {activeTab === 'skills' && (
-          <div className="min-h-0 flex-1 overflow-y-auto bg-pixel-cream">
-            <SkillsView agentId={agentId} />
-          </div>
-        )}
+      <div className="min-h-0 flex-1 overflow-y-auto bg-pixel-cream">
+        <MonitorView agent={agent} diagnostics={diagnostics} busy={busy} />
       </div>
     </div>
   );

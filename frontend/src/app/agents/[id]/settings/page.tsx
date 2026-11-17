@@ -7,14 +7,11 @@ import {
   avatarUrl,
   fetchAgent,
   fetchDiagnostics,
-  fetchSkills,
   updateAgent,
   updateAgentConfig,
   uploadAvatar,
-  uploadSkill,
   type Agent,
   type Diagnostics,
-  type SkillSummary,
 } from '@/lib/agents';
 import { fetchProviders, type ProviderView } from '@/lib/providers';
 
@@ -41,7 +38,6 @@ function SettingsInner() {
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -57,7 +53,6 @@ function SettingsInner() {
         setDescription(a.description);
       })
       .catch(() => router.replace('/agents'));
-    fetchSkills(agentId).then(setSkills).catch(() => {});
   }, [agentId, router]);
 
   useEffect(reload, [reload]);
@@ -114,11 +109,6 @@ function SettingsInner() {
     if (!file) return;
     await uploadAvatar(agentId, file);
     reload();
-  };
-
-  const onSkill = async (file: File | undefined) => {
-    if (!file) return;
-    setSkills(await uploadSkill(agentId, file).then((r) => r.skills));
   };
 
   const runDiagnostics = async () => {
@@ -207,33 +197,6 @@ function SettingsInner() {
           <p className="font-sans text-xs text-pixel-black/55">
             No provider matches this runtime. Add one under Settings → Providers.
           </p>
-        )}
-      </section>
-
-      <section className={sectionClass} style={sectionStyle}>
-        <div className="flex items-center justify-between">
-          <h2 className="font-sans text-lg font-bold text-pixel-black">■ Skills</h2>
-          <label className={chipButtonClass} style={{ boxShadow: '2px 2px 0 rgba(17,17,17,0.10)' }}>
-            Upload skill (.md / .zip)
-            <input
-              type="file"
-              accept=".md,.zip"
-              className="hidden"
-              onChange={(e) => onSkill(e.target.files?.[0])}
-            />
-          </label>
-        </div>
-        {skills.length === 0 ? (
-          <p className="font-sans text-xs text-pixel-black/55">No skills installed.</p>
-        ) : (
-          <ul className="space-y-2">
-            {skills.map((skill) => (
-              <li key={skill.id} className="border border-pixel-line px-3 py-2" style={{ boxShadow: '2px 2px 0 rgba(17,17,17,0.10)' }}>
-                <span className="font-sans text-sm font-bold text-pixel-black">{skill.name}</span>
-                <p className="font-sans text-xs text-pixel-black/60">{skill.description}</p>
-              </li>
-            ))}
-          </ul>
         )}
       </section>
 

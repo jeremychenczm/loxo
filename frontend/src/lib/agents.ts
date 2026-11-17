@@ -5,6 +5,15 @@ import { useAuthStore } from '@/store/auth';
 export const RUNTIMES = ['claude-code', 'codex', 'opencode', 'hermes', 'openclaw', 'api'] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
+export const RUNTIME_LABELS: Record<Runtime, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  hermes: 'Hermes',
+  openclaw: 'OpenClaw',
+  api: 'Hosted API',
+};
+
 export type AgentExecution = 'server' | 'api';
 
 export interface Agent {
@@ -21,13 +30,6 @@ export interface Agent {
   createdAt: string;
 }
 
-export interface SkillSummary {
-  id: string;
-  name: string;
-  description: string;
-  updatedAt: string;
-}
-
 export interface Diagnostics {
   agent: { id: string; name: string; runtime: Runtime; model: string | null };
   cli: { available: boolean; version: string; error?: string };
@@ -36,6 +38,11 @@ export interface Diagnostics {
 
 export const fetchAgents = () =>
   apiFetch<{ agents: Agent[] }>('/api/agents').then((r) => r.agents);
+
+export const createAgent = (input: { name: string; description?: string; runtime: Runtime }) =>
+  apiFetch<{ agent: Agent }>('/api/agents', { method: 'POST', body: JSON.stringify(input) }).then(
+    (r) => r.agent
+  );
 
 export const fetchAgent = (id: string) =>
   apiFetch<{ agent: Agent }>(`/api/agents/${id}`).then((r) => r.agent);
@@ -62,9 +69,6 @@ export const updateAgentConfig = (
 export const deleteAgent = (id: string) =>
   apiFetch<{ ok: boolean }>(`/api/agents/${id}`, { method: 'DELETE' });
 
-export const fetchSkills = (agentId: string) =>
-  apiFetch<{ skills: SkillSummary[] }>(`/api/agents/${agentId}/skills`).then((r) => r.skills);
-
 export const fetchDiagnostics = (agentId: string) =>
   apiFetch<Diagnostics>(`/api/agents/${agentId}/diagnostics`);
 
@@ -84,45 +88,8 @@ async function multipart<T>(path: string, form: FormData): Promise<T> {
   return body as T;
 }
 
-export function importAgentArchive(input: {
-  name: string;
-  archive: File;
-  runtime?: string;
-  description?: string;
-}) {
-  const form = new FormData();
-  form.append('name', input.name);
-  if (input.runtime) form.append('runtime', input.runtime);
-  if (input.description) form.append('description', input.description);
-  form.append('archive', input.archive);
-  return multipart<{ agent: Agent; fileCount: number }>('/api/agents/import', form);
-}
-
-export function importAgentFolder(input: {
-  name: string;
-  files: { relativePath: string; file: File }[];
-  runtime?: string;
-  description?: string;
-}) {
-  const form = new FormData();
-  form.append('name', input.name);
-  if (input.runtime) form.append('runtime', input.runtime);
-  if (input.description) form.append('description', input.description);
-  for (const { relativePath, file } of input.files) {
-    form.append('files', file, relativePath);
-  }
-  return multipart<{ agent: Agent; fileCount: number }>('/api/agents/import', form);
-}
-
 export function uploadAvatar(agentId: string, file: File) {
   const form = new FormData();
   form.append('avatar', file);
   return multipart<{ ok: boolean; avatarUrl: string }>(`/api/agents/${agentId}/avatar`, form);
-}
-
-export function uploadSkill(agentId: string, file: File, name?: string) {
-  const form = new FormData();
-  if (name) form.append('name', name);
-  form.append('skill', file);
-  return multipart<{ skills: SkillSummary[] }>(`/api/agents/${agentId}/skills`, form);
 }
