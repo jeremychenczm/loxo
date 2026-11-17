@@ -255,6 +255,29 @@ describe('wake admission', () => {
     expect(await agentStatus(agentA)).toBe('idle');
   });
 
+  it('fails runs for an agent whose runtime was retired, without invoking the CLI', async () => {
+    let invoked = false;
+    executorImpl = async (req) => {
+      invoked = true;
+      return succeedQuickly(req);
+    };
+    const legacy = await request(app)
+      .post('/api/agents')
+      .set(auth())
+      .send({ name: 'Legacy runner', runtime: 'codex' });
+    await pool.query(`UPDATE agents SET runtime = 'hermes' WHERE id = $1`, [legacy.body.agent.id]);
+
+    const task = await createTask('Retired runtime');
+    await moveTo(task.id, 'todo');
+    await assign(task.id, legacy.body.agent.id);
+    await drainRunsForTests();
+
+    const [run] = await runsFor(task.id);
+    expect(run!.status).toBe('failed');
+    expect(run!.error).toMatch(/no longer supported/);
+    expect(invoked).toBe(false);
+  });
+
   it('rejects a manual wake when the task has no lead', async () => {
     const task = await createTask('Nobody home');
     const res = await request(app).post(`/api/tasks/${task.id}/wake`).set(auth()).send({});

@@ -1,5 +1,6 @@
-export const CLI_RUNTIMES = ['claude-code', 'codex', 'opencode', 'hermes', 'openclaw'] as const;
-export type CliRuntime = (typeof CLI_RUNTIMES)[number];
+import { CLI_RUNTIMES, type CliRuntime } from '@swarmdev/shared';
+
+export { CLI_RUNTIMES, type CliRuntime };
 export type AgentRuntime = CliRuntime | 'api';
 
 export function isAgentRuntime(value: unknown): value is AgentRuntime {

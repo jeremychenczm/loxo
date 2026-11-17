@@ -8,8 +8,8 @@ import type { HostTransport } from './host.types';
 /**
  * Which transport each runtime uses and how its permissions are enforced.
  * Claude Code and Codex reach ACP through official adapters that reuse the
- * locally installed CLI and its login; every other CLI runs a process per
- * turn. Adapters are installed on purpose (`npm run runtimes:install`), never
+ * locally installed CLI and its login; without an installed adapter they fall
+ * back to a process per turn. Adapters are installed on purpose (`npm run runtimes:install`), never
  * fetched at run time.
  */
 

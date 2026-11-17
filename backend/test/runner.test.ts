@@ -148,10 +148,6 @@ describe('permission resolution and capability matrix', () => {
     expect(RUNTIME_CODE_CAPABILITIES['claude-code'].codeWorkspace).toBe('supported');
     expect(RUNTIME_CODE_CAPABILITIES.codex.codeWorkspace).toBe('supported');
     expect(RUNTIME_CODE_CAPABILITIES.codex.permissionEnforcement).toBe('enforced');
-    expect(RUNTIME_CODE_CAPABILITIES.opencode.codeWorkspace).toBe('experimental');
-    expect(RUNTIME_CODE_CAPABILITIES.hermes.codeWorkspace).toBe('disabled');
-    expect(RUNTIME_CODE_CAPABILITIES.openclaw.codeWorkspace).toBe('disabled');
-    expect(RUNTIME_CODE_CAPABILITIES.opencode.permissionEnforcement).toBe('unverified');
   });
 });
 

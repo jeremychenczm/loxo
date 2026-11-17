@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 
 /** CLI runtimes execute turns as one-shot processes. */
-export const CLI_RUNTIMES = ['claude-code', 'codex', 'opencode', 'hermes', 'openclaw'] as const;
+export const CLI_RUNTIMES = ['claude-code', 'codex'] as const;
 
 export type CliRuntime = (typeof CLI_RUNTIMES)[number];
 
@@ -168,9 +168,6 @@ export interface RuntimeCodeCapability {
 export const RUNTIME_CODE_CAPABILITIES: Record<CliRuntime, RuntimeCodeCapability> = {
   'claude-code': { codeWorkspace: 'supported', permissionEnforcement: 'enforced_with_bash_caveat' },
   codex: { codeWorkspace: 'supported', permissionEnforcement: 'enforced' },
-  opencode: { codeWorkspace: 'experimental', permissionEnforcement: 'unverified' },
-  hermes: { codeWorkspace: 'disabled', permissionEnforcement: 'unverified' },
-  openclaw: { codeWorkspace: 'disabled', permissionEnforcement: 'unverified' },
 };
 
 export interface TurnRequest {
@@ -439,44 +436,6 @@ export const ADAPTERS: Record<CliRuntime, RuntimeAdapter> = {
     },
     buildEnv: openaiEnv,
     parse: plainParse('codex'),
-  },
-  opencode: {
-    command: 'opencode',
-    buildArgs: (request) => {
-      const args = ['run'];
-      if (request.model) args.push('--model', request.model);
-      return args;
-    },
-    buildEnv: openaiEnv,
-    parse: plainParse('opencode'),
-  },
-  hermes: {
-    command: 'hermes',
-    buildArgs: () => ['-z'],
-    buildEnv: (request) => {
-      const env: Record<string, string> = {};
-      if (request.credentials?.apiKey) env.HERMES_API_KEY = request.credentials.apiKey;
-      return env;
-    },
-    parse: plainParse('hermes'),
-  },
-  openclaw: {
-    command: 'openclaw',
-    buildArgs: (request) => {
-      const args = ['agent', '--local', '--json'];
-      if (request.sessionRef) args.push('--session-id', request.sessionRef);
-      return args;
-    },
-    buildEnv: (request) => {
-      const env: Record<string, string> = {};
-      if (request.credentials?.apiKey) {
-        env.OPENCLAW_API_KEY = request.credentials.apiKey;
-        env.OPENAI_API_KEY = request.credentials.apiKey;
-      }
-      if (request.credentials?.baseUrl) env.OPENCLAW_BASE_URL = request.credentials.baseUrl;
-      return env;
-    },
-    parse: plainParse('openclaw'),
   },
 };
 

@@ -2,15 +2,12 @@ import { apiFetch } from './api';
 import { API_BASE } from './runtime';
 import { useAuthStore } from '@/store/auth';
 
-export const RUNTIMES = ['claude-code', 'codex', 'opencode', 'hermes', 'openclaw', 'api'] as const;
+export const RUNTIMES = ['claude-code', 'codex', 'api'] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
 export const RUNTIME_LABELS: Record<Runtime, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
-  opencode: 'OpenCode',
-  hermes: 'Hermes',
-  openclaw: 'OpenClaw',
   api: 'Hosted API',
 };
 

@@ -18,9 +18,6 @@ import { fetchProviders, type ProviderView } from '@/lib/providers';
 const VENDORS_FOR_RUNTIME: Record<string, string[]> = {
   'claude-code': ['anthropic'],
   codex: ['openai'],
-  opencode: ['openai'],
-  hermes: ['hermes'],
-  openclaw: ['openclaw'],
   api: ['anthropic', 'openai'],
 };
 

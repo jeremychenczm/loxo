@@ -4,7 +4,7 @@ import { providers, type Provider } from '../../db/schema';
 import { openSecret, sealSecret } from '../../crypto/secretbox';
 import { notFound } from '../../http/errors';
 
-export const PROVIDER_VENDORS = ['anthropic', 'openai', 'openclaw', 'hermes'] as const;
+export const PROVIDER_VENDORS = ['anthropic', 'openai'] as const;
 export type ProviderVendor = (typeof PROVIDER_VENDORS)[number];
 
 /** API shape: key is never returned, only a short prefix for identification. */

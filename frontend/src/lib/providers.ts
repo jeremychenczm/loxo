@@ -1,6 +1,6 @@
 import { apiFetch } from './api';
 
-export const VENDORS = ['anthropic', 'openai', 'openclaw', 'hermes'] as const;
+export const VENDORS = ['anthropic', 'openai'] as const;
 export type Vendor = (typeof VENDORS)[number];
 
 export interface ProviderView {

@@ -10,7 +10,7 @@ import { avatarUrl, fetchAgents, RUNTIME_LABELS, type Agent } from '@/lib/agents
 
 /** Badge headline under the portrait: the agent's own role tag, else its runtime. */
 function roleLine(agent: Agent): string {
-  return agent.tags[0] ?? `${RUNTIME_LABELS[agent.runtime]} agent`;
+  return agent.tags[0] ?? `${RUNTIME_LABELS[agent.runtime] ?? agent.runtime} agent`;
 }
 
 /** Unselected pills sit at staggered depths; deterministic so the crowd holds still. */
@@ -95,7 +95,7 @@ function BadgeCard({ agent }: { agent: Agent }) {
 
           <div className="mt-3 flex items-center justify-between font-sans text-[10px] uppercase tracking-[0.18em] text-pixel-black/40">
             <span>
-              {RUNTIME_LABELS[agent.runtime]} · {agent.status}
+              {RUNTIME_LABELS[agent.runtime] ?? agent.runtime} · {agent.status}
             </span>
             <Link
               href={`/agents/${agent.id}/settings`}

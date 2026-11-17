@@ -37,7 +37,7 @@ export const providers = pgTable('providers', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  vendor: text('vendor').notNull(), // anthropic | openai | openclaw | hermes
+  vendor: text('vendor').notNull(), // anthropic | openai
   apiKeyEncrypted: text('api_key_encrypted').notNull(),
   baseUrl: text('base_url'),
   models: jsonb('models').$type<string[]>().notNull().default([]),
@@ -69,7 +69,7 @@ export const agents = pgTable('agents', {
     .references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   description: text('description').notNull().default(''),
-  runtime: text('runtime').notNull(), // claude-code | codex | opencode | hermes | openclaw | api
+  runtime: text('runtime').notNull(), // claude-code | codex | api
   manifest: jsonb('manifest').$type<AgentManifest>().notNull().default({}),
   tags: jsonb('tags').$type<string[]>().notNull().default([]),
   providerId: uuid('provider_id').references(() => providers.id, { onDelete: 'set null' }),

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { RunnerError, type TurnRequest, type TurnResult } from '@swarmdev/shared';
 import { describe, expect, it } from 'vitest';
 import type { HostEvent, OpenSessionInput } from '../src/modules/hosts/host.types';
@@ -108,10 +111,17 @@ describe('process host', () => {
   });
 
   it('reports a missing CLI as an error turn', async () => {
-    const session = await new ProcessHost({ runtime: 'hermes', stateDir: '/state', permission: 'read_only' }).openSession(
-      input({ cwd: process.cwd() })
-    );
-    const outcome = await session.prompt({ prompt: 'hello' });
+    const savedPath = process.env.PATH;
+    process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'loxo-empty-path-'));
+    let outcome;
+    try {
+      const session = await new ProcessHost({ runtime: 'codex', stateDir: '/state', permission: 'read_only' }).openSession(
+        input({ cwd: process.cwd() })
+      );
+      outcome = await session.prompt({ prompt: 'hello' });
+    } finally {
+      process.env.PATH = savedPath;
+    }
     // The wording comes from the OS shell and its locale; only its presence is stable.
     expect(outcome.stopReason).toBe('error');
     expect(outcome.error?.trim().length).toBeGreaterThan(0);

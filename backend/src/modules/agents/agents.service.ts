@@ -10,9 +10,6 @@ import type { AgentRuntime } from './runtimes';
 export const VENDORS_FOR_RUNTIME: Record<AgentRuntime, string[]> = {
   'claude-code': ['anthropic'],
   codex: ['openai'],
-  opencode: ['openai'],
-  hermes: ['hermes'],
-  openclaw: ['openclaw'],
   api: ['anthropic', 'openai'],
 };
 

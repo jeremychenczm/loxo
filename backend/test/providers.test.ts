@@ -102,7 +102,7 @@ describe('providers API', () => {
   it('reports runtime health with per-platform readiness', async () => {
     const res = await request(app).get('/api/providers/runtime-health').set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.health.platforms).toHaveLength(5);
+    expect(res.body.health.platforms.map((p: { platform: string }) => p.platform)).toEqual(['claude-code', 'codex']);
     for (const platform of res.body.health.platforms) {
       expect(platform).toHaveProperty('cli.available');
       expect(platform).toHaveProperty('ready');

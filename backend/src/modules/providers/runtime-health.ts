@@ -37,33 +37,6 @@ const PLATFORM_SPECS: PlatformSpec[] = [
     envFallbacks: ['OPENAI_API_KEY'],
     installHint: 'Install the Codex CLI and make sure `codex` is on PATH.',
   },
-  {
-    platform: 'opencode',
-    label: 'OpenCode',
-    vendor: 'openai',
-    command: 'opencode',
-    versionArgs: ['--version'],
-    envFallbacks: ['OPENAI_API_KEY'],
-    installHint: 'Install the OpenCode CLI and make sure `opencode` is on PATH.',
-  },
-  {
-    platform: 'hermes',
-    label: 'Hermes',
-    vendor: 'hermes',
-    command: 'hermes',
-    versionArgs: ['version'],
-    envFallbacks: ['HERMES_API_KEY'],
-    installHint: 'Install the Hermes CLI and make sure `hermes` is on PATH.',
-  },
-  {
-    platform: 'openclaw',
-    label: 'OpenClaw',
-    vendor: 'openclaw',
-    command: 'openclaw',
-    versionArgs: ['--version'],
-    envFallbacks: ['OPENCLAW_API_KEY', 'OPENAI_API_KEY'],
-    installHint: 'Install the OpenClaw CLI and make sure `openclaw` is on PATH.',
-  },
 ];
 
 /** Strips values that look like credentials from CLI diagnostics. */

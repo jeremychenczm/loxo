@@ -22,7 +22,7 @@ import {
 } from '../code-workspaces/workspace.service';
 import { addSystemTurn, listTurns } from '../tasks/turns.service';
 import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
-import type { CliRuntime } from '../agents/runtimes';
+import { isAgentRuntime, type CliRuntime } from '../agents/runtimes';
 import { config } from '../../config';
 import { mintRunToken } from './run-token';
 import { AcpHost, HostStartupError } from '../hosts/acp-host';
@@ -73,6 +73,13 @@ export interface TaskTurnOutcome {
  * Throws RunnerError only when the turn cannot start.
  */
 export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promise<TaskTurnOutcome> {
+  // Agents created before a runtime was retired keep their row but cannot run.
+  if (!isAgentRuntime(agent.runtime)) {
+    throw new RunnerError(
+      `Runtime "${agent.runtime}" is no longer supported; switch the agent to Claude Code, Codex, or an API provider`,
+      'cli_failed'
+    );
+  }
   const credentials = agent.providerId
     ? await getProviderCredentials(run.userId, agent.providerId)
     : null;

@@ -24,11 +24,6 @@ describe('runtime catalog', () => {
     expect(findExecutable('definitely-not-a-real-cli-xyz')).toBeNull();
   });
 
-  it('has no ACP adapter for runtimes outside the catalog', () => {
-    expect(resolveAcpAdapter('hermes')).toMatchObject({ available: false, reason: expect.stringContaining('one process per turn') });
-    expect(acpLaunchSpec('openclaw', { permission: 'edit' })).toBeNull();
-  });
-
   it('honors an explicit adapter path and runs scripts with node', () => {
     process.env.LOXO_CLAUDE_ACP_COMMAND = path.resolve('/opt/acp/claude-agent-acp/dist/index.js');
     const resolved = resolveAcpAdapter('claude-code');
@@ -67,7 +62,8 @@ describe('runtime catalog', () => {
   it('describes each runtime by what is installed', () => {
     process.env.LOXO_CLAUDE_ACP_COMMAND = '/opt/claude-acp.js';
     expect(runtimeProfile('claude-code')).toMatchObject({ transport: 'acp', permissions: 'platform', liveEvents: true });
-    expect(runtimeProfile('hermes')).toMatchObject({ transport: 'process', permissions: 'cli_flags', liveEvents: false });
+    delete process.env.LOXO_CODEX_ACP_COMMAND;
+    expect(runtimeProfile('codex')).toMatchObject({ transport: 'process', permissions: 'cli_flags', liveEvents: false });
     expect(runtimeProfile('api')).toMatchObject({ transport: 'api', permissions: 'read_only_tools' });
   });
 });
