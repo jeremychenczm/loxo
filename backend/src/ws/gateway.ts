@@ -2,7 +2,6 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { verifyToken } from '../modules/auth/tokens';
-import { handleChatFrame } from './chat-channel';
 import { handleTaskFrame, releaseTaskSubscriptions } from './task-channel';
 
 export interface WsGateway {
@@ -62,9 +61,7 @@ export function attachWsGateway(server: Server): WsGateway {
         ws.send(JSON.stringify({ type: 'pong' }));
         return;
       }
-      if (typeof message.type === 'string' && message.type.startsWith('chat.')) {
-        void handleChatFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
-      } else if (typeof message.type === 'string' && message.type.startsWith('task.')) {
+      if (typeof message.type === 'string' && message.type.startsWith('task.')) {
         void handleTaskFrame(ws, ws.userId!, { type: message.type, payload: message.payload });
       }
     });

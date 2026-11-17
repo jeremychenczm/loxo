@@ -191,8 +191,6 @@ export interface CreateTaskInput {
   crewId?: string;
   leadAgentId?: string;
   memberAgentIds?: string[];
-  /** Validated by the caller; not exposed through the HTTP create route. */
-  sourceConversationId?: string;
 }
 
 export async function createTask(userId: string, input: CreateTaskInput): Promise<Task> {
@@ -227,7 +225,6 @@ export async function createTask(userId: string, input: CreateTaskInput): Promis
         title: input.title,
         brief: input.brief ?? '',
         leadAgentId,
-        sourceConversationId: input.sourceConversationId ?? null,
         boardOrder,
       })
       .returning();

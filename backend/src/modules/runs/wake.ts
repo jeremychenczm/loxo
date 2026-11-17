@@ -50,7 +50,7 @@ export async function drainRunsForTests(): Promise<void> {
 
 /**
  * The single admission surface for agent wake-ups. Every trigger source
- * (assignment, manual nudge, review, and later chat) calls this and nothing
+ * (assignment, manual nudge, review) calls this and nothing
  * else; merge, lock, and rejection logic lives here exactly once.
  *
  * Order of checks: agent and task must exist and be owned by the caller;
@@ -100,11 +100,8 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
   return { run, admitted: started ? 'started' : 'queued' };
 }
 
-/**
- * Atomic agent claim; an agent executes at most one turn at a time, no
- * matter which surface (task run, chat) started it.
- */
-export async function claimAgentForTurn(agentId: string): Promise<boolean> {
+/** Atomic agent claim; an agent executes at most one run at a time. */
+async function claimAgentForTurn(agentId: string): Promise<boolean> {
   const rows = await db
     .update(agents)
     .set({ status: 'busy', lastActiveAt: new Date(), updatedAt: new Date() })
@@ -113,25 +110,12 @@ export async function claimAgentForTurn(agentId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** Bare claim release; gate-rollback paths use this to avoid re-promoting themselves. */
+/** Claim release without promotion; gate rollbacks use it to avoid re-promoting themselves. */
 async function releaseAgentClaim(agentId: string, status: 'idle' | 'error'): Promise<void> {
   await db
     .update(agents)
     .set({ status, lastActiveAt: new Date(), updatedAt: new Date() })
     .where(eq(agents.id, agentId));
-}
-
-/**
- * Releases the claim and starts the oldest run that queued up behind it —
- * without this, runs parked behind a chat turn would wait forever.
- */
-export async function releaseAgentAfterTurn(
-  agentId: string,
-  status: 'idle' | 'error'
-): Promise<void> {
-  await releaseAgentClaim(agentId, status);
-  const queued = await nextQueuedRunForAgent(agentId);
-  if (queued) await tryStartRun(queued);
 }
 
 /**

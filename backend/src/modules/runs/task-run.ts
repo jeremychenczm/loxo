@@ -1,7 +1,7 @@
 import type { Agent, Task, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { getProviderCredentials } from '../providers/providers.service';
-import { resolveApiModel, type ApiProtocol } from '../runner/api-turn';
+import { resolveApiModel, type ApiProtocol } from '../runner/api-protocol';
 import { buildControlPlaneToolDefs } from './control-plane';
 import {
   lowerPermission,

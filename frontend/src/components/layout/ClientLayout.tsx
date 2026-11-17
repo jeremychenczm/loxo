@@ -188,9 +188,9 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 
   const isPublicPath = pathname === '/' || pathname === '/login' || pathname === '/register';
   const isRouteGuardBlocking = !isPublicPath && (!hasHydrated || !token);
-  const isChatRoute = /^\/agents\/[^/]+$/.test(pathname);
+  const isAgentDetailRoute = /^\/agents\/[^/]+$/.test(pathname);
 
-  const mainClassName = isChatRoute
+  const mainClassName = isAgentDetailRoute
     ? 'max-w-none bg-pixel-cream p-0 md:mx-auto md:min-h-[calc(100vh-120px)] md:w-full md:max-w-none md:bg-pixel-white md:p-0'
     : 'mx-auto min-h-screen bg-pixel-white p-4 pb-0 md:min-h-[calc(100vh-120px)] md:w-full md:max-w-none md:p-0';
 

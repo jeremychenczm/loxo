@@ -126,7 +126,7 @@ function BadgeCard({ agent }: { agent: Agent }) {
           href={`/agents/${agent.id}`}
           className="rounded-md bg-pixel-black px-5 py-2 font-sans text-sm font-medium text-pixel-white transition-transform hover:scale-[1.04]"
         >
-          Open Chat
+          Open
         </Link>
       </div>
     </div>

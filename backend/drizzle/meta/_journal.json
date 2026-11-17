@@ -232,6 +232,13 @@
       "when": 1794374632564,
       "tag": "0032_engine-domain",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794955050428,
+      "tag": "0033_drop-direct-chat",
+      "breakpoints": true
     }
   ]
 }

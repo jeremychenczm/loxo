@@ -182,11 +182,11 @@ describe('migration upgrade from the pre-reshape schema', () => {
     expect(user).toEqual({ task_counter: 7 });
     const [run] = await q(`SELECT task_id FROM runs WHERE id = $1`, [ids.run]);
     expect(run).toEqual({ task_id: ids.issue });
-    const [message] = await q<{ meta: Record<string, string> }>(
-      `SELECT meta FROM messages WHERE conversation_id = $1`,
-      [ids.conversation]
+    // Direct chat was removed after the reshape; its rows go with the tables.
+    const chatTables = await q(
+      `SELECT table_name FROM information_schema.tables WHERE table_name IN ('conversations', 'messages')`
     );
-    expect(message!.meta).toEqual({ source: 'filing', taskId: ids.issue });
+    expect(chatTables).toEqual([]);
   });
 
   it('turns the assignee into the lead and a distinct reviewer into a member', async () => {

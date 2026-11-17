@@ -4,8 +4,6 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
-import { runChatTurn } from '../src/modules/chat/chat.service';
-import { setApiTurnExecutorForTests, type ApiTurnRequest } from '../src/modules/runner/api-turn';
 import { storage } from '../src/storage/layout';
 
 const app = createApp();
@@ -26,7 +24,6 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  setApiTurnExecutorForTests(null);
   delete process.env.API_AGENT_CATALOG;
 });
 
@@ -90,66 +87,5 @@ describe('deploy', () => {
   it('404s on unknown presets', async () => {
     const res = await request(app).post('/api/agent-presets/nope/deploy').set(auth());
     expect(res.status).toBe(404);
-  });
-});
-
-describe('chat turns for API agents', () => {
-  async function deployAndConverse(): Promise<{ agentId: string; conversationId: string }> {
-    const deployed = await request(app)
-      .post('/api/agent-presets/api-research-analyst/deploy')
-      .set(auth());
-    const agentId = deployed.body.agent.id;
-    const conversation = await request(app)
-      .post('/api/conversations')
-      .set(auth())
-      .send({ agentId });
-    return { agentId, conversationId: conversation.body.conversation.id };
-  }
-
-  it('reports a missing provider as a system message, not a crash', async () => {
-    const { conversationId } = await deployAndConverse();
-    const outcome = await runChatTurn(userId, conversationId, 'Hello?');
-    expect(outcome.reply.role).toBe('system');
-    expect(outcome.reply.content).toContain('provider');
-  });
-
-  it('runs a streamed turn through the configured provider', async () => {
-    const { agentId, conversationId } = await deployAndConverse();
-
-    const provider = await request(app).post('/api/providers').set(auth()).send({
-      name: 'OpenAI',
-      vendor: 'openai',
-      apiKey: 'sk-test-openai-key',
-      models: ['gpt-4o-mini'],
-    });
-    await request(app)
-      .patch(`/api/agents/${agentId}/config`)
-      .set(auth())
-      .send({ providerId: provider.body.provider.id, model: 'gpt-4o-mini' });
-
-    let captured: ApiTurnRequest | null = null;
-    setApiTurnExecutorForTests(async (req) => {
-      captured = req;
-      req.onChunk?.('Streamed ');
-      req.onChunk?.('reply');
-      return { text: 'Streamed reply', durationMs: 5 };
-    });
-
-    const chunks: string[] = [];
-    const outcome = await runChatTurn(userId, conversationId, 'Summarize this', {
-      onChunk: (t) => chunks.push(t),
-    });
-
-    expect(outcome.reply.role).toBe('assistant');
-    expect(outcome.reply.content).toBe('Streamed reply');
-    expect(chunks.join('')).toBe('Streamed reply');
-
-    expect(captured!.protocol).toBe('openai');
-    expect(captured!.model).toBe('gpt-4o-mini');
-    expect(captured!.system).toBeTruthy();
-    // Previous turns (including the system error above) are filtered/injected correctly.
-    const roles = captured!.messages.map((m) => m.role);
-    expect(roles[roles.length - 1]).toBe('user');
-    expect(captured!.messages[captured!.messages.length - 1]!.content).toBe('Summarize this');
   });
 });

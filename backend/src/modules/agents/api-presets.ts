@@ -5,7 +5,7 @@ import { agents, type Agent } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { copyDir, removeDir } from '../../storage/file-ops';
 import { storage } from '../../storage/layout';
-import type { ApiProtocol } from '../runner/api-turn';
+import type { ApiProtocol } from '../runner/api-protocol';
 import { eq } from 'drizzle-orm';
 
 /**

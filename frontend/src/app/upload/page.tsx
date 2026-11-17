@@ -176,7 +176,7 @@ function UploadPageInner() {
               Configure provider
             </PixelButton>
             <PixelButton variant="secondary" onClick={() => router.push(`/agents/${createdAgent.id}`)}>
-              Start chatting
+              Open agent
             </PixelButton>
             <PixelButton variant="danger" onClick={resetSelection}>
               Upload another

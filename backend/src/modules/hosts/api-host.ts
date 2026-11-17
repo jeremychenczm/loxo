@@ -5,7 +5,7 @@ import {
   type ApiToolDefinition,
   type ApiToolLoopRequest,
 } from '../runner/api-tool-loop';
-import type { ApiProtocol } from '../runner/api-turn';
+import type { ApiProtocol } from '../runner/api-protocol';
 import type {
   AgentHost,
   AgentSession,

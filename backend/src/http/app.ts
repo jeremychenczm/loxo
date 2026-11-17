@@ -4,7 +4,6 @@ import { config } from '../config';
 import { agentsRouter } from '../modules/agents/agents.routes';
 import { apiPresetsRouter } from '../modules/agents/api-presets.routes';
 import { authRouter } from '../modules/auth/auth.routes';
-import { conversationsRouter } from '../modules/chat/conversations.routes';
 import { crewsRouter } from '../modules/crews/crews.routes';
 import { humanRequestsRouter } from '../modules/human-requests/human-requests.routes';
 import { tasksRouter } from '../modules/tasks/tasks.routes';
@@ -41,7 +40,6 @@ export function createApp(): express.Express {
   app.use('/api/agents', agentsRouter);
   app.use('/api/agent-presets', apiPresetsRouter);
   app.use('/api/crews', crewsRouter);
-  app.use('/api/conversations', conversationsRouter);
   app.use('/api/repositories', repositoriesRouter);
   app.use('/api/tasks', tasksRouter);
   app.use('/api/runs', runsRouter);

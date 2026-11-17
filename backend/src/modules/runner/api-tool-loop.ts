@@ -1,6 +1,6 @@
 import { HttpError } from '../../http/errors';
 import { RunnerError, redactDiagnostic, type TurnResult } from './runner';
-import { normalizeApiMessages, type ApiProtocol } from './api-turn';
+import { normalizeApiMessages, type ApiProtocol } from './api-protocol';
 
 /**
  * Thin tool loop for api-runtime agents: hosted model + the platform

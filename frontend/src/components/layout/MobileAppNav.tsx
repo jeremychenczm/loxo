@@ -53,7 +53,7 @@ function activeTabForRoute(pathname: string): MobileTabKey | null {
 export function MobileAppNav() {
   const pathname = usePathname();
 
-  // Full-screen chat routes hide the tab bar.
+  // Full-screen agent routes hide the tab bar.
   if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/agents/')) {
     return null;
   }

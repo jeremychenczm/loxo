@@ -138,46 +138,6 @@ export const crewMembers = pgTable(
 
 export type CrewMember = typeof crewMembers.$inferSelect;
 
-export const conversations = pgTable('conversations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  agentId: uuid('agent_id')
-    .notNull()
-    .references(() => agents.id, { onDelete: 'cascade' }),
-  title: text('title').notNull().default('New conversation'),
-  /** CLI-side session id (e.g. claude-code --resume); cleared on provider/model change. */
-  runnerSessionRef: text('runner_session_ref'),
-  lastMessagePreview: text('last_message_preview').notNull().default(''),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type Conversation = typeof conversations.$inferSelect;
-
-export interface MessageMeta {
-  runtime?: string;
-  durationMs?: number;
-  error?: boolean;
-  source?: string;
-  /** Set on the system message posted when a chat topic is filed as a task. */
-  taskId?: string;
-}
-
-export const messages = pgTable('messages', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  conversationId: uuid('conversation_id')
-    .notNull()
-    .references(() => conversations.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(), // user | assistant | system
-  content: text('content').notNull(),
-  meta: jsonb('meta').$type<MessageMeta>().notNull().default({}),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type Message = typeof messages.$inferSelect;
-
 /** A command the platform runs in a workspace to verify it; runs through the system shell. */
 export interface RepositoryCheck {
   name: string;
@@ -301,10 +261,6 @@ export const tasks = pgTable(
     activeRunId: uuid('active_run_id').references((): AnyPgColumn => runs.id, {
       onDelete: 'set null',
     }),
-    /** Chat conversation this task was filed from. A conversation can spawn many tasks. */
-    sourceConversationId: uuid('source_conversation_id').references(() => conversations.id, {
-      onDelete: 'set null',
-    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
@@ -314,7 +270,6 @@ export const tasks = pgTable(
     index('tasks_user_status').on(t.userId, t.status),
     index('tasks_repository_status').on(t.repositoryId, t.status),
     index('tasks_lead_agent').on(t.leadAgentId, t.status),
-    index('tasks_source_conversation').on(t.sourceConversationId),
   ]
 );
 
@@ -356,7 +311,7 @@ export const taskMembers = pgTable(
 export type TaskMember = typeof taskMembers.$inferSelect;
 
 
-export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'chat' | 'review';
+export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review';
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 

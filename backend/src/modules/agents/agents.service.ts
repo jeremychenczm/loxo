@@ -139,10 +139,6 @@ export async function updateAgentConfig(
     .where(eq(agents.id, agentId))
     .returning();
 
-  if (providerId !== agent.providerId || model !== agent.model || execution !== agent.execution) {
-    const { clearRunnerSessionsForAgent } = await import('../chat/conversations.service');
-    await clearRunnerSessionsForAgent(agentId);
-  }
   return updated!;
 }
 
