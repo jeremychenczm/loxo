@@ -1,10 +1,10 @@
 /**
- * Transport-neutral surface for driving an agent runtime. Every way Loxo
- * reaches an agent — a long-lived ACP session, a process per turn, or a
- * provider API — implements AgentHost, so callers never branch on transport.
+ * Transport-neutral surface for driving an agent runtime. Both ways Loxo
+ * reaches an agent — a long-lived ACP session or a provider API — implement
+ * AgentHost, so callers never branch on transport.
  */
 
-export type HostTransport = 'acp' | 'process' | 'api';
+export type HostTransport = 'acp' | 'api';
 
 /** Normalized runtime activity, persisted as run events and streamed to the room. */
 export type HostEvent =

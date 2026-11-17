@@ -63,7 +63,7 @@ describe('runtime catalog', () => {
     process.env.LOXO_CLAUDE_ACP_COMMAND = '/opt/claude-acp.js';
     expect(runtimeProfile('claude-code')).toMatchObject({ transport: 'acp', permissions: 'platform', liveEvents: true });
     delete process.env.LOXO_CODEX_ACP_COMMAND;
-    expect(runtimeProfile('codex')).toMatchObject({ transport: 'process', permissions: 'cli_flags', liveEvents: false });
+    expect(runtimeProfile('codex')).toMatchObject({ transport: null, liveEvents: false, note: expect.stringContaining('runtimes:install') });
     expect(runtimeProfile('api')).toMatchObject({ transport: 'api', permissions: 'read_only_tools' });
   });
 });

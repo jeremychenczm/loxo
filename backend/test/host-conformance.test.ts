@@ -1,9 +1,8 @@
-import { RunnerError, type TurnRequest, type TurnResult } from '@swarmdev/shared';
+import { RunnerError, type TurnResult } from '@swarmdev/shared';
 import { fakeAgentCommand } from '@swarmdev/fake-agent';
 import { afterAll, beforeAll } from 'vitest';
 import { AcpHost } from '../src/modules/hosts/acp-host';
 import { ApiHost } from '../src/modules/hosts/api-host';
-import { ProcessHost } from '../src/modules/hosts/process-host';
 import type { ApiToolLoopRequest } from '../src/modules/runner/api-tool-loop';
 import { describeHostContract } from './conformance/host-contract';
 import { makeSandbox, removeSandbox } from './fixtures/git-repo';
@@ -28,22 +27,6 @@ describeHostContract('ACP', {
   replying: (text) => new AcpHost(fakeAgentCommand({ turns: [{ steps: [{ say: text }] }] })),
   slow: () => new AcpHost(fakeAgentCommand({ turns: [{ steps: [{ sleep: 60_000 }] }] })),
   failing: () => new AcpHost(fakeAgentCommand({ turns: [{ steps: [{ stderr: 'boom' }, { crash: 2 }] }] })),
-});
-
-function processHost(execute: (r: TurnRequest) => Promise<TurnResult>) {
-  return new ProcessHost({ runtime: 'codex', stateDir: '/state', permission: 'edit', execute });
-}
-
-describeHostContract('process per turn', {
-  get cwd() {
-    return sandbox;
-  },
-  replying: (text) => processHost(async () => ({ text, durationMs: 1 })),
-  slow: () => processHost((r) => untilAborted(r.signal, new RunnerError('Turn was cancelled', 'aborted'))),
-  failing: () =>
-    processHost(async () => {
-      throw new RunnerError('codex exited with code 1', 'cli_failed');
-    }),
 });
 
 function apiHost(execute: (r: ApiToolLoopRequest) => Promise<TurnResult>) {

@@ -6,7 +6,6 @@ import { buildControlPlaneToolDefs } from './control-plane';
 import {
   lowerPermission,
   RunnerError,
-  RUNTIME_CODE_CAPABILITIES,
   type TurnPermission,
 } from '../runner/runner';
 import {
@@ -26,15 +25,12 @@ import { AcpHost, HostStartupError } from '../hosts/acp-host';
 import { ApiHost } from '../hosts/api-host';
 import type { AgentHost, HostMcpServer, HostTransport, TurnStopReason } from '../hosts/host.types';
 import { createPermissionArbiter } from '../hosts/permission-arbiter';
-import { ProcessHost } from '../hosts/process-host';
-import { acpLaunchSpec } from '../hosts/runtime-catalog';
+import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
-/** Runtimes whose per-turn process can mount the platform MCP server. */
-const PROCESS_MCP_RUNTIMES: ReadonlySet<string> = new Set(['claude-code']);
 
 /** Stop reasons that mean the agent finished its turn, even if it hit a limit. */
 const COMPLETED: ReadonlySet<TurnStopReason> = new Set(['end_turn', 'max_tokens', 'max_turn_requests']);
@@ -107,11 +103,6 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
     agent.runtime === 'api' || hostFactoryForTests
       ? null
       : acpLaunchSpec(agent.runtime as CliRuntime, { credentials, model: agent.model, permission });
-  const controlPlaneMounted =
-    agent.runtime === 'api' ||
-    hostFactoryForTests !== null ||
-    launch !== null ||
-    PROCESS_MCP_RUNTIMES.has(agent.runtime);
 
   const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildTaskRunPrompt;
   const prompt = buildPrompt({
@@ -123,13 +114,12 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
     reason: run.reason,
     timeline,
     workspace,
-    controlPlane: controlPlaneMounted ? 'mcp' : 'report',
   });
 
   const runToken = mintRunToken(run.id);
-  const mcpServers: HostMcpServer[] = controlPlaneMounted
-    ? [{ type: 'http', name: 'swarmdev', url: config.mcpUrl(), headers: { Authorization: `Bearer ${runToken}` } }]
-    : [];
+  const mcpServers: HostMcpServer[] = [
+    { type: 'http', name: 'swarmdev', url: config.mcpUrl(), headers: { Authorization: `Bearer ${runToken}` } },
+  ];
 
   let host: AgentHost;
   let readRoot = workspace;
@@ -155,19 +145,15 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
       repo: { baseCommit: taskWorkspace?.baseCommit ?? null, workspaceId: taskWorkspace?.id ?? null, taskId: task.id },
       extraTools: buildControlPlaneToolDefs({ run, agent, task }),
     });
-  } else if (launch) {
-    host = new AcpHost(launch);
   } else {
-    host = new ProcessHost({
-      runtime: agent.runtime as CliRuntime,
-      stateDir: storage.agentPaths(run.userId, agent.id).state,
-      credentials: credentials ?? undefined,
-      permission,
-      turnTimeoutMs: TASK_RUN_TIMEOUT_MS,
-      extraEnv: controlPlaneMounted
-        ? { SWARMDEV_MCP_URL: config.mcpUrl(), SWARMDEV_RUN_TOKEN: runToken }
-        : undefined,
-    });
+    if (!launch) {
+      const resolution = resolveAcpAdapter(agent.runtime as CliRuntime);
+      throw new RunnerError(
+        resolution.available ? `No ACP launch spec for ${agent.runtime}` : resolution.reason,
+        'cli_failed'
+      );
+    }
+    host = new AcpHost(launch);
   }
 
   const recorder = new RunEventRecorder({ id: run.id, userId: run.userId, taskId: task.id });
@@ -191,8 +177,7 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
       }
       throw err;
     }
-    // A process per turn reports only at the end; the runner's own timeout guards it.
-    const supervised = host.transport === 'process' ? session : withWatchdog(session);
+    const supervised = withWatchdog(session);
     try {
       const outcome = await supervised.prompt({ prompt, onEvent: (event) => recorder.record(event) });
       return {
@@ -245,13 +230,6 @@ async function resolveCodeWorkspace(
     return null;
   }
 
-  const capability = RUNTIME_CODE_CAPABILITIES[agent.runtime as CliRuntime];
-  if (!capability || capability.codeWorkspace === 'disabled') {
-    throw new RunnerError(
-      `Runtime "${agent.runtime}" is not supported for code workspaces`,
-      'cli_failed'
-    );
-  }
   return resolveWorkspace(run.userId, task);
 }
 

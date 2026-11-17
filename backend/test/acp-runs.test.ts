@@ -131,4 +131,17 @@ describe('single-agent runs over ACP', () => {
     expect(run).toMatchObject({ status: 'failed', transport: 'acp', stopReason: 'crashed', output: 'Starting. ' });
     expect(run!.error).toContain('fatal: out of memory');
   });
+
+  it('fails the run up front when the ACP adapter is missing', { timeout: T }, async () => {
+    setAcpLaunchForTests('claude-code', null);
+    const task = await request(app)
+      .post('/api/tasks')
+      .set(auth())
+      .send({ title: 'No adapter', repositoryId, leadAgentId: agentId });
+    await requestWake(userId, { agentId, taskId: task.body.task.id, trigger: 'manual' });
+    await drainRunsForTests();
+    const [run] = await db.select().from(runs).where(eq(runs.taskId, task.body.task.id));
+    expect(run!.status).toBe('failed');
+    expect(run!.error).toMatch(/runtimes:install|No ACP launch spec/);
+  });
 });

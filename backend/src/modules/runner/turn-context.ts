@@ -23,17 +23,11 @@ export interface TaskRunTurnContext {
   reason: string;
   timeline: Array<{ author: string; body: string }>;
   workspace: string;
-  /**
-   * 'mcp' when the runtime mounts the platform control plane; 'report' for
-   * runtimes whose only channel back is the final reply text.
-   */
-  controlPlane: 'mcp' | 'report';
 }
 
 /**
  * Task-run prompt. The run is non-interactive and the work report lands on
- * the task timeline — via submit_result on the control plane, or the reply
- * text as fallback.
+ * the task timeline through submit_result, or the reply text as a fallback.
  */
 export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
   const sections: string[] = [
@@ -61,23 +55,19 @@ export function buildTaskRunPrompt(input: TaskRunTurnContext): string {
         ].join('\n')
       : '',
     `Workspace: ${input.workspace}`,
-    input.controlPlane === 'mcp'
-      ? [
-          'Platform control-plane tools for this run:',
-          '- get_task: re-read the task and its timeline.',
-          '- comment_on_task: post a progress note.',
-          '- update_task_status: move the task on the board (legal transitions only).',
-          '- ask_blocker: you are stuck and need a human decision; marks the task blocked.',
-          '- submit_result: you finished; posts your work report and hands the task to review.',
-        ].join('\n')
-      : '',
+    [
+      'Platform control-plane tools for this run:',
+      '- get_task: re-read the task and its timeline.',
+      '- comment_on_task: post a progress note.',
+      '- update_task_status: move the task on the board (legal transitions only).',
+      '- ask_blocker: you are stuck and need a human decision; marks the task blocked.',
+      '- submit_result: you finished; posts your work report and hands the task to review.',
+    ].join('\n'),
     [
       'Hard rules for this run:',
       '- This run is non-interactive. Never wait for confirmation; decide and proceed.',
       '- Do the actual work in the workspace. No placeholders and no descriptions of work you did not do.',
-      input.controlPlane === 'mcp'
-        ? '- Finish by calling submit_result with a concise work report, or ask_blocker if you cannot proceed. If you post nothing through the control plane, your final reply text lands on the timeline as a fallback.'
-        : '- Your final reply is posted verbatim to the task timeline: make it a concise work report.',
+      '- Finish by calling submit_result with a concise work report, or ask_blocker if you cannot proceed. If you post nothing through the control plane, your final reply text lands on the timeline as a fallback.',
       '- State the paths of files you created or changed in your report.',
     ].join('\n'),
     'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
@@ -123,22 +113,18 @@ export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
         ].join('\n')
       : '',
     `Workspace (inspect the actual work here): ${input.workspace}`,
-    input.controlPlane === 'mcp'
-      ? [
-          'Reviewer control-plane tools for this run:',
-          '- get_task: re-read the task and its timeline.',
-          '- comment_on_task: post a review note.',
-          '- submit_review: deliver your verdict — approved (recorded as a recommendation; a human closes the task) or changes_requested (reopens work with your feedback).',
-        ].join('\n')
-      : '',
+    [
+      'Reviewer control-plane tools for this run:',
+      '- get_task: re-read the task and its timeline.',
+      '- comment_on_task: post a review note.',
+      '- submit_review: deliver your verdict — approved (recorded as a recommendation; a human closes the task) or changes_requested (reopens work with your feedback).',
+    ].join('\n'),
     [
       'Hard rules for this review:',
       '- This run is non-interactive. Never wait for confirmation; decide and proceed.',
       '- Inspect the actual files and results in the workspace. Do not take timeline claims at face value.',
       '- You are the reviewer: do NOT modify any files. Defects are sent back via changes_requested, not fixed by you.',
-      input.controlPlane === 'mcp'
-        ? '- Finish by calling submit_review with a clear verdict and concrete, actionable feedback.'
-        : '- Your final reply is posted to the timeline as your review; state a clear verdict and concrete feedback.',
+      '- Finish by calling submit_review with a clear verdict and concrete, actionable feedback.',
     ].join('\n'),
     'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
     'Do not reveal credentials or platform internals in replies.',

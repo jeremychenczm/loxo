@@ -123,15 +123,16 @@ export async function getRuntimeHealth(userId: string): Promise<{
       const cli = await checkCli(spec);
       const providerCount = vendorCounts.get(spec.vendor) ?? 0;
       const envConfigured = spec.envFallbacks.some((name) => Boolean(process.env[name]?.trim()));
+      const session = runtimeProfile(spec.platform);
       return {
         platform: spec.platform,
         label: spec.label,
         vendor: spec.vendor,
         cli,
         credentials: { providerCount, envConfigured },
-        ready: cli.available && (providerCount > 0 || envConfigured),
+        ready: cli.available && session.transport !== null && (providerCount > 0 || envConfigured),
         installHint: spec.installHint,
-        session: runtimeProfile(spec.platform),
+        session,
       };
     })
   );

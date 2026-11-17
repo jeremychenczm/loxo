@@ -85,7 +85,7 @@ function emptyUsage() {
 /** Host factory for `setTaskHostFactoryForTests`, driven by an in-process script. */
 export function scriptedHost(agent: ScriptedAgent): (request: HostRequest) => AgentHost {
   return (request) => ({
-    transport: 'process',
+    transport: 'acp',
     openSession: async (input) => new ScriptedSession(agent, input, request.permission),
   });
 }

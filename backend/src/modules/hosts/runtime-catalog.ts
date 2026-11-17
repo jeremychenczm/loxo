@@ -8,8 +8,8 @@ import type { HostTransport } from './host.types';
 /**
  * Which transport each runtime uses and how its permissions are enforced.
  * Claude Code and Codex reach ACP through official adapters that reuse the
- * locally installed CLI and its login; without an installed adapter they fall
- * back to a process per turn. Adapters are installed on purpose (`npm run runtimes:install`), never
+ * locally installed CLI and its login; a runtime whose adapter is missing
+ * cannot run. Adapters are installed on purpose (`npm run runtimes:install`), never
  * fetched at run time.
  */
 
@@ -24,7 +24,7 @@ export interface AcpAdapter {
   overrideEnv: string;
 }
 
-export const ACP_ADAPTERS: Partial<Record<CliRuntime, AcpAdapter>> = {
+export const ACP_ADAPTERS: Record<CliRuntime, AcpAdapter> = {
   'claude-code': {
     package: '@agentclientprotocol/claude-agent-acp',
     version: '0.106.0',
@@ -84,7 +84,6 @@ export function setAcpLaunchForTests(runtime: CliRuntime, spec: AcpLaunchSpec | 
 
 export function resolveAcpAdapter(runtime: CliRuntime): AdapterResolution {
   const adapter = ACP_ADAPTERS[runtime];
-  if (!adapter) return { available: false, reason: `${runtime} has no ACP adapter; it runs one process per turn` };
   const cliPath = findExecutable(adapter.cli.command);
   const override = process.env[adapter.overrideEnv]?.trim();
   if (override) return { available: true, source: 'override', launch: scriptSpec(override), cliPath };
@@ -92,7 +91,7 @@ export function resolveAcpAdapter(runtime: CliRuntime): AdapterResolution {
   if (fs.existsSync(local)) return { available: true, source: 'local', launch: scriptSpec(local), cliPath };
   return {
     available: false,
-    reason: `${adapter.package} is not installed; run \`npm run runtimes:install\` to enable live sessions`,
+    reason: `${adapter.package} is not installed; run \`npm run runtimes:install\` before using this runtime`,
   };
 }
 
@@ -114,7 +113,7 @@ export function acpLaunchSpec(runtime: CliRuntime, options: LaunchOptions): AcpL
   if (testOverrides.has(runtime)) return testOverrides.get(runtime) ?? null;
   const resolved = resolveAcpAdapter(runtime);
   if (!resolved.available) return null;
-  const adapter = ACP_ADAPTERS[runtime]!;
+  const adapter = ACP_ADAPTERS[runtime];
   const env: Record<string, string> = {};
   if (resolved.cliPath) env[adapter.cli.env] = resolved.cliPath;
   const key = options.credentials?.apiKey;
@@ -134,9 +133,10 @@ export function acpLaunchSpec(runtime: CliRuntime, options: LaunchOptions): AcpL
 
 export interface RuntimeProfile {
   runtime: string;
-  transport: HostTransport;
-  /** platform: Loxo decides each request; cli_flags: fixed per turn by command-line flags. */
-  permissions: 'platform' | 'cli_flags' | 'read_only_tools';
+  /** Null when the runtime cannot run yet, e.g. its ACP adapter is not installed. */
+  transport: HostTransport | null;
+  /** platform: Loxo decides each request; read_only_tools: platform repository tools only. */
+  permissions: 'platform' | 'read_only_tools';
   liveEvents: boolean;
   resume: boolean;
   note: string | null;
@@ -152,12 +152,5 @@ export function runtimeProfile(runtime: string): RuntimeProfile {
   if (resolved.available) {
     return { runtime, transport: 'acp', permissions: 'platform', liveEvents: true, resume: true, note: null };
   }
-  return {
-    runtime,
-    transport: 'process',
-    permissions: 'cli_flags',
-    liveEvents: cli === 'claude-code',
-    resume: cli === 'claude-code',
-    note: resolved.reason,
-  };
+  return { runtime, transport: null, permissions: 'platform', liveEvents: false, resume: false, note: resolved.reason };
 }
