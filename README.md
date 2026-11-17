@@ -2,9 +2,9 @@
 
 **A control plane for persistent AI agent teams.**
 
-Loxo coordinates continuous work across CLI coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
+Loxo coordinates continuous work across coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 306 automated tests*
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 326 automated tests*
 
 ## Core loop
 
@@ -30,8 +30,8 @@ Agent-authored summaries provide context, but the platform collects the proof.
 
 Agents are concurrent OS processes, so correctness cannot depend on caller discipline.
 
-- **One admission surface** handles assignment, chat mention, manual wake, and review rejection. It merges duplicate triggers, claims the agent, locks the task, or queues the request FIFO.
-- **Atomic cross-surface claims** use a conditional `UPDATE … RETURNING`, preventing chat and task runs from executing the same agent simultaneously.
+- **One admission surface** handles assignment, manual wake, and review rejection. It merges duplicate triggers, claims the agent, locks the task, or queues the request FIFO.
+- **Atomic agent claims** use a conditional `UPDATE … RETURNING`, so one agent never executes two runs at once.
 - **Schema-backed task locks** prevent duplicate execution of one task across every trigger path.
 
 ### Human authority at the final boundary
@@ -40,39 +40,37 @@ The task's other members review the lead's work. They can reject it, reopen the 
 
 ## Execution model
 
-### Six runtime options, two execution modes
+### Two coding CLIs over ACP, plus API agents
 
-Loxo supports five CLI coding runtimes — Claude Code, Codex, OpenCode, Hermes, and OpenClaw — plus API agents using OpenAI Chat Completions or Anthropic Messages.
+Loxo drives Claude Code and Codex over the [Agent Client Protocol](https://agentclientprotocol.com), and API agents through OpenAI Chat Completions or Anthropic Messages.
 
 - **CLI agents** handle code, files, and commands in isolated workspaces.
-- **API agents** handle triage, drafting, and summarization through an in-process tool loop.
+- **API agents** handle triage, review, and summarization through an in-process tool loop with read-only repository tools.
 
-Both modes use the same agent model, governance rules, run history, and review flow. Runtime detection uses local markers and confidence scoring, while adapter boundaries absorb capability differences.
+Both use the same agent model, governance rules, run history, and review flow.
 
 ### Live sessions and platform-decided permissions
 
-Every runtime sits behind one host interface. Where an [Agent Client Protocol](https://agentclientprotocol.com) adapter exists, Loxo keeps a long-lived session: tool calls stream into the run's event log as they happen, the agent remembers earlier turns, and every action the agent asks to take is decided by Loxo's policy — inside its own worktree it may proceed, outside it is refused, and commands such as `git push`, `sudo`, or recursive deletes outside the worktree go to a person. Unanswered questions are denied when they expire. A watchdog stops turns that go silent, stop making progress, or repeat themselves.
+Every runtime sits behind one host interface. A CLI agent runs in a long-lived ACP session: tool calls stream into the run's event log as they happen, and every action the agent asks to take is decided by Loxo's policy — inside its own worktree it may proceed, outside it is refused, and commands such as `git push`, `sudo`, or recursive deletes outside the worktree go to a person. Unanswered questions are denied when they expire. A watchdog stops turns that go silent, stop making progress, or repeat themselves.
 
-| Runtime | Transport | Permissions | Live events | Resume |
-|---|---|---|---|---|
-| Claude Code | ACP through `@agentclientprotocol/claude-agent-acp` | Decided per request by Loxo | Yes | Yes |
-| Codex | ACP through `@agentclientprotocol/codex-acp` | Decided per request by Loxo | Yes | Yes |
-| OpenCode, Hermes, OpenClaw | One CLI process per turn | Fixed per turn by CLI flags | No | No |
-| API agents | Provider API tool loop | Read-only worktree tools only | Yes | Within a session |
+| Runtime | Transport | Permissions | Live events |
+|---|---|---|---|
+| Claude Code | ACP through `@agentclientprotocol/claude-agent-acp` | Decided per request by Loxo | Yes |
+| Codex | ACP through `@agentclientprotocol/codex-acp` | Decided per request by Loxo | Yes |
+| API agents | Provider API tool loop | Read-only worktree tools only | Yes |
 
-`npm run runtimes:install` installs the pinned adapters into Loxo's storage directory. They drive the CLIs you already have installed, with their existing logins; until they are installed, Claude Code and Codex fall back to one process per turn. `GET /api/providers/runtime-health` reports which transport each runtime would use.
+`npm run runtimes:install` installs the pinned adapters into Loxo's storage directory. They drive the CLIs you already have installed, with their existing logins. A CLI agent cannot run until its adapter is installed; its run fails with the install command, and `GET /api/providers/runtime-health` reports which runtimes are ready.
 
 ### MCP control plane
 
-Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. Output parsing remains a fallback for runtimes without MCP support.
+Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. If an agent posts nothing through these tools, its final reply lands on the timeline instead.
 
 ## Feature tour
 
 | Surface | What it does |
 |---|---|
 | **Task board** | Enforces a server-side state machine. The client mirrors valid transitions, while fractional ordering makes a drag operation one `PATCH` instead of a full-column renumber. |
-| **Chat** | Provides one WebSocket-backed thread per agent. A conversation can become an editable LLM-drafted task while retaining a link to its source. |
-| **Agents** | Manages persistent agents, runtime bindings, provider credentials, skills, and permission levels. |
+| **Agents** | Manages persistent agents, runtime bindings, provider credentials, and permission levels. |
 | **Runs** | Records every wake-up with its transcript, status, token usage, cost, task, and captured workspace evidence. |
 | **Repositories** | Registers local git repositories; agents work in managed worktrees on `loxo/` branches beside your checkout. |
 
@@ -83,17 +81,17 @@ Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `up
 ```mermaid
 flowchart LR
     subgraph Client
-        FE[Next.js 14 web app<br/>Kanban and chat]
+        FE[Next.js 14 web app<br/>Kanban and task detail]
     end
     subgraph Server[Backend REST and WebSocket on port 4000]
         API[Express REST API]
-        WS[WebSocket gateway<br/>chat]
+        WS[WebSocket gateway<br/>task events]
         WAKE[Wake admission<br/>claims, locks, FIFO]
         MCP[MCP control plane<br/>6 tools and run tokens]
-        RUNNER[Agent runner<br/>5 CLI runtimes and API mode]
+        RUNNER[Agent runner<br/>ACP sessions and API agents]
     end
     subgraph Data
-        PG[(Postgres 16<br/>26 tables and Drizzle ORM)]
+        PG[(Postgres 16<br/>24 tables and Drizzle ORM)]
         FS[Workspace storage<br/>git worktrees and manifests]
     end
     LLM[OpenAI and Anthropic APIs]
@@ -102,7 +100,7 @@ flowchart LR
     FE -->|WebSocket upgrade| WS
     API --> WAKE --> RUNNER
     RUNNER --> MCP
-    RUNNER -->|spawn CLI| FS
+    RUNNER -->|ACP session| FS
     RUNNER -->|SSE| LLM
     API --> PG
 ```
@@ -110,7 +108,7 @@ flowchart LR
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
 - **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, and review state.
 - **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
-- **Monorepo:** npm workspaces; `backend/` contains 11 domain modules, `frontend/` contains 10 App Router routes, and `packages/shared/` holds the shared runner core.
+- **Monorepo:** npm workspaces; `backend/` contains 12 domain modules, `frontend/` contains 10 App Router routes, `packages/shared/` holds runtime types and process helpers, and `packages/fake-agent/` is a scripted ACP agent for tests.
 
 ## Getting started
 
@@ -141,7 +139,7 @@ npm run dev:frontend
 
 Open `http://localhost:3000`, register an account, and then:
 
-1. Configure a provider or verify a local CLI runtime.
+1. Run `npm run runtimes:install` for Claude Code or Codex, or configure an OpenAI or Anthropic provider for API agents.
 2. Create an agent and register a local git repository.
 3. Create a task, assign it, and inspect the resulting run and evidence.
 
@@ -150,7 +148,7 @@ Tasks without a repository run in the agent's own workspace.
 ## Testing
 
 ```bash
-npm test             # 306 backend tests — API, runs, governance, workspaces, and migrations
+npm test             # 326 backend tests — API, runs, governance, workspaces, and migrations
 npm run typecheck    # backend and frontend
 ```
 
@@ -161,13 +159,13 @@ npm run runtimes:install
 LOXO_REAL_CLI=1 npm test -- test/real-cli.test.ts   # PowerShell: $env:LOXO_REAL_CLI=1; npm test -- test/real-cli.test.ts
 ```
 
-The suite covers admission and cross-surface claims, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
+The suite covers admission and agent claims, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
 
 ## Status and roadmap
 
 Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end, and the data model for multi-agent work (crews, members, turns, plans, work packages, findings, candidates, and sign-offs) is in place. Next up:
 
-- **Runtime layer** — long-lived agent sessions with streamed tool events, platform-decided permissions, and token and cost accounting.
+- **Crash-safe runs** — leased run ownership with fencing, so a killed backend recovers without lost or silently replayed turns.
 - **Task engine** — declarative playbooks that take a crew through explore, plan, parallel build, integration, cross-review, and sign-off.
 - **Delivery** — local merge or a GitHub pull request, gated on a person's approval of the signed candidate.
 - **Local mode** — one command with embedded Postgres, plus desktop builds.
@@ -177,5 +175,6 @@ Loxo is under active solo development. The single-agent loop — tasks, wakes, r
 ```
 backend/          Express API, WebSocket gateway, and agent runner
 frontend/         Next.js 14 app with Tailwind and Zustand
-packages/shared/  Runner core: CLI adapters, stream parsing, and process execution
+packages/shared/  Runtime types, permission levels, and process-tree helpers
+packages/fake-agent/  Scripted ACP agent used by the test suite
 ```
