@@ -2,10 +2,10 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
-import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
+import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
+import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
 import { mintRunToken } from '../src/modules/runs/run-token';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
-import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 import { addAgentTurn } from '../src/modules/tasks/turns.service';
 
 const app = createApp();
@@ -16,11 +16,11 @@ let inspectorId = '';
 
 const REVIEWER_MARK = 'acting as the REVIEWER';
 
-type Executor = (req: TurnRequest) => Promise<TurnResult>;
-const quick: Executor = async () => ({ text: 'stub output', durationMs: 5 });
+type Executor = (req: ScriptedTurn) => Promise<ScriptedReply>;
+const quick: Executor = async () => ({ text: 'stub output' });
 let executorImpl: Executor = quick;
 let lastPrompt = '';
-let lastPermission: TurnRequest['permission'];
+let lastPermission: ScriptedTurn['permission'];
 const pendingReleases: Array<() => void> = [];
 
 /** Parks the first REVIEW run (identified by its prompt) until release. */
@@ -44,11 +44,11 @@ function gateReviewRun() {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setTaskTurnExecutorForTests((req) => {
+  setTaskHostFactoryForTests(scriptedHost((req) => {
     lastPrompt = req.prompt;
     lastPermission = req.permission;
     return executorImpl(req);
-  });
+  }));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'revrun@example.com',
@@ -69,7 +69,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setTaskTurnExecutorForTests(null);
+  setTaskHostFactoryForTests(null);
 });
 
 afterEach(async () => {

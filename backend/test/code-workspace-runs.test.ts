@@ -7,9 +7,9 @@ import { db, pool } from '../src/db/client';
 import { agents, changeSnapshots, runs, turns } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { recordApproval } from '../src/modules/tasks/approvals.service';
-import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
+import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
+import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
-import type { TurnRequest, TurnResult } from '../src/modules/runner/runner';
 import { storage } from '../src/storage/layout';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
@@ -26,11 +26,11 @@ let repoDir = '';
 
 interface SeenTurn {
   workspace: string;
-  permission: TurnRequest['permission'];
+  permission: ScriptedTurn['permission'];
   trigger: string;
 }
 const seen: SeenTurn[] = [];
-let onTurn: (req: TurnRequest) => void = () => {};
+let onTurn: (req: ScriptedTurn) => void = () => {};
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -59,15 +59,15 @@ async function workspaceOf(taskId: string) {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setTaskTurnExecutorForTests(async (req) => {
+  setTaskHostFactoryForTests(scriptedHost(async (req) => {
     seen.push({
       workspace: req.workspace,
       permission: req.permission,
       trigger: req.prompt.includes('REVIEWER') ? 'review' : 'work',
     });
     onTurn(req);
-    return { text: 'stub output', durationMs: 5 } satisfies TurnResult;
-  });
+    return { text: 'stub output' } satisfies ScriptedReply;
+  }));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'codews@example.com',
@@ -90,7 +90,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setTaskTurnExecutorForTests(null);
+  setTaskHostFactoryForTests(null);
   removeSandbox(sandbox);
 });
 

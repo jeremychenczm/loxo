@@ -2,20 +2,21 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
-import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
+import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
+import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
 import { drainRunsForTests } from '../src/modules/runs/wake';
-import { RunnerError, type TurnRequest, type TurnResult } from '../src/modules/runner/runner';
+import { RunnerError } from '../src/modules/runner/runner';
 
 const app = createApp();
 let token = '';
 let agentA = '';
 let agentB = '';
 
-type Executor = (req: TurnRequest) => Promise<TurnResult>;
+type Executor = (req: ScriptedTurn) => Promise<ScriptedReply>;
 const succeedQuickly: Executor = async () => ({
   text: 'stub work report',
   sessionRef: 'sess-stub',
-  durationMs: 5,
+ 
 });
 let executorImpl: Executor = succeedQuickly;
 
@@ -47,7 +48,7 @@ function gatedExecutor() {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setTaskTurnExecutorForTests((req) => executorImpl(req));
+  setTaskHostFactoryForTests(scriptedHost((req) => executorImpl(req)));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'wake@example.com',
@@ -67,7 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setTaskTurnExecutorForTests(null);
+  setTaskHostFactoryForTests(null);
 });
 
 beforeEach(() => {

@@ -5,12 +5,9 @@ import { resolveApiModel, type ApiProtocol } from '../runner/api-protocol';
 import { buildControlPlaneToolDefs } from './control-plane';
 import {
   lowerPermission,
-  runTurn,
   RunnerError,
   RUNTIME_CODE_CAPABILITIES,
   type TurnPermission,
-  type TurnRequest,
-  type TurnResult,
 } from '../runner/runner';
 import {
   captureRunChanges,
@@ -42,16 +39,21 @@ const PROCESS_MCP_RUNTIMES: ReadonlySet<string> = new Set(['claude-code']);
 /** Stop reasons that mean the agent finished its turn, even if it hit a limit. */
 const COMPLETED: ReadonlySet<TurnStopReason> = new Set(['end_turn', 'max_tokens', 'max_turn_requests']);
 
-type TurnExecutor = (request: TurnRequest) => Promise<TurnResult>;
-let turnExecutor: TurnExecutor = runTurn;
+/** What a test double needs to stand in for an agent host. */
+export interface HostRequest {
+  agent: Agent;
+  permission: TurnPermission;
+}
+
+type HostFactory = (request: HostRequest) => AgentHost;
+let hostFactoryForTests: HostFactory | null = null;
 
 /**
- * Test seam: swap the CLI executor without spawning real processes. While
- * set, CLI agents always use the per-turn process host, so installed ACP
- * adapters never leak into tests.
+ * Test seam: replace host construction for every runtime, so run
+ * orchestration is exercised without spawning agents or reaching providers.
  */
-export function setTaskTurnExecutorForTests(executor: TurnExecutor | null): void {
-  turnExecutor = executor ?? runTurn;
+export function setTaskHostFactoryForTests(factory: HostFactory | null): void {
+  hostFactoryForTests = factory;
 }
 
 export interface TaskTurnOutcome {
@@ -101,13 +103,15 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
       ? lowerPermission(agent.permissionLevel, 'read_only')
       : agent.permissionLevel;
 
-  const forceProcess = turnExecutor !== runTurn;
   const launch =
-    agent.runtime === 'api' || forceProcess
+    agent.runtime === 'api' || hostFactoryForTests
       ? null
       : acpLaunchSpec(agent.runtime as CliRuntime, { credentials, model: agent.model, permission });
   const controlPlaneMounted =
-    agent.runtime === 'api' || launch !== null || PROCESS_MCP_RUNTIMES.has(agent.runtime);
+    agent.runtime === 'api' ||
+    hostFactoryForTests !== null ||
+    launch !== null ||
+    PROCESS_MCP_RUNTIMES.has(agent.runtime);
 
   const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildTaskRunPrompt;
   const prompt = buildPrompt({
@@ -129,7 +133,9 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
 
   let host: AgentHost;
   let readRoot = workspace;
-  if (agent.runtime === 'api') {
+  if (hostFactoryForTests) {
+    host = hostFactoryForTests({ agent, permission });
+  } else if (agent.runtime === 'api') {
     if (!credentials) {
       throw new RunnerError(
         `Agent "${agent.name}" needs an OpenAI or Anthropic provider configured`,
@@ -161,7 +167,6 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
       extraEnv: controlPlaneMounted
         ? { SWARMDEV_MCP_URL: config.mcpUrl(), SWARMDEV_RUN_TOKEN: runToken }
         : undefined,
-      execute: turnExecutor,
     });
   }
 

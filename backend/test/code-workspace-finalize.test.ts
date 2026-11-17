@@ -9,9 +9,9 @@ import { repositories } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { registerLiveMergeOperationForTests } from '../src/modules/code-workspaces/workspace.service';
 import { recordApproval } from '../src/modules/tasks/approvals.service';
-import { setTaskTurnExecutorForTests } from '../src/modules/runs/task-run';
+import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
+import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
-import type { TurnRequest } from '../src/modules/runner/runner';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
 const app = createApp();
@@ -24,7 +24,7 @@ let sandbox = '';
 let repoDir = '';
 let repositoryId = '';
 
-let onTurn: (req: TurnRequest) => void = () => {};
+let onTurn: (req: ScriptedTurn) => void = () => {};
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -85,10 +85,10 @@ function finalize(taskId: string, action: 'merge' | 'keep-branch', body: object 
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setTaskTurnExecutorForTests(async (req) => {
+  setTaskHostFactoryForTests(scriptedHost(async (req) => {
     onTurn(req);
-    return { text: 'stub output', durationMs: 5 };
-  });
+    return { text: 'stub output' };
+  }));
 
   const reg = await request(app).post('/auth/register').send({
     email: 'finalize@example.com',
@@ -113,7 +113,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  setTaskTurnExecutorForTests(null);
+  setTaskHostFactoryForTests(null);
   removeSandbox(sandbox);
 });
 
