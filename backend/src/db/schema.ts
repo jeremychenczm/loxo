@@ -301,6 +301,17 @@ export const runs = pgTable(
     transport: text('transport'),
     /** Runtime-reported reason the turn ended, e.g. end_turn, cancelled, timeout. */
     stopReason: text('stop_reason'),
+    /** Backend instance that holds the lease while the run is running. */
+    ownerInstance: text('owner_instance'),
+    /** Fencing token: incremented on every claim or takeover. */
+    ownerEpoch: integer('owner_epoch').notNull().default(0),
+    /** Lease deadline on the database clock; renewals never shorten it. */
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    /** 1 for the first try; automatic retries are new runs with attempt + 1. */
+    attempt: integer('attempt').notNull().default(1),
+    parentRunId: uuid('parent_run_id').references((): AnyPgColumn => runs.id, { onDelete: 'set null' }),
+    /** Earliest time a queued run may be promoted; retries back off with it. */
+    notBefore: timestamp('not_before', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -309,6 +320,8 @@ export const runs = pgTable(
     index('runs_task_status').on(t.taskId, t.status),
     index('runs_agent_status').on(t.agentId, t.status),
     index('runs_user_created').on(t.userId, t.createdAt),
+    /** Reconciler scan for expired leases. */
+    index('runs_running_lease').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
   ]
 );
 
@@ -576,11 +589,18 @@ export const humanRequests = pgTable(
     choices: jsonb('choices').$type<string[]>().notNull().default([]),
     answer: jsonb('answer').$type<Record<string, unknown>>(),
     status: text('status').$type<HumanRequestStatus>().notNull().default('open'),
+    /** Run that raised the request; cancelled with it when the run loses its owner. */
+    runId: uuid('run_id').references((): AnyPgColumn => runs.id, { onDelete: 'set null' }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     answeredAt: timestamp('answered_at', { withTimezone: true }),
   },
-  (t) => [index('human_requests_task_status').on(t.taskId, t.status)]
+  (t) => [
+    index('human_requests_task_status').on(t.taskId, t.status),
+    index('human_requests_run').on(t.runId),
+    /** An interrupted run gets exactly one retry decision. */
+    uniqueIndex('human_requests_one_retry_per_run').on(t.runId).where(sql`${t.kind} = 'retry'`),
+  ]
 );
 
 export type HumanRequest = typeof humanRequests.$inferSelect;

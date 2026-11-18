@@ -1,47 +1,14 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { upgradeDatabase, type Query, type UpgradedDatabase } from './support/upgrade-db';
 
 /**
  * Upgrades a database that holds pre-reshape data: migrate up to the last
  * pre-reshape migration, seed rows in the old shape, then apply the rest.
  */
-const ADMIN_URL = 'postgres://postgres:postgres@localhost:5434/postgres';
-const DB_NAME = 'swarmdev_upgrade_test';
-const DB_URL = `postgres://postgres:postgres@localhost:5434/${DB_NAME}`;
-const MIGRATIONS = path.resolve('drizzle');
 const LAST_LEGACY_MIGRATION = 26;
 
-let pool: pg.Pool;
-let partialFolder = '';
-
-/** Copy of the migrations folder that stops at `lastIdx`. */
-function truncatedMigrations(lastIdx: number): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarmdev-migrations-'));
-  const journal = JSON.parse(fs.readFileSync(path.join(MIGRATIONS, 'meta/_journal.json'), 'utf8'));
-  journal.entries = journal.entries.filter((e: { idx: number }) => e.idx <= lastIdx);
-  fs.mkdirSync(path.join(dir, 'meta'));
-  fs.writeFileSync(path.join(dir, 'meta/_journal.json'), JSON.stringify(journal));
-  for (const entry of journal.entries as { tag: string }[]) {
-    fs.copyFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), path.join(dir, `${entry.tag}.sql`));
-  }
-  return dir;
-}
-
-async function recreateDatabase(): Promise<void> {
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME}`);
-  await admin.query(`CREATE DATABASE ${DB_NAME}`);
-  await admin.end();
-}
-
-const q = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) =>
-  (await pool.query(sql, params)).rows as T[];
+let upgraded: UpgradedDatabase;
+const q: Query = (sql, params) => upgraded.q(sql, params);
 
 const ids = {
   user: '00000000-0000-4000-8000-000000000001',
@@ -57,7 +24,7 @@ const ids = {
   workspace: '00000000-0000-4000-8000-0000000000f2',
 };
 
-async function seedLegacyRows(): Promise<void> {
+async function seedLegacyRows(q: Query): Promise<void> {
   await q(
     `INSERT INTO users (id, email, username, password_hash) VALUES ($1, 'legacy@example.com', 'legacy', 'x')`,
     [ids.user]
@@ -127,21 +94,11 @@ async function seedLegacyRows(): Promise<void> {
 }
 
 beforeAll(async () => {
-  await recreateDatabase();
-  pool = new pg.Pool({ connectionString: DB_URL });
-  partialFolder = truncatedMigrations(LAST_LEGACY_MIGRATION);
-  await migrate(drizzle(pool), { migrationsFolder: partialFolder });
-  await seedLegacyRows();
-  await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS });
+  upgraded = await upgradeDatabase('swarmdev_upgrade_test', LAST_LEGACY_MIGRATION, seedLegacyRows);
 }, 120_000);
 
 afterAll(async () => {
-  await pool?.end();
-  fs.rmSync(partialFolder, { recursive: true, force: true });
-  const admin = new pg.Client({ connectionString: ADMIN_URL });
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME}`);
-  await admin.end();
+  await upgraded?.drop();
 });
 
 describe('migration upgrade from the pre-reshape schema', () => {
