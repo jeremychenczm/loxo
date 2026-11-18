@@ -8,8 +8,7 @@ import { humanRequestsRouter } from '../modules/human-requests/human-requests.ro
 import { tasksRouter } from '../modules/tasks/tasks.routes';
 import { repositoriesRouter } from '../modules/repositories/repositories.routes';
 import { runsRouter } from '../modules/runs/runs.routes';
-import { handleMcpRequest } from '../modules/runs/mcp-server';
-import { handleTaskMcpRequest } from '../modules/control-plane/task-mcp';
+import { handleMcpRequest } from '../modules/control-plane/mcp-server';
 import { providersRouter } from '../modules/providers/providers.routes';
 import { HttpError } from './errors';
 
@@ -42,20 +41,6 @@ export function createApp(): express.Express {
   app.use('/api/tasks', tasksRouter);
   app.use('/api/runs', runsRouter);
   app.use('/api/human-requests', humanRequestsRouter);
-
-  // Task control plane; authenticated by per-turn tokens, not user JWTs.
-  app
-    .route('/mcp/task')
-    .post((req, res, next) => {
-      handleTaskMcpRequest(req, res).catch(next);
-    })
-    .all((_req, res) => {
-      res.status(405).json({
-        jsonrpc: '2.0',
-        error: { code: -32000, message: 'Method not allowed' },
-        id: null,
-      });
-    });
 
   // Agent control plane; authenticated by per-run tokens, not user JWTs.
   app

@@ -12,7 +12,7 @@ import {
   submitReviewVerdict,
   updateTaskStatus,
   type RunToolContext,
-} from './control-plane';
+} from './tools';
 
 const TASK_STATUS = z.enum([
   'backlog',

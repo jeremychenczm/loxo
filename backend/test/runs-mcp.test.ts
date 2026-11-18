@@ -4,7 +4,7 @@ import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
-import { mintRunToken } from '../src/modules/runs/run-token';
+import { mintRunToken } from '../src/modules/control-plane/run-token';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 
 const app = createApp();

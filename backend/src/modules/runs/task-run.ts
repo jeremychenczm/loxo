@@ -2,7 +2,7 @@ import type { Agent, Task, Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { getProviderCredentials } from '../providers/providers.service';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-protocol';
-import { buildControlPlaneToolDefs } from './control-plane';
+import { buildControlPlaneToolDefs } from '../control-plane/tools';
 import {
   lowerPermission,
   RunnerError,
@@ -20,7 +20,7 @@ import { addSystemTurn, listTurns } from '../tasks/turns.service';
 import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
 import { isAgentRuntime, type CliRuntime } from '../agents/runtimes';
 import { config } from '../../config';
-import { mintRunToken } from './run-token';
+import { mintRunToken } from '../control-plane/run-token';
 import { AcpHost, HostStartupError } from '../hosts/acp-host';
 import { ApiHost } from '../hosts/api-host';
 import type { AgentHost, HostMcpServer, HostTransport, TurnStopReason } from '../hosts/host.types';
