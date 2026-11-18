@@ -30,6 +30,7 @@ import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
 import { crashPoint } from '../ownership/crash-points';
 import type { RunLease } from '../ownership/lease';
+import { HttpError } from '../../http/errors';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
@@ -183,6 +184,7 @@ export async function executeTaskTurn(
           context: { permission, workspaceRoot: readRoot },
           taskId: task.id,
           agentId: agent.id,
+          runId: run.id,
         }),
         signal: lease.signal,
       });
@@ -257,7 +259,14 @@ async function resolveCodeWorkspace(
     return null;
   }
 
-  return resolveWorkspace(run.userId, task);
+  try {
+    return await resolveWorkspace(run.userId, task);
+  } catch (err) {
+    if (err instanceof HttpError && err.code === 'workspace_unavailable') {
+      throw new RunnerError(err.message, 'cli_failed');
+    }
+    throw err;
+  }
 }
 
 async function settleRunCapture(

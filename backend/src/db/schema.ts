@@ -441,7 +441,9 @@ export type WorkspaceStatus =
   | 'retained'
   | 'abandoned'
   | 'missing'
-  | 'error';
+  | 'error'
+  /** A run that could write here lost its owner; only a person lifts this (reconcile or abandon). */
+  | 'quarantined';
 
 export const WORKSPACE_TERMINAL_STATUSES = [
   'merged',

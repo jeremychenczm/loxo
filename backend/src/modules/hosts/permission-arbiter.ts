@@ -9,6 +9,8 @@ export interface ArbiterOptions {
   /** Task that owns the turn; without one, questions for a person are denied. */
   taskId: string | null;
   agentId?: string | null;
+  /** Run the requests belong to. */
+  runId?: string | null;
   askTimeoutMs?: number;
   /** Audit hook for every request and its verdict. */
   onVerdict?: (request: PermissionRequest, verdict: PolicyVerdict) => void;
@@ -30,6 +32,7 @@ export function createPermissionArbiter(options: ArbiterOptions): PermissionArbi
 
     const human = await openHumanRequest({
       taskId: options.taskId,
+      runId: options.runId ?? null,
       kind: 'permission',
       payload: {
         toolCallId: request.toolCallId,

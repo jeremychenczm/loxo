@@ -82,6 +82,11 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
   return { run: started ?? run, admitted: started ? 'started' : 'queued' };
 }
 
+/** Starts a queued run if its gates are free; the reconciler's promotion step. */
+export async function promoteQueuedRun(run: Run): Promise<boolean> {
+  return (await tryStartRun(run)) !== undefined;
+}
+
 /**
  * Starts a queued run if its agent and task are free; otherwise it stays
  * queued for a later promotion pass. Admission is a single transaction, so a

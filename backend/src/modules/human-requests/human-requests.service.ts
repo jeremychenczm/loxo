@@ -23,6 +23,8 @@ const POLL_MS = 1000;
 
 export interface OpenRequestInput {
   taskId: string;
+  /** Run that asked; its open requests are cancelled when the run loses its owner. */
+  runId?: string | null;
   kind: HumanRequestKind;
   payload: Record<string, unknown>;
   /** Allowed answers; empty means a free-text answer. */
@@ -35,6 +37,7 @@ export async function openHumanRequest(input: OpenRequestInput): Promise<HumanRe
     .insert(humanRequests)
     .values({
       taskId: input.taskId,
+      runId: input.runId ?? null,
       kind: input.kind,
       payload: input.payload,
       choices: input.choices,

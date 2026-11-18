@@ -10,6 +10,7 @@ import {
   tasks,
   repositories,
   changeSnapshots,
+  runs,
   type Workspace,
   type Task,
   type Repository,
@@ -107,6 +108,18 @@ function ratchetStatus(
   return current === 'dirty' && observed === 'ready' ? 'dirty' : observed;
 }
 
+/** Merging or deleting a worktree under a running agent would race its writes. */
+async function assertNoRunningRun(taskId: string): Promise<void> {
+  const [active] = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'running')))
+    .limit(1);
+  if (active) {
+    throw conflict('run_in_progress', 'An agent run is working on this task; wait for it to finish');
+  }
+}
+
 export interface ResolvedWorkspace {
   workspace: Workspace;
   repository: Repository;
@@ -144,6 +157,8 @@ export async function prepareTaskWorkspace(
   const worktreesRoot = storage.worktreesRoot(userId);
 
   let row = await getTaskWorkspace(userId, task.id);
+  // Never lifted by preparing a run: the writer that lost its owner may still be running.
+  if (row?.status === 'quarantined') return row;
   if (!row) {
     const branchName = workspaceBranchName(task.number, null);
     const info = await localGitDriver
@@ -497,6 +512,7 @@ export async function finalizeTaskWorkspace(
   if (workspace.status !== 'ready' && workspace.status !== 'dirty') {
     throw conflict('workspace_unavailable', `Workspace is ${workspace.status}; reconcile it first`);
   }
+  await assertNoRunningRun(taskId);
   const [task] = await db
     .select()
     .from(tasks)
@@ -656,6 +672,7 @@ export async function abandonTaskWorkspace(
 ): Promise<FinalizeResult> {
   const workspace = await getTaskWorkspace(userId, taskId);
   if (!workspace) throw notFound('Task has no active workspace');
+  await assertNoRunningRun(taskId);
   const [task] = await db
     .select()
     .from(tasks)

@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, getTableColumns, isNull, lte, or, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Executor } from '../../db/client';
-import { agents, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import { agents, runs, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
 import { recordFenceRejection } from '../ownership/fence';
@@ -100,6 +100,14 @@ export async function listRuns(
 /** Queued runs whose back-off, if any, has elapsed. */
 const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`));
 
+/**
+ * The run's task has no quarantined workspace. Checked inside admission so
+ * every path (wake, promotion, reconciler) waits instead of starting a run
+ * that would collide with a writer that lost its owner.
+ */
+const notQuarantined = () =>
+  sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`;
+
 function isGateConflict(err: unknown): boolean {
   const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
   return pgErr.code === '23505' && GATE_INDEXES.has(pgErr.constraint ?? '');
@@ -110,8 +118,8 @@ function isGateConflict(err: unknown): boolean {
  * epoch, and sets the lease on the database clock; the gate indexes make that
  * same statement the agent claim and the task lock, so a held gate surfaces
  * as a unique violation and the run stays queued with nothing written.
- * Returns undefined when the run is no longer queued, is backing off, or a
- * gate is held.
+ * Returns undefined when the run is no longer queued, is backing off, its
+ * task's workspace is quarantined, or a gate is held.
  */
 export interface AdmitOptions {
   ttlMs?: number;
@@ -133,7 +141,7 @@ export async function admitRun(runId: string, options: AdmitOptions = {}): Promi
           leaseExpiresAt: sql`clock_timestamp() + ${ttlMs}::integer * interval '1 millisecond'`,
           startedAt: sql`clock_timestamp()`,
         })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable()))
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined()))
         .returning({
           ...getTableColumns(runs),
           leaseRemainingMs: sql<string>`extract(epoch from ${runs.leaseExpiresAt} - clock_timestamp()) * 1000`,

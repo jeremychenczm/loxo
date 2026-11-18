@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { assertRequiredEnv, config } from './config';
 import { closeDb } from './db/client';
 import { runLeases } from './modules/ownership/lease';
+import { startReconciler } from './modules/ownership/reconciler';
 import { configureEgressProxy } from './http/egress-proxy';
 import { createApp } from './http/app';
 import { attachWsGateway } from './ws/gateway';
@@ -16,6 +17,9 @@ const gateway = attachWsGateway(server);
 server.listen(config.port, () => {
   console.log(`Loxo backend listening on http://localhost:${config.port}`);
 });
+
+// Takes over runs whose owner died (this process included) and promotes waiting runs.
+const stopReconciler = startReconciler(runLeases);
 
 let shuttingDown = false;
 
@@ -33,6 +37,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   try {
     await gateway.shutdown();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    stopReconciler();
     await runLeases.stop();
     await closeDb();
     process.exit(0);
