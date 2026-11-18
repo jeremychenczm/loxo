@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { runEvents, runs, type RunEvent, type RunEventKind } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import type { HostEvent } from '../hosts/host.types';
+import { recordFenceRejection } from '../ownership/fence';
 import { redactValue } from './redact';
 
 /** One persisted event as subscribers receive it. */
@@ -54,10 +55,21 @@ function toRow(event: Exclude<HostEvent, { kind: 'message_delta' | 'thought_delt
   }
 }
 
+/** The run a recorder writes for, and the owner it writes as. */
+export interface RecordedRun {
+  id: string;
+  userId: string;
+  taskId: string | null;
+  epoch: number;
+  instance: string;
+}
+
 /**
  * Persists a run's host events in order. Writes are serialized so seq is
  * gapless and matches commit order; text deltas are coalesced so a token
- * stream costs a handful of rows, not thousands.
+ * stream costs a handful of rows, not thousands. Every row is fenced: it
+ * lands only while the run is still running under this owner and epoch, and
+ * the first refused row stops the recorder.
  */
 export class RunEventRecorder {
   private seq = 0;
@@ -66,10 +78,11 @@ export class RunEventRecorder {
   private timer: NodeJS.Timeout | null = null;
   private capped = false;
   private stopped = false;
+  private fenced = false;
   private readonly limits: RecorderLimits;
 
   constructor(
-    private readonly run: { id: string; userId: string; taskId: string | null },
+    private readonly run: RecordedRun,
     limits: Partial<RecorderLimits> = {}
   ) {
     this.limits = { ...DEFAULT_RECORDER_LIMITS, ...limits };
@@ -130,11 +143,25 @@ export class RunEventRecorder {
     const seq = this.seq;
     const payload = redactValue(row.payload) as Record<string, unknown>;
     this.writes = this.writes.then(async () => {
+      if (this.fenced) return;
       try {
-        const [inserted] = await db
-          .insert(runEvents)
-          .values({ runId: this.run.id, seq, kind: row.kind, payload })
-          .returning();
+        // One statement: the row is selected from the run only while this
+        // owner holds it, and FOR KEY SHARE makes a concurrent takeover wait.
+        const { rows } = await db.execute<{ created_at: Date | string }>(sql`
+          INSERT INTO run_events (run_id, epoch, seq, kind, payload)
+          SELECT ${runs.id}, ${runs.ownerEpoch}, ${seq}, ${row.kind}, ${JSON.stringify(payload)}::jsonb
+          FROM ${runs}
+          WHERE ${runs.id} = ${this.run.id} AND ${runs.status} = 'running'
+            AND ${runs.ownerEpoch} = ${this.run.epoch} AND ${runs.ownerInstance} = ${this.run.instance}
+          FOR KEY SHARE
+          RETURNING created_at`);
+        const inserted = rows[0];
+        if (!inserted) {
+          this.fenced = true;
+          this.stop();
+          recordFenceRejection('run_event', this.run.id, this.run.epoch);
+          return;
+        }
         runEventBus.emit('event', {
           userId: this.run.userId,
           taskId: this.run.taskId,
@@ -142,7 +169,7 @@ export class RunEventRecorder {
           seq,
           kind: row.kind,
           payload,
-          createdAt: inserted!.createdAt.toISOString(),
+          createdAt: new Date(inserted.created_at).toISOString(),
         } satisfies RunEventFrame);
       } catch (err) {
         // Event history is best-effort; a failed write must not fail the turn.

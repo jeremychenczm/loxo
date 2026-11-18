@@ -229,7 +229,7 @@ export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot
 
 /** Every timeline entry an agent makes is tied to the run that produced it. */
 async function postAsAgent(ctx: RunToolContext, content: string, tx: Tx): Promise<void> {
-  await addAgentTurn(ctx.run.userId, ctx.task.id, ctx.agent.id, content, { runId: ctx.run.id }, tx);
+  await addAgentTurn(ctx.run.userId, ctx.task.id, ctx.agent.id, content, { runId: ctx.run.id, epoch: ctx.epoch }, tx);
 }
 
 export interface StatusResult {
@@ -285,7 +285,7 @@ export async function submitReviewVerdict(
   if (ctx.run.trigger !== 'review') {
     throw badRequest('not_a_review_run', 'Only review runs can submit review verdicts');
   }
-  const verdict = { agentId: ctx.agent.id, runId: ctx.run.id, decision, body: feedback };
+  const verdict = { agentId: ctx.agent.id, runId: ctx.run.id, epoch: ctx.epoch, decision, body: feedback };
 
   return controlPlaneWrite(ctx, 'submit_review', { decision, feedback }, async (tx, queued) => {
     if (decision === 'approved') {

@@ -118,7 +118,7 @@ export async function recordAgentVerdict(
   ex: Executor,
   userId: string,
   taskId: string,
-  input: { agentId: string; runId: string | null; decision: ApprovalDecision; body: string },
+  input: { agentId: string; runId: string | null; epoch?: number; decision: ApprovalDecision; body: string },
   options: AgentVerdictOptions = {}
 ): Promise<{ turn: Turn; queued: Run[] }> {
   const task = await findOwnedTask(userId, taskId, ex);
@@ -129,7 +129,7 @@ export async function recordAgentVerdict(
     taskId,
     input.agentId,
     `${DECISION_LABEL[input.decision]} ${body}`,
-    { runId: input.runId, report: { ...report } },
+    { runId: input.runId, epoch: input.epoch ?? null, report: { ...report } },
     ex
   );
   if (input.decision === 'changes_requested' && options.reopen !== false) {

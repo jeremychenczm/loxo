@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -8,7 +8,7 @@ import { db, pool } from '../src/db/client';
 import { runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { redactText, redactValue } from '../src/modules/runs/redact';
-import { RunEventRecorder } from '../src/modules/runs/run-events.service';
+import { RunEventRecorder, type RecordedRun } from '../src/modules/runs/run-events.service';
 import { admitRun, ownerOf, settleRun } from '../src/modules/runs/runs.service';
 import { attachWsGateway, type WsGateway } from '../src/ws/gateway';
 
@@ -30,12 +30,24 @@ let taskId = '';
 
 const auth = (t = token) => ({ Authorization: `Bearer ${t}` });
 
+/** A queued run; any run still holding the shared agent and task is closed first. */
 async function newRun(): Promise<{ id: string; userId: string; taskId: string | null }> {
+  await db
+    .update(runs)
+    .set({ status: 'succeeded', leaseExpiresAt: null })
+    .where(and(eq(runs.agentId, agentId), eq(runs.status, 'running')));
   const [run] = await db
     .insert(runs)
     .values({ userId, agentId, agentName: 'Streamer', taskId, trigger: 'manual' })
     .returning();
   return { id: run!.id, userId, taskId };
+}
+
+/** A run admitted under an owner, as a recorder writes for it. */
+async function recordingRun(): Promise<RecordedRun> {
+  const run = await newRun();
+  const admission = await admitRun(run.id, { instance: 'recorder-test' });
+  return { ...run, epoch: admission!.run.ownerEpoch, instance: 'recorder-test' };
 }
 
 beforeAll(async () => {
@@ -95,7 +107,7 @@ describe('redaction', () => {
 
 describe('run event recorder', () => {
   it('coalesces text bursts and keeps seq gapless in commit order', async () => {
-    const run = await newRun();
+    const run = await recordingRun();
     const recorder = new RunEventRecorder(run, { flushMs: 10_000 });
     recorder.record({ kind: 'thought_delta', text: 'plan ' });
     recorder.record({ kind: 'thought_delta', text: 'it' });
@@ -119,7 +131,7 @@ describe('run event recorder', () => {
   });
 
   it('flushes long bursts early and redacts what it stores', async () => {
-    const run = await newRun();
+    const run = await recordingRun();
     const recorder = new RunEventRecorder(run, { flushChars: 10, flushMs: 10_000 });
     recorder.record({ kind: 'message_delta', text: 'export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstu' });
     recorder.record({ kind: 'error', message: 'token: ghp_abcdefghijklmnopqrstuvwxyz0123 rejected' });
@@ -131,7 +143,7 @@ describe('run event recorder', () => {
   });
 
   it('stops recording at the event cap with one notice', async () => {
-    const run = await newRun();
+    const run = await recordingRun();
     const recorder = new RunEventRecorder(run, { maxEvents: 3 });
     for (let i = 0; i < 6; i += 1) {
       recorder.record({ kind: 'tool_update', toolCallId: `t${i}`, status: 'completed', output: null });
@@ -182,7 +194,7 @@ describe('live task stream', () => {
     await until(() => mine.frames.some((f) => f.type === 'task.subscribed') && theirs.frames.length > 0);
     expect(theirs.frames[0]).toMatchObject({ type: 'task.error', payload: { code: 'not_found' } });
 
-    const run = await newRun();
+    const run = await recordingRun();
     const recorder = new RunEventRecorder(run);
     recorder.record({ kind: 'status', message: 'session opened' });
     recorder.record({ kind: 'tool_call', toolCallId: 'a', title: 'Read', toolKind: 'read', status: 'pending', paths: [] });
@@ -199,7 +211,7 @@ describe('live task stream', () => {
 
     mine.ws.send(JSON.stringify({ type: 'task.unsubscribe', payload: { taskId } }));
     await new Promise((r) => setTimeout(r, 100));
-    const quiet = new RunEventRecorder(await newRun());
+    const quiet = new RunEventRecorder(await recordingRun());
     quiet.record({ kind: 'status', message: 'after unsubscribe' });
     await quiet.flush();
     await new Promise((r) => setTimeout(r, 150));

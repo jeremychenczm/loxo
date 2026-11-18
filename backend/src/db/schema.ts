@@ -391,6 +391,8 @@ export const turns = pgTable(
     agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
     runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
+    /** Owner epoch of the run that wrote the turn; null for human and legacy turns. */
+    epoch: integer('epoch'),
     status: text('status').$type<TurnStatus>().notNull().default('pending'),
     report: jsonb('report').$type<TurnReport>(),
     content: text('content').notNull().default(''),
@@ -426,6 +428,8 @@ export const runEvents = pgTable(
     runId: uuid('run_id')
       .notNull()
       .references(() => runs.id, { onDelete: 'cascade' }),
+    /** Owner epoch the event was written under; null for legacy rows. */
+    epoch: integer('epoch'),
     seq: integer('seq').notNull(),
     kind: text('kind').$type<RunEventKind>().notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
@@ -575,6 +579,8 @@ export const changeSnapshots = pgTable(
     runId: uuid('run_id')
       .notNull()
       .references(() => runs.id, { onDelete: 'cascade' }),
+    /** Owner epoch the capture was written under; null for legacy rows. */
+    epoch: integer('epoch'),
     /** Nullable so snapshots outlive their workspace row, mirroring runs vs tasks. */
     workspaceId: uuid('workspace_id').references(
       () => workspaces.id,

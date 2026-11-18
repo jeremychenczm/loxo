@@ -29,7 +29,8 @@ import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
 import { crashPoint } from '../ownership/crash-points';
-import type { RunLease } from '../ownership/lease';
+import { FencedError } from '../ownership/fence';
+import { runLeases, type RunLease } from '../ownership/lease';
 import { HttpError } from '../../http/errors';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -169,7 +170,13 @@ export async function executeTaskTurn(
     host = new AcpHost(launch);
   }
 
-  const recorder = new RunEventRecorder({ id: run.id, userId: run.userId, taskId: task.id });
+  const recorder = new RunEventRecorder({
+    id: run.id,
+    userId: run.userId,
+    taskId: task.id,
+    epoch: lease.epoch,
+    instance: runLeases.instance,
+  });
   const before = codeWorkspace ? await snapshotBeforeRun(codeWorkspace.workspace) : null;
   const stopRecording = () => recorder.stop();
   lease.signal.addEventListener('abort', stopRecording, { once: true });
@@ -227,8 +234,9 @@ export async function executeTaskTurn(
     if (codeWorkspace && before) {
       crashPoint('run.before_capture');
       if (!lease.lost) {
-        await settleRunCapture(run, task, codeWorkspace, before, permission).catch((err) => {
-          console.error(`Run ${run.id} change capture failed:`, err);
+        await settleRunCapture(run, lease.epoch, task, codeWorkspace, before, permission).catch((err) => {
+          // A fenced capture is already logged as a fence rejection.
+          if (!(err instanceof FencedError)) console.error(`Run ${run.id} change capture failed:`, err);
         });
       }
     }
@@ -271,29 +279,28 @@ async function resolveCodeWorkspace(
 
 async function settleRunCapture(
   run: Run,
+  epoch: number,
   task: Task,
   codeWorkspace: ResolvedWorkspace,
   before: Awaited<ReturnType<typeof snapshotBeforeRun>>,
   permission: 'read_only' | 'edit' | 'full'
 ): Promise<void> {
-  const { snapshot, policyViolation } = await captureRunChanges({
+  await captureRunChanges({
     runId: run.id,
+    epoch,
+    instance: runLeases.instance,
     userId: run.userId,
     workspace: codeWorkspace.workspace,
     before,
     permission,
+    // The evidence turn commits with the snapshot it describes, under the same fence.
+    onCaptured: async (tx, { snapshot, policyViolation }) => {
+      const note = policyViolation
+        ? `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
+        : snapshot.changedFiles > 0
+          ? `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`
+          : null;
+      if (note) await addSystemTurn(run.userId, task.id, note, { runId: run.id, epoch }, tx);
+    },
   });
-  if (policyViolation) {
-    await addSystemTurn(
-      run.userId,
-      task.id,
-      `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
-    );
-  } else if (snapshot.changedFiles > 0) {
-    await addSystemTurn(
-      run.userId,
-      task.id,
-      `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`
-    );
-  }
 }

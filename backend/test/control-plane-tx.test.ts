@@ -117,6 +117,8 @@ describe('control-plane writes as single fenced transactions', () => {
 
     for (const res of [first, again, reworded]) expect(JSON.parse(toolText(res))).toEqual({ status: 'in_review' });
     expect(await agentTurns(taskId)).toEqual(['Shipped the export.']);
+    const [turn] = await db.select({ epoch: turns.epoch }).from(turns).where(eq(turns.runId, run.id));
+    expect(turn!.epoch).toBe(1);
     expect(await taskStatus(taskId)).toBe('in_review');
     expect(await requestRows(run.id)).toEqual([{ seq: 1, tool: 'submit_result', epoch: 1 }]);
   });

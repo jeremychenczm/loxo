@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, type Executor } from '../../db/client';
 import { agents, tasks, type Agent, type Task, type Run, type RunTrigger } from '../../db/schema';
 import { badRequest } from '../../http/errors';
-import { addAgentTurn, runHasTurns } from '../tasks/turns.service';
+import { addAgentTurn, runHasAgentTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
@@ -15,6 +15,7 @@ import {
   type RunOutcome,
 } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
+import { fence } from '../ownership/fence';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -198,14 +199,18 @@ async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
   // Fallback report: only when the agent said nothing through the control
   // plane during the run. Posted while the run still holds the task, so the
   // next run's prompt sees it. Best-effort — the run result stands regardless.
-  if (report && !(await runHasTurns(run.id))) {
-    await addAgentTurn(run.userId, report.taskId, report.agentId, report.text, { runId: run.id }).catch(
-      () => {}
-    );
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  if (report && !(await runHasAgentTurns(run.id))) {
+    const { taskId, agentId, text } = report;
+    await db
+      .transaction(async (tx) => {
+        await fence(tx, owner, 'fallback_report');
+        await addAgentTurn(run.userId, taskId, agentId, text, { runId: run.id, epoch: lease.epoch }, tx);
+      })
+      .catch(() => {});
   }
   // If settling fails the run keeps its lease and the reconciler takes it over;
   // if it is refused, the run was taken over and its new owner settles it.
-  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
   const settled = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch(
     (error) => {
       console.error(`Run ${run.id} could not be settled:`, error);

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { and, desc, eq, isNull, notInArray } from 'drizzle-orm';
-import { db } from '../../db/client';
+import { db, type Executor, type Tx } from '../../db/client';
 import {
   WORKSPACE_TERMINAL_STATUSES,
   workspaces,
@@ -19,6 +19,7 @@ import {
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
 import { addSystemTurn } from '../tasks/turns.service';
+import { fence } from '../ownership/fence';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { workspaceBranchName, workspaceLeaf } from './branch-name';
@@ -90,9 +91,10 @@ export async function hasActiveWorkspaces(
 
 async function updateWorkspace(
   id: string,
-  patch: Partial<typeof workspaces.$inferInsert>
+  patch: Partial<typeof workspaces.$inferInsert>,
+  ex: Executor = db
 ): Promise<Workspace> {
-  const [row] = await db
+  const [row] = await ex
     .update(workspaces)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(workspaces.id, id))
@@ -260,10 +262,15 @@ export async function snapshotBeforeRun(
 
 export interface CaptureRunInput {
   runId: string;
+  /** The owner the capture is written as; a run that has moved on refuses it. */
+  epoch: number;
+  instance: string;
   userId: string;
   workspace: Workspace;
   before: WorkingTreeSnapshot;
   permission: TurnPermission;
+  /** Further writes that belong to the capture; they run inside its fenced transaction. */
+  onCaptured?: (tx: Tx, result: CaptureRunResult) => Promise<void>;
 }
 
 export interface CaptureRunResult {
@@ -273,7 +280,11 @@ export interface CaptureRunResult {
 
 /**
  * Platform-collected evidence after a run settles, regardless of outcome.
- * Agent-authored summaries are never treated as proof.
+ * Agent-authored summaries are never treated as proof. Git and file work
+ * happens first; the rows are then written in one transaction fenced on the
+ * run, so a capture from an owner that lost the run is refused (FencedError)
+ * and leaves no snapshot or workspace change. A refused capture may leave its
+ * patch file in the run's artifact directory.
  */
 export async function captureRunChanges(input: CaptureRunInput): Promise<CaptureRunResult> {
   const captured = await localGitDriver.captureChanges({
@@ -291,10 +302,14 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
   }
 
   const policyViolation = input.permission === 'read_only' && captured.trackedChanges;
-  const [snapshot] = await db
+  const hasChanges = captured.afterHead !== input.workspace.baseCommit || captured.changedFiles > 0;
+  return db.transaction(async (tx) => {
+    await fence(tx, { runId: input.runId, epoch: input.epoch, instance: input.instance }, 'change_capture');
+    const [snapshot] = await tx
     .insert(changeSnapshots)
     .values({
       runId: input.runId,
+      epoch: input.epoch,
       workspaceId: input.workspace.id,
       beforeHead: input.before.head,
       afterHead: captured.afterHead,
@@ -310,14 +325,19 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
     })
     .returning();
 
-  const hasChanges = captured.afterHead !== input.workspace.baseCommit || captured.changedFiles > 0;
-  await updateWorkspace(input.workspace.id, {
-    status: ratchetStatus(input.workspace.status, hasChanges ? 'dirty' : 'ready'),
-    headCommit: captured.afterHead,
-    lastRunId: input.runId,
+    await updateWorkspace(
+      input.workspace.id,
+      {
+        status: ratchetStatus(input.workspace.status, hasChanges ? 'dirty' : 'ready'),
+        headCommit: captured.afterHead,
+        lastRunId: input.runId,
+      },
+      tx
+    );
+    const result = { snapshot: snapshot!, policyViolation };
+    await input.onCaptured?.(tx, result);
+    return result;
   });
-
-  return { snapshot: snapshot!, policyViolation };
 }
 
 /** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */

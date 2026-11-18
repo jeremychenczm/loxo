@@ -18,6 +18,7 @@ interface AppendInput {
   agentId?: string;
   authorUserId?: string;
   runId?: string | null;
+  epoch?: number | null;
   report?: TurnReport;
 }
 
@@ -44,6 +45,7 @@ async function appendCompletedTurn(taskId: string, input: AppendInput, ex: Execu
         agentId: input.agentId ?? null,
         authorUserId: input.authorUserId ?? null,
         runId: input.runId ?? null,
+        epoch: input.epoch ?? null,
         report: input.report ?? null,
         content: input.content,
         status: 'completed',
@@ -65,7 +67,7 @@ export async function addAgentTurn(
   taskId: string,
   agentId: string,
   content: string,
-  extra: { runId?: string | null; report?: TurnReport } = {},
+  extra: { runId?: string | null; epoch?: number | null; report?: TurnReport } = {},
   ex: Executor = db
 ): Promise<Turn> {
   await assertOwnedTask(userId, taskId, ex);
@@ -79,9 +81,15 @@ export async function addAgentTurn(
 }
 
 /** Platform-generated entry (workspace lifecycle, capture evidence). */
-export async function addSystemTurn(userId: string, taskId: string, content: string): Promise<Turn> {
-  await assertOwnedTask(userId, taskId);
-  return appendCompletedTurn(taskId, { kind: 'system', content });
+export async function addSystemTurn(
+  userId: string,
+  taskId: string,
+  content: string,
+  extra: { runId?: string | null; epoch?: number | null } = {},
+  ex: Executor = db
+): Promise<Turn> {
+  await assertOwnedTask(userId, taskId, ex);
+  return appendCompletedTurn(taskId, { kind: 'system', content, ...extra }, ex);
 }
 
 export async function listTurns(userId: string, taskId: string, ex: Executor = db): Promise<Turn[]> {
@@ -89,8 +97,12 @@ export async function listTurns(userId: string, taskId: string, ex: Executor = d
   return ex.select().from(turns).where(eq(turns.taskId, taskId)).orderBy(asc(turns.seq));
 }
 
-/** True when the run left at least one turn on the timeline. */
-export async function runHasTurns(runId: string): Promise<boolean> {
-  const [row] = await db.select({ id: turns.id }).from(turns).where(eq(turns.runId, runId)).limit(1);
+/** True when the run's agent posted at least one turn; platform evidence turns do not count. */
+export async function runHasAgentTurns(runId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: turns.id })
+    .from(turns)
+    .where(and(eq(turns.runId, runId), eq(turns.kind, 'agent')))
+    .limit(1);
   return row !== undefined;
 }
