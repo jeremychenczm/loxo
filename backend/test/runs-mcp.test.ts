@@ -113,7 +113,7 @@ function toolText(res: request.Response): string {
 describe('MCP control plane', () => {
   it('lists the five control-plane tools', async () => {
     const held = await startHeldRun('Tool listing');
-    const res = await mcpCall(mintRunToken(held.run.id), 'tools/list');
+    const res = await mcpCall(mintRunToken(held.run.id, 1), 'tools/list');
     expect(res.status).toBe(200);
     const names = res.body.result.tools.map((t: { name: string }) => t.name).sort();
     expect(names).toEqual([
@@ -127,7 +127,7 @@ describe('MCP control plane', () => {
 
   it('reads the task snapshot through get_task', async () => {
     const held = await startHeldRun('Snapshot target');
-    const res = await callTool(mintRunToken(held.run.id), 'get_task');
+    const res = await callTool(mintRunToken(held.run.id, 1), 'get_task');
     const snapshot = JSON.parse(toolText(res));
     expect(snapshot.taskNumber).toBe(held.task.number);
     expect(snapshot.title).toBe('Snapshot target');
@@ -136,7 +136,7 @@ describe('MCP control plane', () => {
 
   it('posts progress through comment_on_task and suppresses the fallback report', async () => {
     const held = await startHeldRun('Progress notes');
-    const res = await callTool(mintRunToken(held.run.id), 'comment_on_task', {
+    const res = await callTool(mintRunToken(held.run.id, 1), 'comment_on_task', {
       body: 'halfway there',
     });
     expect(toolText(res)).toBe('Comment posted');
@@ -154,7 +154,7 @@ describe('MCP control plane', () => {
 
   it('moves the task through update_task_status and rejects illegal transitions', async () => {
     const held = await startHeldRun('Status moves');
-    const runToken = mintRunToken(held.run.id);
+    const runToken = mintRunToken(held.run.id, 1);
 
     const ok = await callTool(runToken, 'update_task_status', { status: 'in_progress' });
     expect(JSON.parse(toolText(ok)).status).toBe('in_progress');
@@ -167,7 +167,7 @@ describe('MCP control plane', () => {
 
   it('ask_blocker posts the question and blocks the task', async () => {
     const held = await startHeldRun('Stuck run');
-    const runToken = mintRunToken(held.run.id);
+    const runToken = mintRunToken(held.run.id, 1);
     await callTool(runToken, 'update_task_status', { status: 'in_progress' });
 
     const res = await callTool(runToken, 'ask_blocker', {
@@ -182,7 +182,7 @@ describe('MCP control plane', () => {
 
   it('submit_result posts the report and hands the task to review', async () => {
     const held = await startHeldRun('Finished work');
-    const runToken = mintRunToken(held.run.id);
+    const runToken = mintRunToken(held.run.id, 1);
     await callTool(runToken, 'update_task_status', { status: 'in_progress' });
 
     const res = await callTool(runToken, 'submit_result', {
@@ -196,7 +196,7 @@ describe('MCP control plane', () => {
 
   it('rejects forged, malformed, and settled-run tokens', async () => {
     const held = await startHeldRun('Token gauntlet');
-    const good = mintRunToken(held.run.id);
+    const good = mintRunToken(held.run.id, 1);
 
     const forged = `${good.slice(0, -4)}AAAA`;
     expect((await callTool(forged, 'get_task')).status).toBe(401);

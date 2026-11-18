@@ -129,7 +129,7 @@ export async function executeTaskTurn(
     workspace,
   });
 
-  const runToken = mintRunToken(run.id);
+  const runToken = mintRunToken(run.id, lease.epoch);
   const mcpServers: HostMcpServer[] = [
     { type: 'http', name: 'swarmdev', url: config.mcpUrl(), headers: { Authorization: `Bearer ${runToken}` } },
   ];
@@ -156,7 +156,7 @@ export async function executeTaskTurn(
       system: agent.manifest.api?.systemPrompt ?? `You are ${agent.name}. ${agent.description}`.trim(),
       turnTimeoutMs: TASK_RUN_TIMEOUT_MS,
       repo: { baseCommit: taskWorkspace?.baseCommit ?? null },
-      extraTools: buildControlPlaneToolDefs({ run, agent, task }),
+      extraTools: buildControlPlaneToolDefs({ run, epoch: lease.epoch, agent, task }),
     });
   } else {
     if (!launch) {

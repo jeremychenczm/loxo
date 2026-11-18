@@ -105,7 +105,7 @@ describe('self-fencing on a lost lease', () => {
     await expectUntouchedAfterTakeover(runId);
     expect(await rowCount(turns, 'taskId', taskId)).toBe(0);
     expect(runLeases.isLost(runId)).toBe(true);
-    await expect(resolveRunContext(mintRunToken(runId))).rejects.toMatchObject({ status: 401 });
+    await expect(resolveRunContext(mintRunToken(runId, 1))).rejects.toMatchObject({ status: 401 });
   });
 
   it('kills the agent mid-turn without waiting and records nothing more', { timeout: T }, async () => {

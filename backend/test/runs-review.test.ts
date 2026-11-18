@@ -175,7 +175,7 @@ describe('reviewer routing', () => {
     await gated.invoked;
 
     const reviewRun = (await runsFor(task.id)).find((r) => r.trigger === 'review')!;
-    const runToken = mintRunToken(reviewRun.id);
+    const runToken = mintRunToken(reviewRun.id, 1);
 
     const list = await mcpCall(runToken, 'tools/list');
     const names = list.body.result.tools.map((t: { name: string }) => t.name).sort();
@@ -214,7 +214,7 @@ describe('reviewer routing', () => {
     await gated.invoked;
 
     const reviewRun = (await runsFor(task.id)).find((r) => r.trigger === 'review')!;
-    const res = await mcpCall(mintRunToken(reviewRun.id), 'tools/call', {
+    const res = await mcpCall(mintRunToken(reviewRun.id, 1), 'tools/call', {
       name: 'submit_review',
       arguments: { decision: 'changes_requested', feedback: 'Tests are missing for the edge case.' },
     });
@@ -264,7 +264,7 @@ describe('reviewer routing', () => {
     await gated.invoked;
 
     const reviewRun = (await runsFor(task.id)).find((r) => r.trigger === 'review')!;
-    const res = await mcpCall(mintRunToken(reviewRun.id), 'tools/call', {
+    const res = await mcpCall(mintRunToken(reviewRun.id, 1), 'tools/call', {
       name: 'submit_review',
       arguments: { decision: 'changes_requested', feedback: 'Still wrong.' },
     });

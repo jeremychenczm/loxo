@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
   agents,
@@ -20,27 +20,62 @@ import { moveTask } from '../tasks/tasks.service';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
 import { verifyRunToken } from './run-token';
+import { recordFenceRejection } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
 
 /**
  * The tool surface a woken agent gets back into the platform. Every call is
- * authenticated by a per-run token; context is resolved fresh per call so a
- * finished or cancelled run loses access immediately.
+ * checked against the run row under the owner epoch the caller holds, so a
+ * settled run, or one that has moved to another owner, loses access on its
+ * next call.
  */
 
 export interface RunToolContext {
   run: Run;
+  /** Owner epoch the caller acts under: the token's epoch, or the in-process lease's. */
+  epoch: number;
   agent: Agent;
   task: Task;
 }
 
-export async function resolveRunContext(token: string): Promise<RunToolContext> {
-  const runId = verifyRunToken(token);
-  if (!runId) throw unauthorized('Invalid run token');
+/**
+ * Refuses a control-plane call unless the run is still running under `epoch`
+ * with a live lease. Calls under an older epoch, on an expired lease, or for a
+ * run this instance already fenced come from a stale owner and count as fence
+ * rejections; a run that settled normally is merely inactive.
+ *
+ * TODO(control-plane): this runs at call entry only; move it into one fenced
+ * transaction with the tool's writes so a takeover committed mid-call is refused.
+ */
+async function assertRunActive(runId: string, epoch: number): Promise<Run> {
+  const [row] = await db
+    .select({ run: runs, leaseLive: sql<boolean>`${runs.leaseExpiresAt} > clock_timestamp()` })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .limit(1);
+  if (!row) throw unauthorized('Run is not active');
+  const { run, leaseLive } = row;
+  let stale: string | null = null;
+  if (run.ownerEpoch !== epoch) stale = 'Run token is from an earlier owner';
+  else if (run.status === 'running' && !leaseLive) stale = 'Run lease expired';
+  // Covers the gap between this instance fencing itself and the database
+  // lease expiring, while the row still names this instance as owner.
+  else if (run.status === 'running' && run.ownerInstance === runLeases.instance && runLeases.isLost(runId)) {
+    stale = 'Run lost its lease';
+  }
+  if (stale) {
+    recordFenceRejection('control_plane', runId, epoch);
+    throw unauthorized(stale);
+  }
+  if (run.status !== 'running') throw unauthorized('Run is not active');
+  return run;
+}
 
-  const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
-  if (!run || run.status !== 'running') throw unauthorized('Run is not active');
-  if (runLeases.isLost(run.id)) throw unauthorized('Run lost its lease');
+export async function resolveRunContext(token: string): Promise<RunToolContext> {
+  const claims = verifyRunToken(token);
+  if (!claims) throw unauthorized('Invalid run token');
+
+  const run = await assertRunActive(claims.runId, claims.epoch);
   if (!run.agentId || !run.taskId) throw unauthorized('Run has no control-plane scope');
 
   const [agent] = await db
@@ -55,7 +90,7 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
     .limit(1);
   if (!agent || !task) throw unauthorized('Run scope no longer exists');
 
-  return { run, agent, task };
+  return { run, epoch: claims.epoch, agent, task };
 }
 
 /**
@@ -218,10 +253,21 @@ export interface ControlPlaneToolDef {
 /**
  * In-process flavor of the control-plane tools for the api lane; same
  * implementations the MCP endpoint wraps, minus the token round-trip since
- * the executor already holds the run context. Review runs get the reviewer
- * set (read, comment, verdict); worker runs get the worker set.
+ * the executor already holds the run context. Each call passes the same
+ * epoch check as an MCP call. Review runs get the reviewer set (read,
+ * comment, verdict); worker runs get the worker set.
  */
 export function buildControlPlaneToolDefs(ctx: RunToolContext): ControlPlaneToolDef[] {
+  return toolDefsFor(ctx).map((def) => ({
+    ...def,
+    execute: async (args) => {
+      await assertRunActive(ctx.run.id, ctx.epoch);
+      return def.execute(args);
+    },
+  }));
+}
+
+function toolDefsFor(ctx: RunToolContext): ControlPlaneToolDef[] {
   const shared: ControlPlaneToolDef[] = [
     {
       name: 'get_task',
