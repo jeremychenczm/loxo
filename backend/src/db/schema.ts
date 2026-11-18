@@ -138,9 +138,10 @@ export interface RepositoryCheck {
  * checkout. Loxo adds worktrees and branches beside it and writes to the
  * primary checkout only during an explicit merge. The activeMerge* columns
  * form a compare-and-set lock: at most one workspace may mutate the primary
- * checkout, and the persisted operation id and pre-merge HEAD let crash
- * recovery prove whether an interrupted merge never started, aborted, or
- * completed — staleness is never inferred from age alone.
+ * checkout. Its holder renews a lease while the merge runs; the lock counts
+ * as stale only once that lease has expired, whichever instance looks, and
+ * even then the persisted operation id and pre-merge HEAD let recovery prove
+ * whether the interrupted merge never started, aborted, or completed.
  */
 export const repositories = pgTable(
   'repositories',
@@ -165,6 +166,9 @@ export const repositories = pgTable(
     activeMergeOperationId: text('active_merge_operation_id'),
     activeMergePreHead: text('active_merge_pre_head'),
     activeMergeStartedAt: timestamp('active_merge_started_at', { withTimezone: true }),
+    activeMergeOwnerInstance: text('active_merge_owner_instance'),
+    /** Lease on the database clock; null on a lock taken before leases counts as expired. */
+    activeMergeLeaseExpiresAt: timestamp('active_merge_lease_expires_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { and, desc, eq, isNull, notInArray } from 'drizzle-orm';
+import { and, desc, eq, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { db, type Executor, type Tx } from '../../db/client';
 import {
   WORKSPACE_TERMINAL_STATUSES,
@@ -19,7 +19,9 @@ import {
 import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
 import { addSystemTurn } from '../tasks/turns.service';
+import { config } from '../../config';
 import { fence } from '../ownership/fence';
+import { runLeases } from '../ownership/lease';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { workspaceBranchName, workspaceLeaf } from './branch-name';
@@ -356,19 +358,47 @@ export async function latestTaskSnapshot(
   return row ?? null;
 }
 
-/** Operation ids of merges currently executing in this process; lock staleness is proven against it. */
-const liveMergeOperations = new Set<string>();
+let mergeLockTtlMs = config.runLeaseTtlMs;
 
-/** Test seam: simulate a merge lock held by a live operation. */
-export function registerLiveMergeOperationForTests(operationId: string): void {
-  liveMergeOperations.add(operationId);
+/** Test seam: shorten the merge lock lease. */
+export function setMergeLockTtlForTests(ms: number | null): void {
+  mergeLockTtlMs = ms ?? config.runLeaseTtlMs;
+}
+
+const leaseFromNow = () => sql`clock_timestamp() + ${mergeLockTtlMs}::integer * interval '1 millisecond'`;
+
+const CLEARED_LOCK = {
+  activeMergeWorkspaceId: null,
+  activeMergeOperationId: null,
+  activeMergePreHead: null,
+  activeMergeStartedAt: null,
+  activeMergeOwnerInstance: null,
+  activeMergeLeaseExpiresAt: null,
+} as const;
+
+/** A merge lock this instance holds; its lease is renewed until it is released or abandoned. */
+interface HeldMergeLock {
+  repositoryId: string;
+  operationId: string;
+  stopRenewing(): void;
+}
+
+function renewMergeLock(repositoryId: string, operationId: string): () => void {
+  const timer = setInterval(() => {
+    db.update(repositories)
+      .set({ activeMergeLeaseExpiresAt: sql`GREATEST(${repositories.activeMergeLeaseExpiresAt}, ${leaseFromNow()})` })
+      .where(and(eq(repositories.id, repositoryId), eq(repositories.activeMergeOperationId, operationId)))
+      .catch((err) => console.error(`Merge lock renewal for ${repositoryId} failed:`, err));
+  }, Math.max(50, Math.floor(mergeLockTtlMs / 3)));
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 async function acquireMergeLock(
   repository: Repository,
   workspace: Workspace,
   preHead: string
-): Promise<string> {
+): Promise<HeldMergeLock> {
   const operationId = crypto.randomUUID();
   const [locked] = await db
     .update(repositories)
@@ -377,6 +407,8 @@ async function acquireMergeLock(
       activeMergeOperationId: operationId,
       activeMergePreHead: preHead,
       activeMergeStartedAt: new Date(),
+      activeMergeOwnerInstance: runLeases.instance,
+      activeMergeLeaseExpiresAt: leaseFromNow(),
       updatedAt: new Date(),
     })
     .where(
@@ -389,42 +421,76 @@ async function acquireMergeLock(
   if (!locked) {
     throw conflict('merge_in_progress', 'Another merge holds the repository lock');
   }
-  liveMergeOperations.add(operationId);
-  return operationId;
+  return { repositoryId: repository.id, operationId, stopRenewing: renewMergeLock(repository.id, operationId) };
 }
 
-async function releaseMergeLock(repositoryId: string, operationId: string): Promise<void> {
-  liveMergeOperations.delete(operationId);
+async function releaseMergeLock(lock: HeldMergeLock): Promise<void> {
+  lock.stopRenewing();
   await db
     .update(repositories)
-    .set({
-      activeMergeWorkspaceId: null,
-      activeMergeOperationId: null,
-      activeMergePreHead: null,
-      activeMergeStartedAt: null,
-      updatedAt: new Date(),
-    })
+    .set({ ...CLEARED_LOCK, updatedAt: new Date() })
     .where(
       and(
-        eq(repositories.id, repositoryId),
-        eq(repositories.activeMergeOperationId, operationId)
+        eq(repositories.id, lock.repositoryId),
+        eq(repositories.activeMergeOperationId, lock.operationId)
       )
     );
 }
 
 /**
- * Stale-lock recovery: a lock is stale only when its operation id is not
- * live in this process; age alone never authorizes release. Every branch
- * proves the primary checkout's Git state before touching the lock.
+ * Keeps the lock row as evidence for manual recovery but lets its lease lapse
+ * now, so the next attempt examines it instead of waiting out the lease.
+ */
+async function abandonMergeLock(lock: HeldMergeLock): Promise<void> {
+  lock.stopRenewing();
+  await db
+    .update(repositories)
+    .set({ activeMergeLeaseExpiresAt: sql`clock_timestamp()`, updatedAt: new Date() })
+    .where(
+      and(
+        eq(repositories.id, lock.repositoryId),
+        eq(repositories.activeMergeOperationId, lock.operationId)
+      )
+    );
+}
+
+/**
+ * Stale-lock recovery. A lock is stale only once its lease has expired; a
+ * live lease means its holder (in any instance) is still merging. The
+ * recovering instance first claims the stale lock under a new operation id,
+ * so of two instances racing to recover, exactly one proceeds. Every branch
+ * then proves the primary checkout's Git state before releasing the lock.
  */
 async function recoverStaleMergeLock(
   userId: string,
   repository: Repository
 ): Promise<Repository> {
   if (!repository.activeMergeWorkspaceId || !repository.activeMergeOperationId) return repository;
-  if (liveMergeOperations.has(repository.activeMergeOperationId)) {
+
+  const recoveryId = crypto.randomUUID();
+  const [claimed] = await db
+    .update(repositories)
+    .set({
+      activeMergeOperationId: recoveryId,
+      activeMergeOwnerInstance: runLeases.instance,
+      activeMergeLeaseExpiresAt: leaseFromNow(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(repositories.id, repository.id),
+        eq(repositories.activeMergeOperationId, repository.activeMergeOperationId),
+        or(
+          isNull(repositories.activeMergeLeaseExpiresAt),
+          lte(repositories.activeMergeLeaseExpiresAt, sql`clock_timestamp()`)
+        )
+      )
+    )
+    .returning({ id: repositories.id });
+  if (!claimed) {
     throw conflict('merge_in_progress', 'Another merge holds the repository lock');
   }
+  const recovery: HeldMergeLock = { repositoryId: repository.id, operationId: recoveryId, stopRenewing: () => {} };
 
   const root = repository.rootPath;
   const checkout = await localGitDriver.inspectPrimaryCheckout(root);
@@ -436,16 +502,7 @@ async function recoverStaleMergeLock(
     .limit(1);
 
   const clearLock = async () => {
-    await db
-      .update(repositories)
-      .set({
-        activeMergeWorkspaceId: null,
-        activeMergeOperationId: null,
-        activeMergePreHead: null,
-        activeMergeStartedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(repositories.id, repository.id));
+    await releaseMergeLock(recovery);
     return (await findRepository(userId, repository.id))!;
   };
 
@@ -493,6 +550,7 @@ async function recoverStaleMergeLock(
       lastError: 'Merge lock recovery could not prove the primary checkout state; recover manually',
     });
   }
+  await abandonMergeLock(recovery);
   throw conflict(
     'merge_recovery_failed',
     'A previous merge left the repository in an unprovable state; recover the primary checkout manually'
@@ -620,7 +678,8 @@ export async function finalizeTaskWorkspace(
     repository = await recoverStaleMergeLock(userId, repository);
   }
   const checkout = await localGitDriver.inspectPrimaryCheckout(root);
-  const operationId = await acquireMergeLock(repository, workspace, checkout.head);
+  const lock = await acquireMergeLock(repository, workspace, checkout.head);
+  let releaseLock = true;
   try {
     const outcome = await localGitDriver
       .mergeWorkspace({
@@ -665,13 +724,12 @@ export async function finalizeTaskWorkspace(
     }
 
     // abort_failed: keep the lock for manual recovery evidence, mark error.
-    liveMergeOperations.delete(operationId);
+    releaseLock = false;
+    await abandonMergeLock(lock);
     await updateWorkspace(workspace.id, { status: 'error', lastError: outcome.error });
     throw conflict('merge_recovery_failed', outcome.error);
   } finally {
-    if (liveMergeOperations.has(operationId)) {
-      await releaseMergeLock(repository.id, operationId);
-    }
+    if (releaseLock) await releaseMergeLock(lock);
   }
 }
 

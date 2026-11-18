@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import { repositories } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { registerLiveMergeOperationForTests } from '../src/modules/code-workspaces/workspace.service';
+import { setMergeLockTtlForTests } from '../src/modules/code-workspaces/workspace.service';
 import { recordApproval } from '../src/modules/tasks/approvals.service';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
@@ -223,63 +223,115 @@ describe('merge finalization', () => {
 });
 
 describe('merge lock', () => {
-  it('rejects finalization while a live merge holds the lock', { timeout: T }, async () => {
+  async function lockRow() {
+    const [row] = await db
+      .select({
+        operationId: repositories.activeMergeOperationId,
+        owner: repositories.activeMergeOwnerInstance,
+        leaseExpiresAt: repositories.activeMergeLeaseExpiresAt,
+      })
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    return row!;
+  }
+
+  async function plantLock(workspaceId: string, owner: string, leaseExpiresAt: Date | null) {
+    const operationId = crypto.randomUUID();
+    await db
+      .update(repositories)
+      .set({
+        activeMergeWorkspaceId: workspaceId,
+        activeMergeOperationId: operationId,
+        activeMergePreHead: await git(repoDir, 'rev-parse', 'HEAD'),
+        activeMergeStartedAt: new Date(Date.now() - 60_000),
+        activeMergeOwnerInstance: owner,
+        activeMergeLeaseExpiresAt: leaseExpiresAt,
+      })
+      .where(eq(repositories.id, repositoryId));
+    return operationId;
+  }
+
+  it('treats a lock under another instance\'s live lease as held', { timeout: T }, async () => {
     const task = await workedTask('Lock holder', (ws) => {
       fs.writeFileSync(path.join(ws, 'd.txt'), 'd\n');
     });
     await approve(task.id);
-
-    const liveOp = crypto.randomUUID();
-    registerLiveMergeOperationForTests(liveOp);
     const ws = await workspaceOf(task.id);
-    await db
-      .update(repositories)
-      .set({
-        activeMergeWorkspaceId: ws!.id,
-        activeMergeOperationId: liveOp,
-        activeMergePreHead: await git(repoDir, 'rev-parse', 'HEAD'),
-        activeMergeStartedAt: new Date(),
-      })
-      .where(eq(repositories.id, repositoryId));
+    // Started a minute ago in another process: age and process-local state say nothing.
+    const operationId = await plantLock(ws!.id, 'other-instance', new Date(Date.now() + 60_000));
 
     const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('merge_in_progress');
+    expect(await lockRow()).toMatchObject({ operationId, owner: 'other-instance' });
 
-    // Cleanup: release the fake lock and finish the task.
+    // The holder's lease lapses without renewal; now the lock is stale and recoverable.
     await db
       .update(repositories)
-      .set({
-        activeMergeWorkspaceId: null,
-        activeMergeOperationId: null,
-        activeMergePreHead: null,
-        activeMergeStartedAt: null,
-      })
+      .set({ activeMergeLeaseExpiresAt: new Date(Date.now() - 1_000) })
       .where(eq(repositories.id, repositoryId));
     const ok = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(ok.status).toBe(200);
+    expect(ok.body.workspace.status).toBe('merged');
+    expect(await lockRow()).toEqual({ operationId: null, owner: null, leaseExpiresAt: null });
   });
 
-  it('recovers a stale lock whose merge never started, then proceeds', { timeout: T }, async () => {
+  it('recovers a lock taken before leases existed, then proceeds', { timeout: T }, async () => {
     const task = await workedTask('Stale lock recovery', (ws) => {
       fs.writeFileSync(path.join(ws, 'e.txt'), 'e\n');
     });
     await approve(task.id);
-
     const ws = await workspaceOf(task.id);
-    await db
-      .update(repositories)
-      .set({
-        activeMergeWorkspaceId: ws!.id,
-        activeMergeOperationId: crypto.randomUUID(), // never registered as live
-        activeMergePreHead: await git(repoDir, 'rev-parse', 'HEAD'),
-        activeMergeStartedAt: new Date(Date.now() - 60_000),
-      })
-      .where(eq(repositories.id, repositoryId));
+    await plantLock(ws!.id, 'crashed-instance', null);
 
     const res = await finalize(task.id, 'merge', { confirmCheckpoint: true });
     expect(res.status).toBe(200);
     expect(res.body.workspace.status).toBe('merged');
+  });
+
+  it('renews the lease through a slow merge and refuses a concurrent one', { timeout: T }, async () => {
+    const slow = await workedTask('Slow merge', (ws) => {
+      fs.writeFileSync(path.join(ws, 'slow.txt'), 'slow\n');
+    });
+    const waiting = await workedTask('Waiting merge', (ws) => {
+      fs.writeFileSync(path.join(ws, 'waiting.txt'), 'waiting\n');
+    });
+    await approve(slow.id);
+    await approve(waiting.id);
+
+    const hook = path.join(repoDir, '.git', 'hooks', 'post-merge');
+    fs.writeFileSync(hook, '#!/bin/sh\nsleep 3\n', { mode: 0o755 });
+    setMergeLockTtlForTests(900);
+    try {
+      let settled: request.Response | null = null;
+      const merging = finalize(slow.id, 'merge', { confirmCheckpoint: true }).then((res) => (settled = res));
+      let first = await lockRow();
+      for (let i = 0; i < 400 && !first.operationId && !settled; i += 1) {
+        await new Promise((r) => setTimeout(r, 25));
+        first = await lockRow();
+      }
+      expect(settled, JSON.stringify((settled as request.Response | null)?.body)).toBeNull();
+      expect(first.operationId).not.toBeNull();
+
+      // Well past one lease length, the lock is still live because it was renewed.
+      await new Promise((r) => setTimeout(r, 1_800));
+      const later = await lockRow();
+      expect(later.operationId).toBe(first.operationId);
+      expect(later.leaseExpiresAt!.getTime()).toBeGreaterThan(first.leaseExpiresAt!.getTime());
+      const { rows } = await pool.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+      expect(later.leaseExpiresAt!.getTime()).toBeGreaterThan(rows[0]!.now.getTime());
+
+      const refused = await finalize(waiting.id, 'merge', { confirmCheckpoint: true });
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe('merge_in_progress');
+
+      const merged = await merging;
+      expect(merged.status).toBe(200);
+      expect(await lockRow()).toEqual({ operationId: null, owner: null, leaseExpiresAt: null });
+    } finally {
+      setMergeLockTtlForTests(null);
+      fs.rmSync(hook, { force: true });
+    }
   });
 });
 
