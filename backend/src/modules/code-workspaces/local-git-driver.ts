@@ -37,6 +37,7 @@ import {
   type WorkingTreeSnapshot,
   type WorkspaceObservation,
 } from './workspace.types';
+import { childEnv } from '../../lib/child-env';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 60_000;
@@ -56,7 +57,7 @@ async function runGit(cwd: string, args: string[]): Promise<Buffer> {
       encoding: 'buffer',
       // No optional locks: read-only commands such as status must not refresh the
       // user's index as a side effect.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
+      env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }),
     });
     return stdout;
   } catch (err) {

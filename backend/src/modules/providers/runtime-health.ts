@@ -4,6 +4,7 @@ import { db } from '../../db/client';
 import { providers } from '../../db/schema';
 import { eq } from 'drizzle-orm';
 import { runtimeProfile, type RuntimeProfile } from '../hosts/runtime-catalog';
+import { childEnv } from '../../lib/child-env';
 
 const execFileAsync = promisify(execFile);
 const CLI_CHECK_TIMEOUT_MS = 5_000;
@@ -58,7 +59,11 @@ function redact(text: string): string {
 async function commandOnPath(command: string): Promise<boolean> {
   const locator = process.platform === 'win32' ? 'where' : 'which';
   try {
-    await execFileAsync(locator, [command], { timeout: CLI_CHECK_TIMEOUT_MS, windowsHide: true });
+    await execFileAsync(locator, [command], {
+      timeout: CLI_CHECK_TIMEOUT_MS,
+      windowsHide: true,
+      env: childEnv('agent'),
+    });
     return true;
   } catch {
     return false;
@@ -93,6 +98,7 @@ async function checkCli(spec: PlatformSpec): Promise<PlatformHealth['cli']> {
       timeout: CLI_CHECK_TIMEOUT_MS,
       windowsHide: true,
       shell: process.platform === 'win32',
+      env: childEnv('agent'),
     });
     return { available: true, version: redact(stdout) };
   } catch (error) {

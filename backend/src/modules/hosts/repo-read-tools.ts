@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { badRequest } from '../../http/errors';
 import { cleanRelativePath, resolveInside } from '../../storage/path-safety';
 import type { ApiToolDefinition } from '../runner/api-tool-loop';
+import { childEnv } from '../../lib/child-env';
 
 /**
  * Read-only views of a worktree for members that have no file system of
@@ -37,7 +38,7 @@ async function git(root: string, args: string[]): Promise<string | null> {
       cwd: root,
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+      env: childEnv('git', { GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }),
     });
     return stdout;
   } catch {

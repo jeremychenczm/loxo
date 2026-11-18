@@ -21,6 +21,7 @@ import type {
   TurnInput,
   TurnOutcome,
 } from './host.types';
+import { childEnv } from '../../lib/child-env';
 
 /** How to start an ACP agent process; the runtime catalog builds one per agent. */
 export interface AcpLaunchSpec {
@@ -125,7 +126,7 @@ class AcpSession implements AgentSession {
   ): Promise<AcpSession> {
     const child = spawn(launch.command, launch.args, {
       cwd: input.cwd,
-      env: { ...process.env, ...launch.env },
+      env: childEnv('agent', launch.env ?? {}),
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true,
