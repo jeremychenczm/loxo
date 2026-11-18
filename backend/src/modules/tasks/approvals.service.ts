@@ -1,5 +1,5 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
-import { db } from '../../db/client';
+import { db, type Executor } from '../../db/client';
 import {
   approvals,
   tasks,
@@ -11,7 +11,7 @@ import {
 } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
 import { latestTaskSnapshot } from '../code-workspaces/workspace.service';
-import { moveTask } from './tasks.service';
+import { moveTask, moveTaskWithin, type PendingWake } from './tasks.service';
 import { addAgentTurn, addHumanTurn } from './turns.service';
 
 /** Automated reject cycles allowed per task before a human must take over. */
@@ -28,8 +28,8 @@ export interface ReviewVerdictReport {
   decision: ApprovalDecision;
 }
 
-async function findOwnedTask(userId: string, taskId: string): Promise<Task> {
-  const [task] = await db
+async function findOwnedTask(userId: string, taskId: string, ex: Executor = db): Promise<Task> {
+  const [task] = await ex
     .select()
     .from(tasks)
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
@@ -48,8 +48,8 @@ function assertReviewable(task: Task, body: string): string {
 }
 
 /** Agent changes_requested verdicts on a task, ever. */
-export async function countAgentRejections(taskId: string): Promise<number> {
-  const [row] = await db
+export async function countAgentRejections(taskId: string, ex: Executor = db): Promise<number> {
+  const [row] = await ex
     .select({ n: sql<number>`count(*)::int` })
     .from(turns)
     .where(
@@ -108,16 +108,19 @@ export interface AgentVerdictOptions {
 }
 
 /**
- * An agent reviewer's verdict, kept as a turn. Asymmetric authority: a
- * rejection reopens work, an approval only recommends — closing stays human.
+ * An agent reviewer's verdict, kept as a turn and written through `ex`.
+ * Asymmetric authority: a rejection reopens work, an approval only
+ * recommends — closing stays human. Returns the wakes the reopen calls for;
+ * the caller fires them after commit.
  */
 export async function recordAgentVerdict(
+  ex: Executor,
   userId: string,
   taskId: string,
   input: { agentId: string; runId: string | null; decision: ApprovalDecision; body: string },
   options: AgentVerdictOptions = {}
-): Promise<Turn> {
-  const task = await findOwnedTask(userId, taskId);
+): Promise<{ turn: Turn; wakes: PendingWake[] }> {
+  const task = await findOwnedTask(userId, taskId, ex);
   const body = assertReviewable(task, input.body);
   const report: ReviewVerdictReport = { type: 'review', decision: input.decision };
   const turn = await addAgentTurn(
@@ -125,12 +128,14 @@ export async function recordAgentVerdict(
     taskId,
     input.agentId,
     `${DECISION_LABEL[input.decision]} ${body}`,
-    { runId: input.runId, report: { ...report } }
+    { runId: input.runId, report: { ...report } },
+    ex
   );
   if (input.decision === 'changes_requested' && options.reopen !== false) {
-    await moveTask(userId, taskId, { status: 'in_progress' });
+    const { wakes } = await moveTaskWithin(ex, userId, taskId, { status: 'in_progress' });
+    return { turn, wakes };
   }
-  return turn;
+  return { turn, wakes: [] };
 }
 
 export async function listApprovals(userId: string, taskId: string): Promise<Approval[]> {

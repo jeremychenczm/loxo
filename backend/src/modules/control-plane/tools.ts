@@ -1,9 +1,12 @@
-import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../../db/client';
+import { createHash } from 'node:crypto';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { db, type Executor, type Tx } from '../../db/client';
 import {
   agents,
+  controlPlaneRequests,
   tasks,
   runs,
+  TERMINAL_CONTROL_PLANE_TOOLS,
   type Agent,
   type Task,
   type TaskStatus,
@@ -16,10 +19,11 @@ import {
   recordAgentVerdict,
   REVIEW_CYCLE_CAP,
 } from '../tasks/approvals.service';
-import { moveTask } from '../tasks/tasks.service';
+import { fireWakes, moveTaskWithin, type PendingWake } from '../tasks/tasks.service';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
 import { verifyRunToken } from './run-token';
+import { crashPoint } from '../ownership/crash-points';
 import { recordFenceRejection } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
 
@@ -42,17 +46,17 @@ export interface RunToolContext {
  * Refuses a control-plane call unless the run is still running under `epoch`
  * with a live lease. Calls under an older epoch, on an expired lease, or for a
  * run this instance already fenced come from a stale owner and count as fence
- * rejections; a run that settled normally is merely inactive.
- *
- * TODO(control-plane): this runs at call entry only; move it into one fenced
- * transaction with the tool's writes so a takeover committed mid-call is refused.
+ * rejections; a run that settled normally is merely inactive. With `lock` it
+ * also holds FOR KEY SHARE on the run row until commit: a takeover needs FOR
+ * UPDATE on that row, so it waits for the caller's writes and they can never
+ * land under an epoch that has already moved on.
  */
-async function assertRunActive(runId: string, epoch: number): Promise<Run> {
-  const [row] = await db
+async function assertRunActive(ex: Executor, runId: string, epoch: number, lock = false): Promise<Run> {
+  const query = ex
     .select({ run: runs, leaseLive: sql<boolean>`${runs.leaseExpiresAt} > clock_timestamp()` })
     .from(runs)
-    .where(eq(runs.id, runId))
-    .limit(1);
+    .where(eq(runs.id, runId));
+  const [row] = lock ? await query.for('key share') : await query.limit(1);
   if (!row) throw unauthorized('Run is not active');
   const { run, leaseLive } = row;
   let stale: string | null = null;
@@ -75,7 +79,7 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
   const claims = verifyRunToken(token);
   if (!claims) throw unauthorized('Invalid run token');
 
-  const run = await assertRunActive(claims.runId, claims.epoch);
+  const run = await assertRunActive(db, claims.runId, claims.epoch);
   if (!run.agentId || !run.taskId) throw unauthorized('Run has no control-plane scope');
 
   const [agent] = await db
@@ -93,12 +97,79 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
   return { run, epoch: claims.epoch, agent, task };
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+const TERMINAL_TOOLS: readonly string[] = TERMINAL_CONTROL_PLANE_TOOLS;
+
+/**
+ * Runs one control-plane write as a single transaction: fence the run row,
+ * serialize with the run's other calls, answer a repeated call from the
+ * stored result, apply the writes, and record the request. A terminal tool
+ * repeats whenever the run already called it; any other tool repeats only
+ * when it is the run's latest call with the same arguments, so a deliberate
+ * sequence such as in_progress, blocked, in_progress still takes effect.
+ * Wakes the writes ask for fire after commit.
+ */
+async function controlPlaneWrite<T>(
+  ctx: RunToolContext,
+  tool: string,
+  args: Record<string, unknown>,
+  write: (tx: Tx, wakes: PendingWake[]) => Promise<T>
+): Promise<T> {
+  const argsHash = createHash('sha256').update(canonicalJson(args)).digest('hex');
+  const wakes: PendingWake[] = [];
+  const result = await db.transaction(async (tx) => {
+    await assertRunActive(tx, ctx.run.id, ctx.epoch, true);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.run.id}, 0))`);
+
+    const [last] = await tx
+      .select()
+      .from(controlPlaneRequests)
+      .where(eq(controlPlaneRequests.runId, ctx.run.id))
+      .orderBy(desc(controlPlaneRequests.seq))
+      .limit(1);
+    const [prior] = TERMINAL_TOOLS.includes(tool)
+      ? await tx
+          .select()
+          .from(controlPlaneRequests)
+          .where(and(eq(controlPlaneRequests.runId, ctx.run.id), eq(controlPlaneRequests.tool, tool)))
+          .limit(1)
+      : last && last.tool === tool && last.argsHash === argsHash
+        ? [last]
+        : [];
+    if (prior) return prior.result as T;
+
+    const value = await write(tx, wakes);
+    crashPoint('control_plane.before_record');
+    await tx.insert(controlPlaneRequests).values({
+      runId: ctx.run.id,
+      epoch: ctx.epoch,
+      seq: (last?.seq ?? 0) + 1,
+      tool,
+      argsHash,
+      result: value ?? null,
+    });
+    return value;
+  });
+  await fireWakes(wakes);
+  return result;
+}
+
 /**
  * Tool contexts live for a whole run while the task moves underneath them
  * (often via these very tools); reads always go back to the database.
  */
-async function freshTask(ctx: RunToolContext): Promise<Task> {
-  const [task] = await db
+async function freshTask(ctx: RunToolContext, ex: Executor = db): Promise<Task> {
+  const [task] = await ex
     .select()
     .from(tasks)
     .where(and(eq(tasks.id, ctx.task.id), eq(tasks.userId, ctx.run.userId)))
@@ -112,17 +183,21 @@ async function freshTask(ctx: RunToolContext): Promise<Task> {
  * legal bridge (an agent finishing straight from todo is normal, not an
  * error). Still-illegal moves reject through the transition table.
  */
-async function advanceTo(ctx: RunToolContext, target: TaskStatus): Promise<Task> {
-  let task = await freshTask(ctx);
+async function advanceTo(ctx: RunToolContext, target: TaskStatus, tx: Tx, wakes: PendingWake[]): Promise<Task> {
+  let task = await freshTask(ctx, tx);
   if (task.status === target) return task;
   if (
     !isTransitionAllowed(task.status, target) &&
     isTransitionAllowed(task.status, 'in_progress') &&
     isTransitionAllowed('in_progress', target)
   ) {
-    task = await moveTask(ctx.run.userId, task.id, { status: 'in_progress' });
+    const bridged = await moveTaskWithin(tx, ctx.run.userId, task.id, { status: 'in_progress' });
+    wakes.push(...bridged.wakes);
+    task = bridged.task;
   }
-  return moveTask(ctx.run.userId, task.id, { status: target });
+  const moved = await moveTaskWithin(tx, ctx.run.userId, task.id, { status: target });
+  wakes.push(...moved.wakes);
+  return moved.task;
 }
 
 export interface TaskSnapshot {
@@ -151,30 +226,42 @@ export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot
 }
 
 /** Every timeline entry an agent makes is tied to the run that produced it. */
-async function postAsAgent(ctx: RunToolContext, content: string): Promise<void> {
-  await addAgentTurn(ctx.run.userId, ctx.task.id, ctx.agent.id, content, { runId: ctx.run.id });
+async function postAsAgent(ctx: RunToolContext, content: string, tx: Tx): Promise<void> {
+  await addAgentTurn(ctx.run.userId, ctx.task.id, ctx.agent.id, content, { runId: ctx.run.id }, tx);
+}
+
+export interface StatusResult {
+  status: TaskStatus;
 }
 
 export async function commentOnTask(ctx: RunToolContext, body: string): Promise<void> {
-  await postAsAgent(ctx, body);
+  await controlPlaneWrite(ctx, 'comment_on_task', { body }, (tx) => postAsAgent(ctx, body, tx));
 }
 
 /** Status writes go through the same transition table as every other path. */
-export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus): Promise<Task> {
-  return moveTask(ctx.run.userId, ctx.task.id, { status });
+export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus): Promise<StatusResult> {
+  return controlPlaneWrite(ctx, 'update_task_status', { status }, async (tx, wakes) => {
+    const moved = await moveTaskWithin(tx, ctx.run.userId, ctx.task.id, { status });
+    wakes.push(...moved.wakes);
+    return { status: moved.task.status };
+  });
 }
 
 /** Flags the run's task as blocked with the question on the timeline. */
-export async function askBlocker(ctx: RunToolContext, question: string): Promise<Task> {
-  await postAsAgent(ctx, `[BLOCKER] ${question}`);
-  return advanceTo(ctx, 'blocked');
+export async function askBlocker(ctx: RunToolContext, question: string): Promise<StatusResult> {
+  return controlPlaneWrite(ctx, 'ask_blocker', { question }, async (tx, wakes) => {
+    await postAsAgent(ctx, `[BLOCKER] ${question}`, tx);
+    return { status: (await advanceTo(ctx, 'blocked', tx, wakes)).status };
+  });
 }
 
 /** Posts the result and hands the task to review. */
-export async function submitResult(ctx: RunToolContext, summary: string): Promise<Task> {
+export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
-  await postAsAgent(ctx, summary);
-  return advanceTo(ctx, 'in_review');
+  return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, wakes) => {
+    await postAsAgent(ctx, summary, tx);
+    return { status: (await advanceTo(ctx, 'in_review', tx, wakes)).status };
+  });
 }
 
 export interface ReviewVerdictOutcome {
@@ -198,31 +285,35 @@ export async function submitReviewVerdict(
   }
   const verdict = { agentId: ctx.agent.id, runId: ctx.run.id, decision, body: feedback };
 
-  if (decision === 'approved') {
-    await recordAgentVerdict(ctx.run.userId, ctx.task.id, verdict);
-    return {
-      status: 'in_review',
-      halted: false,
-      note: 'Approval recorded as a recommendation; final sign-off stays with a human.',
-    };
-  }
+  return controlPlaneWrite(ctx, 'submit_review', { decision, feedback }, async (tx, wakes) => {
+    if (decision === 'approved') {
+      await recordAgentVerdict(tx, ctx.run.userId, ctx.task.id, verdict);
+      return {
+        status: 'in_review',
+        halted: false,
+        note: 'Approval recorded as a recommendation; final sign-off stays with a human.',
+      };
+    }
 
-  const priorRejections = await countAgentRejections(ctx.task.id);
-  const halted = priorRejections >= REVIEW_CYCLE_CAP;
-  await recordAgentVerdict(ctx.run.userId, ctx.task.id, verdict, { reopen: !halted });
-  if (halted) {
-    await postAsAgent(
-      ctx,
-      `[REVIEW HALTED] ${REVIEW_CYCLE_CAP} automated review cycles reached; a human reviewer needs to take over.`
-    );
-    return {
-      status: 'in_review',
-      halted: true,
-      note: 'Automated review cycles exhausted; the task stays in review for a human.',
-    };
-  }
-  const task = await freshTask(ctx);
-  return { status: task.status, halted: false, note: 'Changes requested; the lead has been re-woken.' };
+    const priorRejections = await countAgentRejections(ctx.task.id, tx);
+    const halted = priorRejections >= REVIEW_CYCLE_CAP;
+    const recorded = await recordAgentVerdict(tx, ctx.run.userId, ctx.task.id, verdict, { reopen: !halted });
+    wakes.push(...recorded.wakes);
+    if (halted) {
+      await postAsAgent(
+        ctx,
+        `[REVIEW HALTED] ${REVIEW_CYCLE_CAP} automated review cycles reached; a human reviewer needs to take over.`,
+        tx
+      );
+      return {
+        status: 'in_review',
+        halted: true,
+        note: 'Automated review cycles exhausted; the task stays in review for a human.',
+      };
+    }
+    const task = await freshTask(ctx, tx);
+    return { status: task.status, halted: false, note: 'Changes requested; the lead has been re-woken.' };
+  });
 }
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -261,7 +352,7 @@ export function buildControlPlaneToolDefs(ctx: RunToolContext): ControlPlaneTool
   return toolDefsFor(ctx).map((def) => ({
     ...def,
     execute: async (args) => {
-      await assertRunActive(ctx.run.id, ctx.epoch);
+      await assertRunActive(db, ctx.run.id, ctx.epoch);
       return def.execute(args);
     },
   }));

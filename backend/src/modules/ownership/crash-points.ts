@@ -3,7 +3,7 @@
  * the surrounding transaction leaves nothing half-written. An unarmed point
  * costs one Map lookup.
  */
-export type CrashPoint = 'admission.after_claim' | 'run.before_capture';
+export type CrashPoint = 'admission.after_claim' | 'run.before_capture' | 'control_plane.before_record';
 
 const armed = new Map<CrashPoint, () => void>();
 

@@ -331,6 +331,42 @@ export const runs = pgTable(
 
 export type Run = typeof runs.$inferSelect;
 
+/** Tools whose effect is final for a run: they take effect at most once per run, whatever the arguments. */
+export const TERMINAL_CONTROL_PLANE_TOOLS = ['submit_result', 'submit_review'] as const;
+
+/**
+ * Control-plane writes a run committed, in call order. Each row lands in the
+ * same transaction as the tool's writes, so a row exists exactly when the
+ * effect does; a repeated call returns the stored result instead of writing
+ * again.
+ */
+export const controlPlaneRequests = pgTable(
+  'control_plane_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    /** Owner epoch the call was fenced under. */
+    epoch: integer('epoch').notNull(),
+    seq: integer('seq').notNull(),
+    tool: text('tool').notNull(),
+    /** sha256 of the canonical JSON arguments. */
+    argsHash: text('args_hash').notNull(),
+    result: jsonb('result'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('control_plane_requests_run_seq').on(t.runId, t.seq),
+    /** Terminal tools take effect at most once per run. Keep in step with TERMINAL_CONTROL_PLANE_TOOLS. */
+    uniqueIndex('control_plane_requests_terminal')
+      .on(t.runId, t.tool)
+      .where(sql`${t.tool} IN ('submit_result', 'submit_review')`),
+  ]
+);
+
+export type ControlPlaneRequest = typeof controlPlaneRequests.$inferSelect;
+
 export type TurnKind = 'agent' | 'human' | 'system';
 
 export type TurnStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
