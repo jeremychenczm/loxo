@@ -6,7 +6,6 @@ import { addAgentTurn, runHasTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
-  admitRun,
   createQueuedRun,
   failQueuedRun,
   nextQueuedRunForAgent,
@@ -15,6 +14,7 @@ import {
   settleRun,
   type RunOutcome,
 } from './runs.service';
+import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
 
@@ -92,11 +92,11 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
     await failQueuedRun(run.id, 'Agent no longer exists').catch(() => {});
     return undefined;
   }
-  const admission = await admitRun(run.id);
-  if (!admission) return undefined;
+  const admitted = await runLeases.admit(run.id);
+  if (!admitted) return undefined;
 
-  const started = admission.run;
-  const settled = performRun(started).catch((error) => {
+  const { run: started, lease } = admitted;
+  const settled = performRun(started, lease).catch((error) => {
     console.error(`Run ${started.id} settlement failed:`, error);
   });
   settling.add(settled);
@@ -104,7 +104,15 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
   return started;
 }
 
-async function performRun(run: Run): Promise<void> {
+async function performRun(run: Run, lease: RunOwnership): Promise<void> {
+  try {
+    await executeAndSettle(run, lease);
+  } finally {
+    runLeases.release(run.id);
+  }
+}
+
+async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
   let outcome: RunOutcome;
   let report: { taskId: string; agentId: string; text: string } | undefined;
   try {
@@ -120,7 +128,7 @@ async function performRun(run: Run): Promise<void> {
       throw new RunnerError('Agent or task disappeared before the run started', 'cli_failed');
     }
 
-    const result = await executeTaskTurn(run, agent as Agent, task as Task);
+    const result = await executeTaskTurn(run, agent as Agent, task as Task, lease);
     outcome = {
       status: result.ok ? 'succeeded' : 'failed',
       output: result.text,
@@ -137,9 +145,15 @@ async function performRun(run: Run): Promise<void> {
     }
   } catch (error) {
     const detail = error instanceof RunnerError ? error.message : 'Task run failed unexpectedly';
-    if (!(error instanceof RunnerError)) console.error(`Run ${run.id} failed:`, error);
+    if (!(error instanceof RunnerError) && !(error instanceof OwnershipLostError)) {
+      console.error(`Run ${run.id} failed:`, error);
+    }
     outcome = { status: 'failed', error: detail };
   }
+
+  // Without the lease this instance no longer speaks for the run: no report,
+  // no settlement, no promotion. Whoever takes the run over does that.
+  if (lease.lost) return;
 
   // Fallback report: only when the agent said nothing through the control
   // plane during the run. Posted while the run still holds the task, so the

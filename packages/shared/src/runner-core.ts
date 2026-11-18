@@ -1,27 +1,25 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 
 /** Coding CLIs Loxo drives over the Agent Client Protocol. */
 export const CLI_RUNTIMES = ['claude-code', 'codex'] as const;
 
 export type CliRuntime = (typeof CLI_RUNTIMES)[number];
 
-function killTree(pid: number | undefined, fallback: () => void): void {
-  if (process.platform === 'win32' && pid) {
-    try {
-      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-      return;
-    } catch {
-      // fall through
-    }
-  }
-  fallback();
+function taskkillTree(pid: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (err) => resolve(!err));
+  });
 }
 
 /**
- * Kills a child and everything it spawned. On POSIX the child must have been
- * started with `detached: true` so that it leads its own process group.
+ * Kills a child and everything it spawned without blocking the event loop.
+ * On POSIX the child must have been started with `detached: true` so that it
+ * leads its own process group.
  */
-export function killProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals): boolean }): void {
+export async function killProcessTree(child: {
+  pid?: number;
+  kill(signal?: NodeJS.Signals): boolean;
+}): Promise<void> {
   if (process.platform !== 'win32' && child.pid) {
     try {
       process.kill(-child.pid, 'SIGKILL');
@@ -30,7 +28,8 @@ export function killProcessTree(child: { pid?: number; kill(signal?: NodeJS.Sign
       // Not a group leader or already gone; fall back to the child alone.
     }
   }
-  killTree(child.pid, () => child.kill('SIGKILL'));
+  if (process.platform === 'win32' && child.pid && (await taskkillTree(child.pid))) return;
+  child.kill('SIGKILL');
 }
 
 export interface TurnCredentials {

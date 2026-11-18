@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { assertRequiredEnv, config } from './config';
 import { closeDb } from './db/client';
+import { runLeases } from './modules/ownership/lease';
 import { configureEgressProxy } from './http/egress-proxy';
 import { createApp } from './http/app';
 import { attachWsGateway } from './ws/gateway';
@@ -32,6 +33,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   try {
     await gateway.shutdown();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await runLeases.stop();
     await closeDb();
     process.exit(0);
   } catch (error) {

@@ -62,6 +62,8 @@ export interface OpenSessionInput {
   model?: string | null;
   /** Runtime session to continue; hosts that cannot resume start fresh and say so. */
   resumeSessionId?: string | null;
+  /** Aborting abandons startup: the host kills whatever it spawned and rejects. */
+  signal?: AbortSignal;
 }
 
 export interface TurnInput {

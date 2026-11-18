@@ -40,9 +40,17 @@ const STDERR_TAIL_CHARS = 4000;
 /** How long a failed request waits for the exit event before calling it a protocol error. */
 const EXIT_GRACE_MS = 1000;
 
+/** Agent processes started by this backend that have not exited yet. */
+const liveChildren = new Set<ChildProcess>();
+
+/** Test seam: how many agent processes are still alive. */
+export function liveAgentProcessesForTests(): number {
+  return liveChildren.size;
+}
+
 export class HostStartupError extends Error {
   constructor(
-    readonly reason: 'crashed' | 'timeout' | 'error',
+    readonly reason: 'crashed' | 'timeout' | 'cancelled' | 'error',
     message: string
   ) {
     super(message);
@@ -131,13 +139,22 @@ class AcpSession implements AgentSession {
       detached: process.platform !== 'win32',
       windowsHide: true,
     });
+    liveChildren.add(child);
+    child.once('exit', () => liveChildren.delete(child));
+    child.once('error', () => liveChildren.delete(child));
     const session = new AcpSession(child, input);
     session.connect();
     const timeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
     try {
       await Promise.race([
         session.handshake(),
+        new Promise<never>((_, reject) => {
+          onAbort = () => reject(new HostStartupError('cancelled', 'Agent startup was abandoned'));
+          if (input.signal?.aborted) onAbort();
+          else input.signal?.addEventListener('abort', onAbort, { once: true });
+        }),
         session.exit.then(() => {
           throw new HostStartupError('crashed', session.describeExit('exited during startup'));
         }),
@@ -157,6 +174,7 @@ class AcpSession implements AgentSession {
       throw new HostStartupError('error', err instanceof Error ? err.message : String(err));
     } finally {
       clearTimeout(timer);
+      if (onAbort) input.signal?.removeEventListener('abort', onAbort);
     }
     return session;
   }
@@ -327,7 +345,7 @@ class AcpSession implements AgentSession {
 
   async close(): Promise<void> {
     this.connection?.close();
-    if (!this.exited) killProcessTree(this.child);
+    if (!this.exited) await killProcessTree(this.child);
     await this.exit;
   }
 }

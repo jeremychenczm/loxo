@@ -65,6 +65,7 @@ export class RunEventRecorder {
   private buffer: { stream: 'message' | 'thought'; text: string } | null = null;
   private timer: NodeJS.Timeout | null = null;
   private capped = false;
+  private stopped = false;
   private readonly limits: RecorderLimits;
 
   constructor(
@@ -75,6 +76,7 @@ export class RunEventRecorder {
   }
 
   record(event: HostEvent): void {
+    if (this.stopped) return;
     if (event.kind === 'message_delta' || event.kind === 'thought_delta') {
       const stream = event.kind === 'message_delta' ? 'message' : 'thought';
       if (this.buffer && this.buffer.stream !== stream) this.flushText();
@@ -85,6 +87,14 @@ export class RunEventRecorder {
     }
     this.flushText();
     this.enqueue(toRow(event));
+  }
+
+  /** Drops anything buffered and ignores later events; used once the run's lease is lost. */
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.buffer = null;
   }
 
   /** Writes anything buffered and waits for every pending row. */

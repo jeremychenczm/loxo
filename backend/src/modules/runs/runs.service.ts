@@ -101,16 +101,24 @@ function isGateConflict(err: unknown): boolean {
  * Returns undefined when the run is no longer queued, is backing off, or a
  * gate is held.
  */
-export async function admitRun(runId: string, executor: Executor = db): Promise<Admission | undefined> {
+export interface AdmitOptions {
+  ttlMs?: number;
+  /** Owner recorded on the run; tests stand in for other instances with it. */
+  instance?: string;
+  executor?: Executor;
+}
+
+export async function admitRun(runId: string, options: AdmitOptions = {}): Promise<Admission | undefined> {
+  const { ttlMs = config.runLeaseTtlMs, instance = instanceId, executor = db } = options;
   try {
     return await executor.transaction(async (tx) => {
       const [row] = await tx
         .update(runs)
         .set({
           status: 'running',
-          ownerInstance: instanceId,
+          ownerInstance: instance,
           ownerEpoch: sql`${runs.ownerEpoch} + 1`,
-          leaseExpiresAt: sql`clock_timestamp() + ${config.runLeaseTtlMs}::integer * interval '1 millisecond'`,
+          leaseExpiresAt: sql`clock_timestamp() + ${ttlMs}::integer * interval '1 millisecond'`,
           startedAt: sql`clock_timestamp()`,
         })
         .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable()))

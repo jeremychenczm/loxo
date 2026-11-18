@@ -28,6 +28,8 @@ import { createPermissionArbiter } from '../hosts/permission-arbiter';
 import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
+import { crashPoint } from '../ownership/crash-points';
+import type { RunLease } from '../ownership/lease';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
@@ -69,8 +71,17 @@ export interface TaskTurnOutcome {
  * run it through the agent's host in the task's workspace. Locking,
  * run-state transitions, and the timeline entry are the wake service's job.
  * Throws RunnerError only when the turn cannot start.
+ *
+ * Runs under `lease`. Losing it aborts startup, kills the session's process
+ * tree at once (no cancel-and-wait), and skips every later write: events,
+ * change capture, and the outcome itself (OwnershipLostError).
  */
-export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promise<TaskTurnOutcome> {
+export async function executeTaskTurn(
+  run: Run,
+  agent: Agent,
+  task: Task,
+  lease: RunLease
+): Promise<TaskTurnOutcome> {
   // Agents created before a runtime was retired keep their row but cannot run.
   if (!isAgentRuntime(agent.runtime)) {
     throw new RunnerError(
@@ -90,6 +101,7 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
   // A repository binding switches the run into the task's isolated worktree;
   // without one the agent works in its own workspace.
   const codeWorkspace = await resolveCodeWorkspace(run, agent, task);
+  lease.assertHeld();
   const agentWorkspace = storage.agentPaths(run.userId, agent.id).workspace;
   const workspace = codeWorkspace ? codeWorkspace.workspace.worktreePath : agentWorkspace;
 
@@ -158,6 +170,8 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
 
   const recorder = new RunEventRecorder({ id: run.id, userId: run.userId, taskId: task.id });
   const before = codeWorkspace ? await snapshotBeforeRun(codeWorkspace.workspace) : null;
+  const stopRecording = () => recorder.stop();
+  lease.signal.addEventListener('abort', stopRecording, { once: true });
   try {
     let session;
     try {
@@ -170,16 +184,23 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
           taskId: task.id,
           agentId: agent.id,
         }),
+        signal: lease.signal,
       });
     } catch (err) {
+      lease.assertHeld();
       if (err instanceof HostStartupError) {
         throw new RunnerError(err.message, err.reason === 'timeout' ? 'timeout' : 'cli_failed');
       }
       throw err;
     }
+    const opened = session;
+    const killOnLoss = () => void opened.close();
+    lease.signal.addEventListener('abort', killOnLoss, { once: true });
     const supervised = withWatchdog(session);
     try {
+      lease.assertHeld();
       const outcome = await supervised.prompt({ prompt, onEvent: (event) => recorder.record(event) });
+      lease.assertHeld();
       return {
         ok: COMPLETED.has(outcome.stopReason),
         text: outcome.text,
@@ -192,16 +213,22 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
         costUsd: outcome.usage.costUsd,
       };
     } finally {
+      lease.signal.removeEventListener('abort', killOnLoss);
       await supervised.close();
     }
   } finally {
-    await recorder.flush();
+    lease.signal.removeEventListener('abort', stopRecording);
     // Git evidence is captured on success, failure, and cancellation alike;
     // a capture problem is logged, never allowed to mask the run outcome.
+    // A run that lost its lease writes neither.
+    if (!lease.lost) await recorder.flush();
     if (codeWorkspace && before) {
-      await settleRunCapture(run, task, codeWorkspace, before, permission).catch((err) => {
-        console.error(`Run ${run.id} change capture failed:`, err);
-      });
+      crashPoint('run.before_capture');
+      if (!lease.lost) {
+        await settleRunCapture(run, task, codeWorkspace, before, permission).catch((err) => {
+          console.error(`Run ${run.id} change capture failed:`, err);
+        });
+      }
     }
   }
 }

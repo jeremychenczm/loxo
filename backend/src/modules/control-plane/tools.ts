@@ -20,6 +20,7 @@ import { moveTask } from '../tasks/tasks.service';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
 import { verifyRunToken } from './run-token';
+import { runLeases } from '../ownership/lease';
 
 /**
  * The tool surface a woken agent gets back into the platform. Every call is
@@ -39,6 +40,7 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
 
   const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   if (!run || run.status !== 'running') throw unauthorized('Run is not active');
+  if (runLeases.isLost(run.id)) throw unauthorized('Run lost its lease');
   if (!run.agentId || !run.taskId) throw unauthorized('Run has no control-plane scope');
 
   const [agent] = await db

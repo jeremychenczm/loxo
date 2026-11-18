@@ -3,7 +3,7 @@
  * the surrounding transaction leaves nothing half-written. An unarmed point
  * costs one Map lookup.
  */
-export type CrashPoint = 'admission.after_claim';
+export type CrashPoint = 'admission.after_claim' | 'run.before_capture';
 
 const armed = new Map<CrashPoint, () => void>();
 
@@ -11,10 +11,13 @@ export function crashPoint(name: CrashPoint): void {
   armed.get(name)?.();
 }
 
-/** Makes `name` throw until the returned function disarms it. */
-export function armCrashPointForTests(name: CrashPoint): () => void {
-  armed.set(name, () => {
+/** Runs `action` (by default: throw) at `name` until the returned function disarms it. */
+export function armCrashPointForTests(
+  name: CrashPoint,
+  action: () => void = () => {
     throw new Error(`crash point ${name}`);
-  });
+  }
+): () => void {
+  armed.set(name, action);
   return () => armed.delete(name);
 }
