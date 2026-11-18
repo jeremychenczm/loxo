@@ -2,15 +2,19 @@ import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
+import { eq } from 'drizzle-orm';
+import { config } from '../src/config';
+import { db } from '../src/db/client';
+import { runs } from '../src/db/schema';
+import { instanceId } from '../src/modules/ownership/instance';
 import {
-  acquireTaskLock,
-  claimRun,
+  admitRun,
   createQueuedRun,
-  finishRun,
+  failQueuedRun,
   getRun,
   listRuns,
   nextQueuedRunForTask,
-  releaseTaskLock,
+  settleRun,
 } from '../src/modules/runs/runs.service';
 
 const app = createApp();
@@ -63,6 +67,7 @@ function queueRun(overrides: { taskId?: string | null; reason?: string } = {}) {
 describe('runs service', () => {
   it('creates a queued run with defaults', async () => {
     const run = await queueRun({ reason: 'assigned to Lock target' });
+    await failQueuedRun(run.id, 'cleanup');
     expect(run.status).toBe('queued');
     expect(run.trigger).toBe('assignment');
     expect(run.reason).toBe('assigned to Lock target');
@@ -71,56 +76,65 @@ describe('runs service', () => {
     expect(run.agentName).toBe('Run worker');
   });
 
-  it('claims a queued run exactly once', async () => {
+  it('admits a queued run exactly once, with a new epoch and a lease on the database clock', async () => {
     const run = await queueRun();
-    const claimed = await claimRun(run.id);
-    expect(claimed?.status).toBe('running');
-    expect(claimed?.startedAt).not.toBeNull();
+    const admission = await admitRun(run.id);
+    expect(admission?.run).toMatchObject({ status: 'running', ownerInstance: instanceId, ownerEpoch: 1 });
+    expect(admission?.run.startedAt).not.toBeNull();
+    expect(admission!.leaseRemainingMs).toBeGreaterThan(config.runLeaseTtlMs - 2_000);
+    expect(admission!.leaseRemainingMs).toBeLessThanOrEqual(config.runLeaseTtlMs);
 
-    const again = await claimRun(run.id);
-    expect(again).toBeUndefined();
+    expect(await admitRun(run.id)).toBeUndefined();
+    await settleRun(run.id, { status: 'succeeded' }, 'idle');
   });
 
-  it('finishes a running run and refuses to finish it twice', async () => {
+  it('settles a running run, drops its lease, and refuses to settle it twice', async () => {
     const run = await queueRun();
-    await claimRun(run.id);
-    const done = await finishRun(run.id, {
-      status: 'succeeded',
-      output: 'patched the widget',
-      sessionRef: 'sess-1',
-      tokensIn: 10,
-      tokensOut: 20,
-    });
-    expect(done.status).toBe('succeeded');
-    expect(done.output).toBe('patched the widget');
-    expect(done.sessionRef).toBe('sess-1');
-    expect(done.finishedAt).not.toBeNull();
+    await admitRun(run.id);
+    const done = await settleRun(
+      run.id,
+      { status: 'succeeded', output: 'patched the widget', sessionRef: 'sess-1', tokensIn: 10, tokensOut: 20 },
+      'idle'
+    );
+    expect(done).toMatchObject({ status: 'succeeded', output: 'patched the widget', sessionRef: 'sess-1' });
+    expect(done?.finishedAt).not.toBeNull();
+    expect(done?.leaseExpiresAt).toBeNull();
+    expect(done?.ownerEpoch).toBe(1);
 
-    await expect(finishRun(run.id, { status: 'failed' })).rejects.toMatchObject({ status: 404 });
+    expect(await settleRun(run.id, { status: 'failed' }, 'error')).toBeUndefined();
   });
 
-  it('cancels a queued run without claiming it', async () => {
+  it('fails a queued run without admitting it', async () => {
     const run = await queueRun();
-    const cancelled = await finishRun(run.id, { status: 'cancelled' });
-    expect(cancelled.status).toBe('cancelled');
-    expect(await claimRun(run.id)).toBeUndefined();
+    await failQueuedRun(run.id, 'Agent no longer exists');
+    expect((await getRun(userId, run.id)).status).toBe('failed');
+    expect(await admitRun(run.id)).toBeUndefined();
   });
 
-  it('grants the task lock to exactly one concurrent contender', async () => {
+  it('admits exactly one of many concurrent contenders and frees the gates on settlement', async () => {
     const contenders = await Promise.all(Array.from({ length: 8 }, () => queueRun()));
-    const results = await Promise.all(contenders.map((run) => acquireTaskLock(taskId, run.id)));
-    expect(results.filter(Boolean)).toHaveLength(1);
+    const results = await Promise.all(contenders.map((run) => admitRun(run.id)));
+    const winners = results.filter(Boolean);
+    expect(winners).toHaveLength(1);
+    const loser = contenders.find((run) => run.id !== winners[0]!.run.id)!;
+    expect((await getRun(userId, loser.id)).status).toBe('queued');
 
-    const winner = contenders[results.findIndex(Boolean)]!;
+    await settleRun(winners[0]!.run.id, { status: 'succeeded' }, 'idle');
+    expect(await admitRun(loser.id)).toBeDefined();
+    await settleRun(loser.id, { status: 'succeeded' }, 'idle');
+    for (const run of contenders) await failQueuedRun(run.id, 'cleanup');
+  });
 
-    // A non-holder release is a no-op; the winner's release frees the lock.
-    const loser = contenders[(results.findIndex(Boolean) + 1) % contenders.length]!;
-    await releaseTaskLock(taskId, loser.id);
-    expect(await acquireTaskLock(taskId, loser.id)).toBe(false);
+  it('holds a backing-off run until its not_before passes', async () => {
+    const run = await queueRun();
+    await db.update(runs).set({ notBefore: new Date(Date.now() + 60_000) }).where(eq(runs.id, run.id));
+    expect(await nextQueuedRunForTask(taskId)).toBeUndefined();
+    expect(await admitRun(run.id)).toBeUndefined();
 
-    await releaseTaskLock(taskId, winner.id);
-    expect(await acquireTaskLock(taskId, loser.id)).toBe(true);
-    await releaseTaskLock(taskId, loser.id);
+    await db.update(runs).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(runs.id, run.id));
+    expect((await nextQueuedRunForTask(taskId))?.id).toBe(run.id);
+    expect(await admitRun(run.id)).toBeDefined();
+    await settleRun(run.id, { status: 'succeeded' }, 'idle');
   });
 
   it('promotes queued runs oldest-first', async () => {
@@ -133,10 +147,10 @@ describe('runs service', () => {
 
     expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(first.id);
 
-    await finishRun(first.id, { status: 'cancelled' });
+    await failQueuedRun(first.id, 'cancelled');
     expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(second.id);
 
-    await finishRun(second.id, { status: 'cancelled' });
+    await failQueuedRun(second.id, 'cancelled');
     expect(await nextQueuedRunForTask(task.body.task.id)).toBeUndefined();
   });
 

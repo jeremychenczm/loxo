@@ -211,14 +211,6 @@ export const tasks = pgTable(
     turnCounter: integer('turn_counter').notNull().default(0),
     /** Position within a kanban column; fractional values allow reorder without renumbering. */
     boardOrder: doublePrecision('board_order').notNull().default(0),
-    /**
-     * Execution lock: the run currently working this task. Wake admission
-     * acquires it with a conditional UPDATE, so the same task is never
-     * executed by two runs at once regardless of trigger source.
-     */
-    activeRunId: uuid('active_run_id').references((): AnyPgColumn => runs.id, {
-      onDelete: 'set null',
-    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
@@ -322,6 +314,18 @@ export const runs = pgTable(
     index('runs_user_created').on(t.userId, t.createdAt),
     /** Reconciler scan for expired leases. */
     index('runs_running_lease').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
+    /**
+     * The agent claim and the task execution lock: at most one running run
+     * per agent and per task. Admission flips a run to running and a held
+     * gate surfaces as a unique violation. Keep the predicates in step with
+     * GATE_HOLDING_STATUSES.
+     */
+    uniqueIndex('runs_one_running_per_agent').on(t.agentId).where(sql`${t.status} = 'running'`),
+    uniqueIndex('runs_one_running_per_task').on(t.taskId).where(sql`${t.status} = 'running'`),
+    check(
+      'runs_running_has_lease',
+      sql`${t.status} <> 'running' OR (${t.ownerInstance} IS NOT NULL AND ${t.leaseExpiresAt} IS NOT NULL)`
+    ),
   ]
 );
 

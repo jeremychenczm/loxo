@@ -1,27 +1,19 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
-import {
-  agents,
-  tasks,
-  runs,
-  type Agent,
-  type Task,
-  type Run,
-  type RunTrigger,
-} from '../../db/schema';
+import { agents, tasks, type Agent, type Task, type Run, type RunTrigger } from '../../db/schema';
 import { badRequest } from '../../http/errors';
 import { addAgentTurn, runHasTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
-  ACTIVE_RUN_STATUSES,
-  acquireTaskLock,
-  claimRun,
+  admitRun,
   createQueuedRun,
-  finishRun,
+  failQueuedRun,
   nextQueuedRunForAgent,
   nextQueuedRunForTask,
-  releaseTaskLock,
+  queuedRunFor,
+  settleRun,
+  type RunOutcome,
 } from './runs.service';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -50,13 +42,13 @@ export async function drainRunsForTests(): Promise<void> {
 
 /**
  * The single admission surface for agent wake-ups. Every trigger source
- * (assignment, manual nudge, review) calls this and nothing
- * else; merge, lock, and rejection logic lives here exactly once.
+ * (assignment, manual nudge, review) calls this and nothing else.
  *
- * Order of checks: agent and task must exist and be owned by the caller;
- * an active run for the same agent+task absorbs the wake (merged); otherwise
- * a queued run is created and started if both the agent and the task's
- * execution lock are free, else it waits in queue for promotion.
+ * Agent and task must exist and be owned by the caller. A wake joins a run
+ * already queued for the same agent and task (merged); otherwise it becomes a
+ * new queued run that starts at once if the agent and the task are both free,
+ * or waits for promotion. A running run never absorbs a wake: its prompt is
+ * already built, and if its owner has died the wake would die with it.
  */
 export async function requestWake(userId: string, input: WakeInput): Promise<WakeDecision> {
   const [agent] = await db
@@ -73,20 +65,10 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
     .limit(1);
   if (!task) throw badRequest('invalid_task', 'Task does not exist');
 
-  // Two racing wakes can both miss this check; the loser then parks as a
-  // queued run behind the winner's lock, which is safe, just not merged.
-  const [active] = await db
-    .select()
-    .from(runs)
-    .where(
-      and(
-        eq(runs.agentId, input.agentId),
-        eq(runs.taskId, input.taskId),
-        inArray(runs.status, [...ACTIVE_RUN_STATUSES])
-      )
-    )
-    .limit(1);
-  if (active) return { run: active, admitted: 'merged' };
+  // Two racing wakes can both miss this check; the loser then queues a second
+  // run behind the winner, which is safe, just not merged.
+  const pending = await queuedRunFor(input.agentId, input.taskId);
+  if (pending) return { run: pending, admitted: 'merged' };
 
   const run = await createQueuedRun(userId, {
     agentId: agent.id,
@@ -97,61 +79,34 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
   });
 
   const started = await tryStartRun(run);
-  return { run, admitted: started ? 'started' : 'queued' };
-}
-
-/** Atomic agent claim; an agent executes at most one run at a time. */
-async function claimAgentForTurn(agentId: string): Promise<boolean> {
-  const rows = await db
-    .update(agents)
-    .set({ status: 'busy', lastActiveAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(agents.id, agentId), ne(agents.status, 'busy')))
-    .returning({ id: agents.id });
-  return rows.length > 0;
-}
-
-/** Claim release without promotion; gate rollbacks use it to avoid re-promoting themselves. */
-async function releaseAgentClaim(agentId: string, status: 'idle' | 'error'): Promise<void> {
-  await db
-    .update(agents)
-    .set({ status, lastActiveAt: new Date(), updatedAt: new Date() })
-    .where(eq(agents.id, agentId));
+  return { run: started ?? run, admitted: started ? 'started' : 'queued' };
 }
 
 /**
- * Starts a queued run if both gates open: the agent claim and the task
- * execution lock. Any failed gate rolls the earlier ones back and leaves the
- * run queued for a later promotion pass.
+ * Starts a queued run if its agent and task are free; otherwise it stays
+ * queued for a later promotion pass. Admission is a single transaction, so a
+ * failure part-way leaves no claim or lock behind.
  */
-async function tryStartRun(run: Run): Promise<boolean> {
+async function tryStartRun(run: Run): Promise<Run | undefined> {
   if (!run.agentId) {
-    await finishRun(run.id, { status: 'failed', error: 'Agent no longer exists' }).catch(() => {});
-    return false;
+    await failQueuedRun(run.id, 'Agent no longer exists').catch(() => {});
+    return undefined;
   }
-  if (!(await claimAgentForTurn(run.agentId))) return false;
+  const admission = await admitRun(run.id);
+  if (!admission) return undefined;
 
-  if (run.taskId && !(await acquireTaskLock(run.taskId, run.id))) {
-    await releaseAgentClaim(run.agentId, 'idle');
-    return false;
-  }
-
-  const claimed = await claimRun(run.id);
-  if (!claimed) {
-    if (run.taskId) await releaseTaskLock(run.taskId, run.id);
-    await releaseAgentClaim(run.agentId, 'idle');
-    return false;
-  }
-
-  const settled = performRun(claimed).catch((error) => {
-    console.error(`Run ${claimed.id} settlement failed:`, error);
+  const started = admission.run;
+  const settled = performRun(started).catch((error) => {
+    console.error(`Run ${started.id} settlement failed:`, error);
   });
   settling.add(settled);
   void settled.finally(() => settling.delete(settled));
-  return true;
+  return started;
 }
 
 async function performRun(run: Run): Promise<void> {
-  let succeeded = false;
+  let outcome: RunOutcome;
+  let report: { taskId: string; agentId: string; text: string } | undefined;
   try {
     const [agent] = await db
       .select()
@@ -165,35 +120,40 @@ async function performRun(run: Run): Promise<void> {
       throw new RunnerError('Agent or task disappeared before the run started', 'cli_failed');
     }
 
-    const outcome = await executeTaskTurn(run, agent as Agent, task as Task);
-    await finishRun(run.id, {
-      status: outcome.ok ? 'succeeded' : 'failed',
-      output: outcome.text,
-      error: outcome.ok ? null : (outcome.error ?? `Turn ended: ${outcome.stopReason}`),
-      sessionRef: outcome.sessionRef,
-      transport: outcome.transport,
-      stopReason: outcome.stopReason,
-      tokensIn: outcome.tokensIn,
-      tokensOut: outcome.tokensOut,
-      costUsd: outcome.costUsd,
-    });
-    // Fallback report: only when the agent said nothing through the control
-    // plane during the run. Best-effort — the run result stands regardless.
-    if (outcome.ok && outcome.text.trim() && !(await runHasTurns(run.id))) {
-      await addAgentTurn(run.userId, task.id, agent.id, outcome.text, { runId: run.id }).catch(
-        () => {}
-      );
+    const result = await executeTaskTurn(run, agent as Agent, task as Task);
+    outcome = {
+      status: result.ok ? 'succeeded' : 'failed',
+      output: result.text,
+      error: result.ok ? null : (result.error ?? `Turn ended: ${result.stopReason}`),
+      sessionRef: result.sessionRef,
+      transport: result.transport,
+      stopReason: result.stopReason,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      costUsd: result.costUsd,
+    };
+    if (result.ok && result.text.trim()) {
+      report = { taskId: task.id, agentId: agent.id, text: result.text };
     }
-    succeeded = outcome.ok;
   } catch (error) {
     const detail = error instanceof RunnerError ? error.message : 'Task run failed unexpectedly';
     if (!(error instanceof RunnerError)) console.error(`Run ${run.id} failed:`, error);
-    await finishRun(run.id, { status: 'failed', error: detail }).catch(() => {});
-  } finally {
-    if (run.taskId) await releaseTaskLock(run.taskId, run.id);
-    if (run.agentId) await releaseAgentClaim(run.agentId, succeeded ? 'idle' : 'error');
-    await promoteNext(run);
+    outcome = { status: 'failed', error: detail };
   }
+
+  // Fallback report: only when the agent said nothing through the control
+  // plane during the run. Posted while the run still holds the task, so the
+  // next run's prompt sees it. Best-effort — the run result stands regardless.
+  if (report && !(await runHasTurns(run.id))) {
+    await addAgentTurn(run.userId, report.taskId, report.agentId, report.text, { runId: run.id }).catch(
+      () => {}
+    );
+  }
+  // If settling fails the run keeps its lease and the reconciler takes it over.
+  await settleRun(run.id, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch((error) => {
+    console.error(`Run ${run.id} could not be settled:`, error);
+  });
+  await promoteNext(run);
 }
 
 /**

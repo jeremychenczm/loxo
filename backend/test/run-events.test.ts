@@ -8,7 +8,7 @@ import { runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { redactText, redactValue } from '../src/modules/runs/redact';
 import { RunEventRecorder } from '../src/modules/runs/run-events.service';
-import { finishRun } from '../src/modules/runs/runs.service';
+import { admitRun, settleRun } from '../src/modules/runs/runs.service';
 import { attachWsGateway, type WsGateway } from '../src/ws/gateway';
 
 const app = createApp();
@@ -26,7 +26,7 @@ const auth = (t = token) => ({ Authorization: `Bearer ${t}` });
 async function newRun(): Promise<{ id: string; userId: string; taskId: string | null }> {
   const [run] = await db
     .insert(runs)
-    .values({ userId, agentId, agentName: 'Streamer', taskId, trigger: 'manual', status: 'running' })
+    .values({ userId, agentId, agentName: 'Streamer', taskId, trigger: 'manual' })
     .returning();
   return { id: run!.id, userId, taskId };
 }
@@ -143,14 +143,12 @@ describe('run event recorder', () => {
 
   it('records transport, stop reason, and usage when a run finishes', async () => {
     const run = await newRun();
-    const finished = await finishRun(run.id, {
-      status: 'succeeded',
-      transport: 'acp',
-      stopReason: 'end_turn',
-      tokensIn: 1200,
-      tokensOut: 300,
-      costUsd: 0.042,
-    });
+    expect(await admitRun(run.id)).toBeDefined();
+    const finished = await settleRun(
+      run.id,
+      { status: 'succeeded', transport: 'acp', stopReason: 'end_turn', tokensIn: 1200, tokensOut: 300, costUsd: 0.042 },
+      'idle'
+    );
     expect(finished).toMatchObject({ transport: 'acp', stopReason: 'end_turn', tokensIn: 1200, tokensOut: 300, costUsd: 0.042 });
   });
 });

@@ -1,10 +1,18 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { db } from '../../db/client';
-import { tasks, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import { and, asc, desc, eq, getTableColumns, isNull, lte, or, sql } from 'drizzle-orm';
+import { config } from '../../config';
+import { db, type Executor } from '../../db/client';
+import { agents, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
+import { crashPoint } from '../ownership/crash-points';
+import { instanceId } from '../ownership/instance';
 
-/** Statuses that count as "this agent/task already has work in flight". */
-export const ACTIVE_RUN_STATUSES = ['queued', 'running'] as const satisfies readonly RunStatus[];
+/**
+ * Statuses that hold the agent claim and the task lock. The partial unique
+ * indexes runs_one_running_per_agent/_task enforce them; keep both in step.
+ */
+export const GATE_HOLDING_STATUSES = ['running'] as const satisfies readonly RunStatus[];
+
+const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_task']);
 
 export interface CreateRunInput {
   agentId: string;
@@ -28,6 +36,12 @@ export interface RunOutcome {
   transport?: string | null;
   /** Why the turn ended, as reported by the host. */
   stopReason?: string | null;
+}
+
+export interface Admission {
+  run: Run;
+  /** Lease time left, measured on the database clock right after the claim. */
+  leaseRemainingMs: number;
 }
 
 export async function createQueuedRun(userId: string, input: CreateRunInput): Promise<Run> {
@@ -71,82 +85,136 @@ export async function listRuns(
     .orderBy(desc(runs.createdAt));
 }
 
-/**
- * Claims a queued run for execution. Returns undefined when the run was
- * already claimed, cancelled, or finished — callers treat that as "someone
- * else got here first" and walk away.
- */
-export async function claimRun(runId: string): Promise<Run | undefined> {
-  const [run] = await db
-    .update(runs)
-    .set({ status: 'running', startedAt: new Date() })
-    .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
-    .returning();
-  return run;
-}
+/** Queued runs whose back-off, if any, has elapsed. */
+const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`));
 
-/** Finalizes a run; only queued/running rows can be finished. */
-export async function finishRun(runId: string, outcome: RunOutcome): Promise<Run> {
-  const [run] = await db
-    .update(runs)
-    .set({
-      status: outcome.status,
-      output: outcome.output ?? '',
-      error: outcome.error ?? null,
-      ...(outcome.sessionRef !== undefined ? { sessionRef: outcome.sessionRef } : {}),
-      ...(outcome.model !== undefined ? { model: outcome.model } : {}),
-      ...(outcome.tokensIn !== undefined ? { tokensIn: outcome.tokensIn } : {}),
-      ...(outcome.tokensOut !== undefined ? { tokensOut: outcome.tokensOut } : {}),
-      ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
-      ...(outcome.transport !== undefined ? { transport: outcome.transport } : {}),
-      ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
-      finishedAt: new Date(),
-    })
-    .where(and(eq(runs.id, runId), inArray(runs.status, [...ACTIVE_RUN_STATUSES])))
-    .returning();
-  if (!run) throw notFound('Run is not active');
-  return run;
+function isGateConflict(err: unknown): boolean {
+  const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
+  return pgErr.code === '23505' && GATE_INDEXES.has(pgErr.constraint ?? '');
 }
 
 /**
- * Takes the task execution lock for a run. The conditional UPDATE is the
- * whole mutual-exclusion story: exactly one concurrent caller sees the null
- * column and wins; everyone else stays queued.
+ * Starts a queued run. One statement flips it to running, takes the next
+ * epoch, and sets the lease on the database clock; the gate indexes make that
+ * same statement the agent claim and the task lock, so a held gate surfaces
+ * as a unique violation and the run stays queued with nothing written.
+ * Returns undefined when the run is no longer queued, is backing off, or a
+ * gate is held.
  */
-export async function acquireTaskLock(taskId: string, runId: string): Promise<boolean> {
-  const claimed = await db
-    .update(tasks)
-    .set({ activeRunId: runId })
-    .where(and(eq(tasks.id, taskId), isNull(tasks.activeRunId)))
-    .returning({ id: tasks.id });
-  return claimed.length > 0;
+export async function admitRun(runId: string, executor: Executor = db): Promise<Admission | undefined> {
+  try {
+    return await executor.transaction(async (tx) => {
+      const [row] = await tx
+        .update(runs)
+        .set({
+          status: 'running',
+          ownerInstance: instanceId,
+          ownerEpoch: sql`${runs.ownerEpoch} + 1`,
+          leaseExpiresAt: sql`clock_timestamp() + ${config.runLeaseTtlMs}::integer * interval '1 millisecond'`,
+          startedAt: sql`clock_timestamp()`,
+        })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable()))
+        .returning({
+          ...getTableColumns(runs),
+          leaseRemainingMs: sql<string>`extract(epoch from ${runs.leaseExpiresAt} - clock_timestamp()) * 1000`,
+        });
+      if (!row) return undefined;
+      crashPoint('admission.after_claim');
+      if (row.agentId) {
+        await tx
+          .update(agents)
+          .set({ status: 'busy', lastActiveAt: new Date(), updatedAt: new Date() })
+          .where(eq(agents.id, row.agentId));
+      }
+      const { leaseRemainingMs, ...run } = row;
+      return { run, leaseRemainingMs: Number(leaseRemainingMs) };
+    });
+  } catch (err) {
+    if (isGateConflict(err)) return undefined;
+    throw err;
+  }
 }
 
-/** Releases the lock only if this run still holds it. */
-export async function releaseTaskLock(taskId: string, runId: string): Promise<void> {
-  await db
-    .update(tasks)
-    .set({ activeRunId: null })
-    .where(and(eq(tasks.id, taskId), eq(tasks.activeRunId, runId)));
+function outcomeColumns(outcome: RunOutcome) {
+  return {
+    status: outcome.status,
+    output: outcome.output ?? '',
+    error: outcome.error ?? null,
+    ...(outcome.sessionRef !== undefined ? { sessionRef: outcome.sessionRef } : {}),
+    ...(outcome.model !== undefined ? { model: outcome.model } : {}),
+    ...(outcome.tokensIn !== undefined ? { tokensIn: outcome.tokensIn } : {}),
+    ...(outcome.tokensOut !== undefined ? { tokensOut: outcome.tokensOut } : {}),
+    ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
+    ...(outcome.transport !== undefined ? { transport: outcome.transport } : {}),
+    ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
+    finishedAt: new Date(),
+  };
 }
 
-/** Oldest queued run waiting on a task, if any; promotion order is FIFO. */
+/**
+ * Settles a running run in one transaction. Leaving `running` is what frees
+ * the agent claim and the task lock (the gate indexes cover running rows
+ * only); the agent's display status follows in the same commit. Returns
+ * undefined when the run was no longer running.
+ */
+export async function settleRun(
+  runId: string,
+  outcome: RunOutcome,
+  agentStatus: 'idle' | 'error',
+  executor: Executor = db
+): Promise<Run | undefined> {
+  return executor.transaction(async (tx) => {
+    const [run] = await tx
+      .update(runs)
+      .set({ ...outcomeColumns(outcome), leaseExpiresAt: null })
+      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+      .returning();
+    if (!run) return undefined;
+    if (run.agentId) {
+      await tx
+        .update(agents)
+        .set({ status: agentStatus, lastActiveAt: new Date(), updatedAt: new Date() })
+        .where(eq(agents.id, run.agentId));
+    }
+    return run;
+  });
+}
+
+/** Fails a run that never started; it holds no gates. */
+export async function failQueuedRun(runId: string, error: string, executor: Executor = db): Promise<void> {
+  await executor
+    .update(runs)
+    .set(outcomeColumns({ status: 'failed', error }))
+    .where(and(eq(runs.id, runId), eq(runs.status, 'queued')));
+}
+
+/** The queued run a new wake for this agent and task should join, if any. */
+export async function queuedRunFor(agentId: string, taskId: string): Promise<Run | undefined> {
+  const [run] = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.agentId, agentId), eq(runs.taskId, taskId), eq(runs.status, 'queued')))
+    .limit(1);
+  return run;
+}
+
+/** Oldest promotable queued run waiting on a task; promotion order is FIFO. */
 export async function nextQueuedRunForTask(taskId: string): Promise<Run | undefined> {
   const [run] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued')))
+    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued'), promotable()))
     .orderBy(asc(runs.createdAt))
     .limit(1);
   return run;
 }
 
-/** Oldest queued run waiting on an agent, across tasks. */
+/** Oldest promotable queued run waiting on an agent, across tasks. */
 export async function nextQueuedRunForAgent(agentId: string): Promise<Run | undefined> {
   const [run] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.agentId, agentId), eq(runs.status, 'queued')))
+    .where(and(eq(runs.agentId, agentId), eq(runs.status, 'queued'), promotable()))
     .orderBy(asc(runs.createdAt))
     .limit(1);
   return run;

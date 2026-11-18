@@ -12,6 +12,11 @@ function required(name: string): string {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5434/swarmdev',
+  dbPoolMax: Number(process.env.DB_POOL_MAX ?? 20),
+  /** How long a query waits for a free pool connection before failing instead of hanging. */
+  dbConnectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 10_000),
+  /** Run lease length on the database clock; owners renew every third of it. */
+  runLeaseTtlMs: Number(process.env.RUN_LEASE_TTL_MS ?? 30_000),
   corsOrigins: (process.env.CORS_ORIGIN ?? 'http://localhost:3000')
     .split(',')
     .map((origin) => origin.trim())

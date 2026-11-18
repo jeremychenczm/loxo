@@ -143,8 +143,6 @@ describe('wake admission', () => {
     expect(agentTurns[0].content).toBe('stub work report');
     expect(agentTurns[0].runId).toBe(run!.id);
 
-    const detail = await request(app).get(`/api/tasks/${task.id}`).set(auth());
-    expect(detail.body.task.activeRunId).toBeNull();
     expect(await agentStatus(agentA)).toBe('idle');
   });
 
@@ -166,7 +164,7 @@ describe('wake admission', () => {
     expect(runs[0]!.status).toBe('succeeded');
   });
 
-  it('merges a duplicate wake into the active run', async () => {
+  it('queues a wake behind a running run instead of merging into it', async () => {
     const gated = gatedExecutor();
 
     const task = await createTask('Merge target');
@@ -177,14 +175,21 @@ describe('wake admission', () => {
     const [running] = await runsFor(task.id);
     expect(running!.status).toBe('running');
 
-    const wake = await request(app).post(`/api/tasks/${task.id}/wake`).set(auth()).send({});
-    expect(wake.status).toBe(202);
-    expect(wake.body.admitted).toBe('merged');
-    expect(wake.body.run.id).toBe(running!.id);
+    const second = await request(app).post(`/api/tasks/${task.id}/wake`).set(auth()).send({});
+    expect(second.status).toBe(202);
+    expect(second.body.admitted).toBe('queued');
+    expect(second.body.run.id).not.toBe(running!.id);
+
+    // Further wakes join the run that is still waiting.
+    const third = await request(app).post(`/api/tasks/${task.id}/wake`).set(auth()).send({});
+    expect(third.body.admitted).toBe('merged');
+    expect(third.body.run.id).toBe(second.body.run.id);
 
     gated.release();
     await drainRunsForTests();
-    expect(await runsFor(task.id)).toHaveLength(1);
+    const runs = await runsFor(task.id);
+    expect(runs).toHaveLength(2);
+    expect(runs.every((r) => r.status === 'succeeded')).toBe(true);
   });
 
   it('parks a second agent behind the task lock and promotes it afterwards', async () => {
