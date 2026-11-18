@@ -163,10 +163,16 @@ async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
       () => {}
     );
   }
-  // If settling fails the run keeps its lease and the reconciler takes it over.
-  await settleRun(run.id, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch((error) => {
-    console.error(`Run ${run.id} could not be settled:`, error);
-  });
+  // If settling fails the run keeps its lease and the reconciler takes it over;
+  // if it is refused, the run was taken over and its new owner settles it.
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  const settled = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch(
+    (error) => {
+      console.error(`Run ${run.id} could not be settled:`, error);
+      return undefined;
+    }
+  );
+  if (!settled) return;
   await promoteNext(run);
 }
 

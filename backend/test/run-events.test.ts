@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -8,8 +9,14 @@ import { runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { redactText, redactValue } from '../src/modules/runs/redact';
 import { RunEventRecorder } from '../src/modules/runs/run-events.service';
-import { admitRun, settleRun } from '../src/modules/runs/runs.service';
+import { admitRun, ownerOf, settleRun } from '../src/modules/runs/runs.service';
 import { attachWsGateway, type WsGateway } from '../src/ws/gateway';
+
+/** The current owner of a run, as settlement needs it. */
+async function ownedRun(runId: string) {
+  const [row] = await db.select().from(runs).where(eq(runs.id, runId));
+  return ownerOf(row!);
+}
 
 const app = createApp();
 let server: Server;
@@ -144,8 +151,7 @@ describe('run event recorder', () => {
   it('records transport, stop reason, and usage when a run finishes', async () => {
     const run = await newRun();
     expect(await admitRun(run.id)).toBeDefined();
-    const finished = await settleRun(
-      run.id,
+    const finished = await settleRun(await ownedRun(run.id),
       { status: 'succeeded', transport: 'acp', stopReason: 'end_turn', tokensIn: 1200, tokensOut: 300, costUsd: 0.042 },
       'idle'
     );

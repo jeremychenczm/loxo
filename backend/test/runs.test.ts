@@ -14,6 +14,7 @@ import {
   getRun,
   listRuns,
   nextQueuedRunForTask,
+  ownerOf,
   settleRun,
 } from '../src/modules/runs/runs.service';
 
@@ -54,6 +55,10 @@ beforeAll(async () => {
   taskId = task.body.task.id;
 });
 
+async function owned(runId: string) {
+  return ownerOf(await getRun(userId, runId));
+}
+
 function queueRun(overrides: { taskId?: string | null; reason?: string } = {}) {
   return createQueuedRun(userId, {
     agentId,
@@ -85,14 +90,13 @@ describe('runs service', () => {
     expect(admission!.leaseRemainingMs).toBeLessThanOrEqual(config.runLeaseTtlMs);
 
     expect(await admitRun(run.id)).toBeUndefined();
-    await settleRun(run.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await owned(run.id), { status: 'succeeded' }, 'idle');
   });
 
   it('settles a running run, drops its lease, and refuses to settle it twice', async () => {
     const run = await queueRun();
     await admitRun(run.id);
-    const done = await settleRun(
-      run.id,
+    const done = await settleRun(await owned(run.id),
       { status: 'succeeded', output: 'patched the widget', sessionRef: 'sess-1', tokensIn: 10, tokensOut: 20 },
       'idle'
     );
@@ -101,7 +105,7 @@ describe('runs service', () => {
     expect(done?.leaseExpiresAt).toBeNull();
     expect(done?.ownerEpoch).toBe(1);
 
-    expect(await settleRun(run.id, { status: 'failed' }, 'error')).toBeUndefined();
+    expect(await settleRun(await owned(run.id), { status: 'failed' }, 'error')).toBeUndefined();
   });
 
   it('fails a queued run without admitting it', async () => {
@@ -119,9 +123,9 @@ describe('runs service', () => {
     const loser = contenders.find((run) => run.id !== winners[0]!.run.id)!;
     expect((await getRun(userId, loser.id)).status).toBe('queued');
 
-    await settleRun(winners[0]!.run.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await owned(winners[0]!.run.id), { status: 'succeeded' }, 'idle');
     expect(await admitRun(loser.id)).toBeDefined();
-    await settleRun(loser.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await owned(loser.id), { status: 'succeeded' }, 'idle');
     for (const run of contenders) await failQueuedRun(run.id, 'cleanup');
   });
 
@@ -134,7 +138,7 @@ describe('runs service', () => {
     await db.update(runs).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(runs.id, run.id));
     expect((await nextQueuedRunForTask(taskId))?.id).toBe(run.id);
     expect(await admitRun(run.id)).toBeDefined();
-    await settleRun(run.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await owned(run.id), { status: 'succeeded' }, 'idle');
   });
 
   it('promotes queued runs oldest-first', async () => {

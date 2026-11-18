@@ -7,7 +7,13 @@ import { db, pool } from '../src/db/client';
 import { runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { LeaseKeeper, RunOwnership } from '../src/modules/ownership/lease';
-import { createQueuedRun, settleRun } from '../src/modules/runs/runs.service';
+import { createQueuedRun, ownerOf, settleRun } from '../src/modules/runs/runs.service';
+
+/** The current owner of a run, as settlement needs it. */
+async function ownedRun(runId: string) {
+  const [row] = await db.select().from(runs).where(eq(runs.id, runId));
+  return ownerOf(row!);
+}
 
 /**
  * Lease behavior against a real Postgres, with a short lease so deadlines
@@ -85,7 +91,7 @@ async function admit(runId: string) {
 
 async function finish(runId: string) {
   keeper.release(runId);
-  await settleRun(runId, { status: 'succeeded' }, 'idle');
+  await settleRun(await ownedRun(runId), { status: 'succeeded' }, 'idle');
 }
 
 describe('run leases', () => {

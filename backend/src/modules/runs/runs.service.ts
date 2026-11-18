@@ -4,6 +4,7 @@ import { db, type Executor } from '../../db/client';
 import { agents, runs, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
+import { recordFenceRejection } from '../ownership/fence';
 import { instanceId } from '../ownership/instance';
 
 /**
@@ -36,6 +37,17 @@ export interface RunOutcome {
   transport?: string | null;
   /** Why the turn ended, as reported by the host. */
   stopReason?: string | null;
+}
+
+/** Who may write for a run: the instance and epoch that claimed it. */
+export interface RunOwner {
+  runId: string;
+  epoch: number;
+  instance: string;
+}
+
+export function ownerOf(run: Pick<Run, 'id' | 'ownerEpoch' | 'ownerInstance'>): RunOwner {
+  return { runId: run.id, epoch: run.ownerEpoch, instance: run.ownerInstance ?? '' };
 }
 
 export interface Admission {
@@ -160,13 +172,15 @@ function outcomeColumns(outcome: RunOutcome) {
 }
 
 /**
- * Settles a running run in one transaction. Leaving `running` is what frees
- * the agent claim and the task lock (the gate indexes cover running rows
- * only); the agent's display status follows in the same commit. Returns
- * undefined when the run was no longer running.
+ * Settles a running run in one transaction, fenced: the UPDATE only matches
+ * while the run is still running under `owner`'s instance and epoch. Leaving
+ * `running` is what frees the agent claim and the task lock (the gate
+ * indexes cover running rows only); the agent's display status follows in
+ * the same commit. Returns undefined, and records a fence rejection, when the
+ * run has moved on: settled already, or taken over.
  */
 export async function settleRun(
-  runId: string,
+  owner: RunOwner,
   outcome: RunOutcome,
   agentStatus: 'idle' | 'error',
   executor: Executor = db
@@ -175,9 +189,19 @@ export async function settleRun(
     const [run] = await tx
       .update(runs)
       .set({ ...outcomeColumns(outcome), leaseExpiresAt: null })
-      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+      .where(
+        and(
+          eq(runs.id, owner.runId),
+          eq(runs.status, 'running'),
+          eq(runs.ownerEpoch, owner.epoch),
+          eq(runs.ownerInstance, owner.instance)
+        )
+      )
       .returning();
-    if (!run) return undefined;
+    if (!run) {
+      recordFenceRejection('settle', owner.runId, owner.epoch);
+      return undefined;
+    }
     if (run.agentId) {
       await tx
         .update(agents)

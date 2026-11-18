@@ -6,10 +6,16 @@ import { db, pool } from '../src/db/client';
 import { agents, runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { armCrashPointForTests } from '../src/modules/ownership/crash-points';
-import { admitRun, createQueuedRun, getRun, settleRun } from '../src/modules/runs/runs.service';
+import { admitRun, createQueuedRun, getRun, ownerOf, settleRun } from '../src/modules/runs/runs.service';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import { scriptedHost } from './support/scripted-host';
+
+/** The current owner of a run, as settlement needs it. */
+async function ownedRun(runId: string) {
+  const [row] = await db.select().from(runs).where(eq(runs.id, runId));
+  return ownerOf(row!);
+}
 
 /**
  * Admission under contention. More wakes than pool connections race for one
@@ -149,7 +155,7 @@ describe('admission atomicity', () => {
     // Both gates are still free.
     const admission = await admitRun(run.id);
     expect(admission?.run.ownerEpoch).toBe(1);
-    await settleRun(run.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await ownedRun(run.id), { status: 'succeeded' }, 'idle');
   });
 
   it('refuses a second running run or an ownerless one at the database', async () => {
@@ -164,7 +170,7 @@ describe('admission atomicity', () => {
       db.update(runs).set({ status: 'running', ...lease }).where(eq(runs.id, b.id))
     ).rejects.toMatchObject({ code: '23505', constraint: 'runs_one_running_per_agent' });
 
-    await settleRun(a.id, { status: 'succeeded' }, 'idle');
+    await settleRun(await ownedRun(a.id), { status: 'succeeded' }, 'idle');
     await expect(
       db.update(runs).set({ status: 'running' }).where(and(eq(runs.id, b.id), eq(runs.status, 'queued')))
     ).rejects.toMatchObject({ code: '23514', constraint: 'runs_running_has_lease' });
