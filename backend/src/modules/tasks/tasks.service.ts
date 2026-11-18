@@ -5,13 +5,14 @@ import {
   taskMembers,
   tasks,
   users,
+  type Run,
   type Task,
   type TaskStatus,
 } from '../../db/schema';
 import { badRequest, conflict, HttpError, notFound } from '../../http/errors';
 import { findRepository, hasActiveWorkspaces } from '../code-workspaces/workspace.service';
 import { getCrew } from '../crews/crews.service';
-import { requestWake, type WakeInput } from '../runs/wake';
+import { enqueueWake, startQueuedRuns, type WakeInput } from '../runs/wake';
 import { isTransitionAllowed, TERMINAL_STATUSES } from './task-transitions';
 import { countAgentRejections, REVIEW_CYCLE_CAP } from './approvals.service';
 
@@ -51,21 +52,26 @@ export async function activeMemberIds(taskId: string, ex: Executor = db): Promis
   return (await loadActiveMembers([taskId], ex)).get(taskId)!;
 }
 
-/** A wake a write asked for; it fires only after that write commits. */
-export interface PendingWake {
+interface WakeIntent {
   userId: string;
   wake: WakeInput;
 }
 
-/** Fires the wakes of a committed write; a failed wake never fails the write. */
-export async function fireWakes(pending: PendingWake[]): Promise<void> {
-  for (const { userId, wake } of pending) {
+/**
+ * Queues the wakes a write asks for through `ex`, so they commit with it;
+ * the caller starts them after commit. Each wake gets its own savepoint, so
+ * one that cannot be queued is logged and never fails the write.
+ */
+async function queueWakes(ex: Executor, intents: WakeIntent[]): Promise<Run[]> {
+  const queued: Run[] = [];
+  for (const { userId, wake } of intents) {
     try {
-      await requestWake(userId, wake);
+      queued.push((await ex.transaction((savepoint) => enqueueWake(savepoint, userId, wake))).run);
     } catch (error) {
       console.error(`Wake for task ${wake.taskId} failed:`, error);
     }
   }
+  return queued;
 }
 
 /**
@@ -73,7 +79,7 @@ export async function fireWakes(pending: PendingWake[]): Promise<void> {
  * (self-review is noise), until the automated-cycle fuse has blown — after
  * that, reviews on this task are human-only.
  */
-async function reviewerWakes(task: Task, ex: Executor): Promise<PendingWake[]> {
+async function reviewerWakes(task: Task, ex: Executor): Promise<WakeIntent[]> {
   const reviewers = (await activeMemberIds(task.id, ex)).filter((id) => id !== task.leadAgentId);
   if (reviewers.length === 0) return [];
   if ((await countAgentRejections(task.id, ex)) >= REVIEW_CYCLE_CAP) return [];
@@ -88,7 +94,7 @@ async function reviewerWakes(task: Task, ex: Executor): Promise<PendingWake[]> {
   }));
 }
 
-function leadWake(task: Task, reason: string): PendingWake[] {
+function leadWake(task: Task, reason: string): WakeIntent[] {
   if (!task.leadAgentId || !WAKE_STATUSES.includes(task.status)) return [];
   return [
     {
@@ -329,19 +335,18 @@ export async function updateTask(
     patch.leadAgentId = resolved.leadAgentId;
   }
 
-  const updated = await db.transaction(async (tx) => {
+  const { updated, queued } = await db.transaction(async (tx) => {
     const [row] = await tx
       .update(tasks)
       .set(patch)
       .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
       .returning();
     if (roster) await writeRoster(tx, taskId, roster);
-    return row!;
+    const newLead = row!.leadAgentId !== null && row!.leadAgentId !== existing.leadAgentId;
+    const wakes = newLead ? leadWake(row!, `You now lead task #${row!.number}: ${row!.title}`) : [];
+    return { updated: row!, queued: await queueWakes(tx, wakes) };
   });
-
-  if (updated.leadAgentId && updated.leadAgentId !== existing.leadAgentId) {
-    await fireWakes(leadWake(updated, `You now lead task #${updated.number}: ${updated.title}`));
-  }
+  await startQueuedRuns(queued);
   return updated;
 }
 
@@ -355,21 +360,21 @@ export async function moveTask(
   taskId: string,
   input: { status: TaskStatus; boardOrder?: number }
 ): Promise<Task> {
-  const { task, wakes } = await moveTaskWithin(db, userId, taskId, input);
-  await fireWakes(wakes);
+  const { task, queued } = await db.transaction((tx) => moveTaskWithin(tx, userId, taskId, input));
+  await startQueuedRuns(queued);
   return task;
 }
 
 /**
- * Applies a move through `ex` and returns the wakes it calls for instead of
- * firing them, so a caller inside a transaction fires them after commit.
+ * Applies a move through `ex` and queues the wakes it calls for in the same
+ * transaction. Returns the queued runs for the caller to start after commit.
  */
 export async function moveTaskWithin(
   ex: Executor,
   userId: string,
   taskId: string,
   input: { status: TaskStatus; boardOrder?: number }
-): Promise<{ task: Task; wakes: PendingWake[] }> {
+): Promise<{ task: Task; queued: Run[] }> {
   const existing = await findTask(userId, taskId, ex);
   if (!existing) throw notFound('Task not found');
 
@@ -399,14 +404,14 @@ export async function moveTaskWithin(
     changingStatus &&
     WAKE_STATUSES.includes(input.status) &&
     !WAKE_STATUSES.includes(existing.status);
-  const wakes: PendingWake[] = [];
+  const wakes: WakeIntent[] = [];
   if (enteredWakeStatus) {
     wakes.push(...leadWake(updated!, `Task #${updated!.number} moved to ${input.status}: ${updated!.title}`));
   }
   if (changingStatus && input.status === 'in_review') {
     wakes.push(...(await reviewerWakes(updated!, ex)));
   }
-  return { task: updated!, wakes };
+  return { task: updated!, queued: await queueWakes(ex, wakes) };
 }
 
 export async function deleteTask(userId: string, taskId: string): Promise<void> {

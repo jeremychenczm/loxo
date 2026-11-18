@@ -56,8 +56,8 @@ export interface Admission {
   leaseRemainingMs: number;
 }
 
-export async function createQueuedRun(userId: string, input: CreateRunInput): Promise<Run> {
-  const [run] = await db
+export async function createQueuedRun(userId: string, input: CreateRunInput, ex: Executor = db): Promise<Run> {
+  const [run] = await ex
     .insert(runs)
     .values({
       userId,
@@ -229,8 +229,8 @@ export async function failQueuedRun(runId: string, error: string, executor: Exec
 }
 
 /** The queued run a new wake for this agent and task should join, if any. */
-export async function queuedRunFor(agentId: string, taskId: string): Promise<Run | undefined> {
-  const [run] = await db
+export async function queuedRunFor(agentId: string, taskId: string, ex: Executor = db): Promise<Run | undefined> {
+  const [run] = await ex
     .select()
     .from(runs)
     .where(and(eq(runs.agentId, agentId), eq(runs.taskId, taskId), eq(runs.status, 'queued')))

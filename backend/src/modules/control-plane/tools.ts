@@ -19,7 +19,8 @@ import {
   recordAgentVerdict,
   REVIEW_CYCLE_CAP,
 } from '../tasks/approvals.service';
-import { fireWakes, moveTaskWithin, type PendingWake } from '../tasks/tasks.service';
+import { moveTaskWithin } from '../tasks/tasks.service';
+import { startQueuedRuns } from '../runs/wake';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
 import { verifyRunToken } from './run-token';
@@ -117,16 +118,17 @@ const TERMINAL_TOOLS: readonly string[] = TERMINAL_CONTROL_PLANE_TOOLS;
  * repeats whenever the run already called it; any other tool repeats only
  * when it is the run's latest call with the same arguments, so a deliberate
  * sequence such as in_progress, blocked, in_progress still takes effect.
- * Wakes the writes ask for fire after commit.
+ * Wakes the writes ask for are queued in the same transaction and started
+ * after commit.
  */
 async function controlPlaneWrite<T>(
   ctx: RunToolContext,
   tool: string,
   args: Record<string, unknown>,
-  write: (tx: Tx, wakes: PendingWake[]) => Promise<T>
+  write: (tx: Tx, queued: Run[]) => Promise<T>
 ): Promise<T> {
   const argsHash = createHash('sha256').update(canonicalJson(args)).digest('hex');
-  const wakes: PendingWake[] = [];
+  const queued: Run[] = [];
   const result = await db.transaction(async (tx) => {
     await assertRunActive(tx, ctx.run.id, ctx.epoch, true);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.run.id}, 0))`);
@@ -148,7 +150,7 @@ async function controlPlaneWrite<T>(
         : [];
     if (prior) return prior.result as T;
 
-    const value = await write(tx, wakes);
+    const value = await write(tx, queued);
     crashPoint('control_plane.before_record');
     await tx.insert(controlPlaneRequests).values({
       runId: ctx.run.id,
@@ -160,7 +162,7 @@ async function controlPlaneWrite<T>(
     });
     return value;
   });
-  await fireWakes(wakes);
+  await startQueuedRuns(queued);
   return result;
 }
 
@@ -183,7 +185,7 @@ async function freshTask(ctx: RunToolContext, ex: Executor = db): Promise<Task> 
  * legal bridge (an agent finishing straight from todo is normal, not an
  * error). Still-illegal moves reject through the transition table.
  */
-async function advanceTo(ctx: RunToolContext, target: TaskStatus, tx: Tx, wakes: PendingWake[]): Promise<Task> {
+async function advanceTo(ctx: RunToolContext, target: TaskStatus, tx: Tx, queued: Run[]): Promise<Task> {
   let task = await freshTask(ctx, tx);
   if (task.status === target) return task;
   if (
@@ -192,11 +194,11 @@ async function advanceTo(ctx: RunToolContext, target: TaskStatus, tx: Tx, wakes:
     isTransitionAllowed('in_progress', target)
   ) {
     const bridged = await moveTaskWithin(tx, ctx.run.userId, task.id, { status: 'in_progress' });
-    wakes.push(...bridged.wakes);
+    queued.push(...bridged.queued);
     task = bridged.task;
   }
   const moved = await moveTaskWithin(tx, ctx.run.userId, task.id, { status: target });
-  wakes.push(...moved.wakes);
+  queued.push(...moved.queued);
   return moved.task;
 }
 
@@ -240,27 +242,27 @@ export async function commentOnTask(ctx: RunToolContext, body: string): Promise<
 
 /** Status writes go through the same transition table as every other path. */
 export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus): Promise<StatusResult> {
-  return controlPlaneWrite(ctx, 'update_task_status', { status }, async (tx, wakes) => {
+  return controlPlaneWrite(ctx, 'update_task_status', { status }, async (tx, queued) => {
     const moved = await moveTaskWithin(tx, ctx.run.userId, ctx.task.id, { status });
-    wakes.push(...moved.wakes);
+    queued.push(...moved.queued);
     return { status: moved.task.status };
   });
 }
 
 /** Flags the run's task as blocked with the question on the timeline. */
 export async function askBlocker(ctx: RunToolContext, question: string): Promise<StatusResult> {
-  return controlPlaneWrite(ctx, 'ask_blocker', { question }, async (tx, wakes) => {
+  return controlPlaneWrite(ctx, 'ask_blocker', { question }, async (tx, queued) => {
     await postAsAgent(ctx, `[BLOCKER] ${question}`, tx);
-    return { status: (await advanceTo(ctx, 'blocked', tx, wakes)).status };
+    return { status: (await advanceTo(ctx, 'blocked', tx, queued)).status };
   });
 }
 
 /** Posts the result and hands the task to review. */
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
-  return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, wakes) => {
+  return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, queued) => {
     await postAsAgent(ctx, summary, tx);
-    return { status: (await advanceTo(ctx, 'in_review', tx, wakes)).status };
+    return { status: (await advanceTo(ctx, 'in_review', tx, queued)).status };
   });
 }
 
@@ -285,7 +287,7 @@ export async function submitReviewVerdict(
   }
   const verdict = { agentId: ctx.agent.id, runId: ctx.run.id, decision, body: feedback };
 
-  return controlPlaneWrite(ctx, 'submit_review', { decision, feedback }, async (tx, wakes) => {
+  return controlPlaneWrite(ctx, 'submit_review', { decision, feedback }, async (tx, queued) => {
     if (decision === 'approved') {
       await recordAgentVerdict(tx, ctx.run.userId, ctx.task.id, verdict);
       return {
@@ -298,7 +300,7 @@ export async function submitReviewVerdict(
     const priorRejections = await countAgentRejections(ctx.task.id, tx);
     const halted = priorRejections >= REVIEW_CYCLE_CAP;
     const recorded = await recordAgentVerdict(tx, ctx.run.userId, ctx.task.id, verdict, { reopen: !halted });
-    wakes.push(...recorded.wakes);
+    queued.push(...recorded.queued);
     if (halted) {
       await postAsAgent(
         ctx,

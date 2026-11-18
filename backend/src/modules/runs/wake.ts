@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '../../db/client';
+import { db, type Executor } from '../../db/client';
 import { agents, tasks, type Agent, type Task, type Run, type RunTrigger } from '../../db/schema';
 import { badRequest } from '../../http/errors';
 import { addAgentTurn, runHasTurns } from '../tasks/turns.service';
@@ -14,6 +14,7 @@ import {
   settleRun,
   type RunOutcome,
 } from './runs.service';
+import { crashPoint } from '../ownership/crash-points';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -51,14 +52,31 @@ export async function drainRunsForTests(): Promise<void> {
  * already built, and if its owner has died the wake would die with it.
  */
 export async function requestWake(userId: string, input: WakeInput): Promise<WakeDecision> {
-  const [agent] = await db
+  const { run, merged } = await enqueueWake(db, userId, input);
+  if (merged) return { run, admitted: 'merged' };
+  const started = await tryStartRun(run);
+  return { run: started ?? run, admitted: started ? 'started' : 'queued' };
+}
+
+/**
+ * Records a wake through `ex` as a queued run, joining the one already queued
+ * for the same agent and task. Inside a caller's transaction this is the
+ * outbox: the run commits together with the write that asked for it, and if
+ * the process dies before starting it, the reconciler promotes it.
+ */
+export async function enqueueWake(
+  ex: Executor,
+  userId: string,
+  input: WakeInput
+): Promise<{ run: Run; merged: boolean }> {
+  const [agent] = await ex
     .select()
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.userId, userId)))
     .limit(1);
   if (!agent) throw badRequest('invalid_agent', 'Agent does not exist');
 
-  const [task] = await db
+  const [task] = await ex
     .select({ id: tasks.id })
     .from(tasks)
     .where(and(eq(tasks.id, input.taskId), eq(tasks.userId, userId)))
@@ -67,19 +85,36 @@ export async function requestWake(userId: string, input: WakeInput): Promise<Wak
 
   // Two racing wakes can both miss this check; the loser then queues a second
   // run behind the winner, which is safe, just not merged.
-  const pending = await queuedRunFor(input.agentId, input.taskId);
-  if (pending) return { run: pending, admitted: 'merged' };
+  const pending = await queuedRunFor(input.agentId, input.taskId, ex);
+  if (pending) return { run: pending, merged: true };
 
-  const run = await createQueuedRun(userId, {
-    agentId: agent.id,
-    agentName: agent.name,
-    taskId: input.taskId,
-    trigger: input.trigger,
-    reason: input.reason,
-  });
+  const run = await createQueuedRun(
+    userId,
+    {
+      agentId: agent.id,
+      agentName: agent.name,
+      taskId: input.taskId,
+      trigger: input.trigger,
+      reason: input.reason,
+    },
+    ex
+  );
+  return { run, merged: false };
+}
 
-  const started = await tryStartRun(run);
-  return { run: started ?? run, admitted: started ? 'started' : 'queued' };
+/**
+ * Tries to start runs a committed write queued. One that cannot start now,
+ * or is never tried because the process died first, waits for promotion.
+ */
+export async function startQueuedRuns(queued: Run[]): Promise<void> {
+  crashPoint('wake.before_start');
+  for (const run of queued) {
+    try {
+      await tryStartRun(run);
+    } catch (error) {
+      console.error(`Run ${run.id} could not be started:`, error);
+    }
+  }
 }
 
 /** Starts a queued run if its gates are free; the reconciler's promotion step. */

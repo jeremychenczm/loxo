@@ -6,12 +6,13 @@ import {
   turns,
   type Approval,
   type ApprovalDecision,
+  type Run,
   type Task,
   type Turn,
 } from '../../db/schema';
 import { badRequest, notFound } from '../../http/errors';
 import { latestTaskSnapshot } from '../code-workspaces/workspace.service';
-import { moveTask, moveTaskWithin, type PendingWake } from './tasks.service';
+import { moveTask, moveTaskWithin } from './tasks.service';
 import { addAgentTurn, addHumanTurn } from './turns.service';
 
 /** Automated reject cycles allowed per task before a human must take over. */
@@ -110,8 +111,8 @@ export interface AgentVerdictOptions {
 /**
  * An agent reviewer's verdict, kept as a turn and written through `ex`.
  * Asymmetric authority: a rejection reopens work, an approval only
- * recommends — closing stays human. Returns the wakes the reopen calls for;
- * the caller fires them after commit.
+ * recommends — closing stays human. Returns the runs the reopen queued; the
+ * caller starts them after commit.
  */
 export async function recordAgentVerdict(
   ex: Executor,
@@ -119,7 +120,7 @@ export async function recordAgentVerdict(
   taskId: string,
   input: { agentId: string; runId: string | null; decision: ApprovalDecision; body: string },
   options: AgentVerdictOptions = {}
-): Promise<{ turn: Turn; wakes: PendingWake[] }> {
+): Promise<{ turn: Turn; queued: Run[] }> {
   const task = await findOwnedTask(userId, taskId, ex);
   const body = assertReviewable(task, input.body);
   const report: ReviewVerdictReport = { type: 'review', decision: input.decision };
@@ -132,10 +133,10 @@ export async function recordAgentVerdict(
     ex
   );
   if (input.decision === 'changes_requested' && options.reopen !== false) {
-    const { wakes } = await moveTaskWithin(ex, userId, taskId, { status: 'in_progress' });
-    return { turn, wakes };
+    const { queued } = await moveTaskWithin(ex, userId, taskId, { status: 'in_progress' });
+    return { turn, queued };
   }
-  return { turn, wakes: [] };
+  return { turn, queued: [] };
 }
 
 export async function listApprovals(userId: string, taskId: string): Promise<Approval[]> {
