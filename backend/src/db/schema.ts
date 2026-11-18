@@ -173,30 +173,6 @@ export const repositories = pgTable(
 
 export type Repository = typeof repositories.$inferSelect;
 
-export type Playbook = 'build' | 'review' | 'discuss' | 'solo';
-
-/** Per-task limits and switches; absent keys fall back to playbook defaults. */
-export interface TaskSettings {
-  maxRoundsPerPhase?: number;
-  maxFixCycles?: number;
-  permissionCeiling?: AgentPermissionLevel;
-  budgetUsd?: number;
-  maxDurationMinutes?: number;
-  parallelism?: number;
-  explore?: boolean;
-}
-
-/** Frozen at Brief: the only description of the task members ever see. */
-export interface TaskSnapshot {
-  title: string;
-  brief: string;
-  repositoryId: string | null;
-  baseRef: string | null;
-  baseCommit: string | null;
-  checks: RepositoryCheck[];
-  constraints: string[];
-}
-
 export type TaskStatus =
   | 'backlog'
   | 'todo'
@@ -228,14 +204,8 @@ export const tasks = pgTable(
     /** The requirement as the user wrote it. */
     brief: text('brief').notNull().default(''),
     status: text('status').$type<TaskStatus>().notNull().default('backlog'),
-    playbook: text('playbook').$type<Playbook>().notNull().default('solo'),
     /** Branch the task builds on; defaults to the repository's default branch. */
     baseRef: text('base_ref'),
-    /** Current playbook phase; null before the engine picks the task up. */
-    phase: text('phase'),
-    settings: jsonb('settings').$type<TaskSettings>().notNull().default({}),
-    snapshot: jsonb('snapshot').$type<TaskSnapshot>(),
-    snapshotHash: text('snapshot_hash'),
     leadAgentId: uuid('lead_agent_id').references(() => agents.id, { onDelete: 'set null' }),
     /** Source for turns.seq; incremented in the same transaction that inserts a turn. */
     turnCounter: integer('turn_counter').notNull().default(0),
@@ -263,11 +233,11 @@ export const tasks = pgTable(
 
 export type Task = typeof tasks.$inferSelect;
 
-export type TaskMemberState = 'active' | 'paused' | 'removed';
+export type TaskMemberState = 'active' | 'removed';
 
 /**
  * Agents taking part in a task. Removed members keep their row so their
- * turns and runtime session stay attributable.
+ * turns stay attributable.
  */
 export const taskMembers = pgTable(
   'task_members',
@@ -282,11 +252,6 @@ export const taskMembers = pgTable(
     /** Speaking order among members. */
     position: integer('position').notNull(),
     state: text('state').$type<TaskMemberState>().notNull().default('active'),
-    pausedReason: text('paused_reason'),
-    /** Runtime-native session reused across this member's turns. */
-    runtimeSessionId: text('runtime_session_id'),
-    /** Bumped when the runtime session is replaced, so context delivery starts over. */
-    sessionEpoch: integer('session_epoch').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -369,20 +334,10 @@ export const turns = pgTable(
       .notNull()
       .references(() => tasks.id, { onDelete: 'cascade' }),
     seq: integer('seq').notNull(),
-    /** Playbook phase the turn belongs to; null outside a playbook. */
-    phase: text('phase'),
     kind: text('kind').$type<TurnKind>().notNull(),
     agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
     runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
-    workPackageId: uuid('work_package_id').references((): AnyPgColumn => workPackages.id, {
-      onDelete: 'set null',
-    }),
-    /** Worktree the turn runs in; null for turns that touch no code. */
-    workspaceId: uuid('workspace_id').references((): AnyPgColumn => workspaces.id, {
-      onDelete: 'set null',
-    }),
-    permission: text('permission').$type<AgentPermissionLevel>(),
     status: text('status').$type<TurnStatus>().notNull().default('pending'),
     report: jsonb('report').$type<TurnReport>(),
     content: text('content').notNull().default(''),
@@ -392,10 +347,6 @@ export const turns = pgTable(
   (t) => [
     uniqueIndex('turns_task_seq').on(t.taskId, t.seq),
     index('turns_run').on(t.runId),
-    // A worktree has at most one writer at a time; readers are unrestricted.
-    uniqueIndex('turns_workspace_single_writer')
-      .on(t.workspaceId)
-      .where(sql`${t.status} = 'running' AND ${t.permission} IN ('edit', 'full')`),
     check(
       'turns_author_matches_kind',
       sql`(${t.kind} = 'agent' OR ${t.agentId} IS NULL) AND (${t.kind} = 'human' OR ${t.authorUserId} IS NULL)`
@@ -432,100 +383,6 @@ export const runEvents = pgTable(
 
 export type RunEvent = typeof runEvents.$inferSelect;
 
-export type PlanStatus = 'proposed' | 'approved' | 'superseded';
-
-/** One version of the lead's plan; body holds work packages, integration notes, and verification strategy. */
-export const plans = pgTable(
-  'plans',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    version: integer('version').notNull(),
-    hash: text('hash').notNull(),
-    authorAgentId: uuid('author_agent_id').references(() => agents.id, { onDelete: 'set null' }),
-    body: jsonb('body').$type<Record<string, unknown>>().notNull(),
-    status: text('status').$type<PlanStatus>().notNull().default('proposed'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('plans_task_version').on(t.taskId, t.version)]
-);
-
-export type Plan = typeof plans.$inferSelect;
-
-export type PlanReviewDecision = 'approve' | 'object';
-
-export const planReviews = pgTable(
-  'plan_reviews',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    planId: uuid('plan_id')
-      .notNull()
-      .references(() => plans.id, { onDelete: 'cascade' }),
-    taskMemberId: uuid('task_member_id')
-      .notNull()
-      .references(() => taskMembers.id, { onDelete: 'cascade' }),
-    decision: text('decision').$type<PlanReviewDecision>().notNull(),
-    reason: text('reason').notNull().default(''),
-    suggestion: text('suggestion'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('plan_reviews_plan_member').on(t.planId, t.taskMemberId),
-    check(
-      'plan_reviews_objection_has_reason',
-      sql`${t.decision} = 'approve' OR length(trim(${t.reason})) > 0`
-    ),
-  ]
-);
-
-export type PlanReview = typeof planReviews.$inferSelect;
-
-export type WorkPackageStatus =
-  | 'pending'
-  | 'ready'
-  | 'in_progress'
-  | 'done'
-  | 'blocked'
-  | 'failed'
-  | 'cancelled';
-
-/** A unit of the approved plan owned by one member; fix packages from findings use the same shape. */
-export const workPackages = pgTable(
-  'work_packages',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    planId: uuid('plan_id')
-      .notNull()
-      .references(() => plans.id, { onDelete: 'cascade' }),
-    key: text('key').notNull(),
-    title: text('title').notNull(),
-    ownerMemberId: uuid('owner_member_id').references(() => taskMembers.id, {
-      onDelete: 'set null',
-    }),
-    /** Files or areas the package may touch. */
-    scope: jsonb('scope').$type<string[]>().notNull().default([]),
-    /** Keys of packages within the same plan that must finish first. */
-    dependsOn: jsonb('depends_on').$type<string[]>().notNull().default([]),
-    acceptance: jsonb('acceptance').$type<string[]>().notNull().default([]),
-    status: text('status').$type<WorkPackageStatus>().notNull().default('pending'),
-    workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
-    attempt: integer('attempt').notNull().default(0),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('work_packages_plan_key').on(t.planId, t.key),
-    index('work_packages_task_status').on(t.taskId, t.status),
-  ]
-);
-
-export type WorkPackage = typeof workPackages.$inferSelect;
-
 export type ApprovalDecision = 'approved' | 'changes_requested';
 
 /**
@@ -551,9 +408,6 @@ export const approvals = pgTable(
     ),
     /** Null for tasks without a repository. */
     fingerprint: text('fingerprint'),
-    candidateId: uuid('candidate_id').references((): AnyPgColumn => candidates.id, {
-      onDelete: 'set null',
-    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('approvals_task_created').on(t.taskId, t.createdAt)]
@@ -700,186 +554,11 @@ export const changeSnapshots = pgTable(
 
 export type ChangeSnapshot = typeof changeSnapshots.$inferSelect;
 
-export type CheckRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'error' | 'timed_out' | 'skipped';
-
-/** A platform-executed check against one workspace state; agents never report these themselves. */
-export const checkRuns = pgTable(
-  'check_runs',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
-    /** Workspace content fingerprint the check ran against. */
-    fingerprint: text('fingerprint').notNull(),
-    name: text('name').notNull(),
-    command: text('command').notNull(),
-    status: text('status').$type<CheckRunStatus>().notNull().default('pending'),
-    exitCode: integer('exit_code'),
-    durationMs: integer('duration_ms'),
-    /** Storage key of the truncated log. */
-    logRef: text('log_ref'),
-    logTruncated: boolean('log_truncated').notNull().default(false),
-    startedAt: timestamp('started_at', { withTimezone: true }),
-    finishedAt: timestamp('finished_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index('check_runs_task_fingerprint').on(t.taskId, t.fingerprint)]
-);
-
-export type CheckRun = typeof checkRuns.$inferSelect;
-
-export type FindingSource = 'agent' | 'check' | 'human';
-
-export type FindingSeverity = 'blocker' | 'major' | 'minor';
-
-export type FindingStatus = 'open' | 'accepted' | 'rejected' | 'disputed' | 'fixed' | 'wontfix';
-
-export interface FindingLocation {
-  path?: string;
-  line?: number;
-  endLine?: number;
-}
-
-/** A problem raised during verification, by a reviewer or by a failed check. */
-export const findings = pgTable(
-  'findings',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    /** Fix cycle the finding was raised in, starting at 1. */
-    cycle: integer('cycle').notNull().default(1),
-    source: text('source').$type<FindingSource>().notNull(),
-    reporterAgentId: uuid('reporter_agent_id').references(() => agents.id, { onDelete: 'set null' }),
-    checkRunId: uuid('check_run_id').references(() => checkRuns.id, { onDelete: 'set null' }),
-    turnId: uuid('turn_id').references(() => turns.id, { onDelete: 'set null' }),
-    workPackageId: uuid('work_package_id').references(() => workPackages.id, {
-      onDelete: 'set null',
-    }),
-    severity: text('severity').$type<FindingSeverity>().notNull(),
-    location: jsonb('location').$type<FindingLocation>().notNull().default({}),
-    body: text('body').notNull(),
-    suggestion: text('suggestion'),
-    status: text('status').$type<FindingStatus>().notNull().default('open'),
-    resolution: text('resolution'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index('findings_task_status').on(t.taskId, t.status)]
-);
-
-export type Finding = typeof findings.$inferSelect;
-
-export type CandidateStatus =
-  | 'collecting'
-  | 'signed'
-  | 'approved'
-  | 'delivered'
-  | 'rejected'
-  | 'invalidated'
-  | 'superseded';
-
-export const CANDIDATE_TERMINAL_STATUSES = [
-  'delivered',
-  'rejected',
-  'invalidated',
-  'superseded',
-] as const satisfies readonly CandidateStatus[];
-
-/**
- * What members sign: digest = sha256(integration fingerprint, checks digest,
- * plan hash, summary). Terminal statuses are irreversible, enforced by a
- * trigger; any content change produces a new version instead.
- */
-export const candidates = pgTable(
-  'candidates',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    version: integer('version').notNull(),
-    fingerprint: text('fingerprint').notNull(),
-    checksDigest: text('checks_digest').notNull(),
-    planHash: text('plan_hash'),
-    summary: text('summary').notNull().default(''),
-    digest: text('digest').notNull(),
-    status: text('status').$type<CandidateStatus>().notNull().default('collecting'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('candidates_task_version').on(t.taskId, t.version)]
-);
-
-export type Candidate = typeof candidates.$inferSelect;
-
-export type SignoffDecision = 'signed' | 'refused';
-
-/** One member's verdict on one candidate; a refusal must cite the finding behind it. */
-export const signoffs = pgTable(
-  'signoffs',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    candidateId: uuid('candidate_id')
-      .notNull()
-      .references(() => candidates.id, { onDelete: 'cascade' }),
-    taskMemberId: uuid('task_member_id')
-      .notNull()
-      .references(() => taskMembers.id, { onDelete: 'cascade' }),
-    decision: text('decision').$type<SignoffDecision>().notNull(),
-    /** A cited finding cannot be deleted while the refusal stands. */
-    findingId: uuid('finding_id').references(() => findings.id, { onDelete: 'restrict' }),
-    turnId: uuid('turn_id').references(() => turns.id, { onDelete: 'set null' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('signoffs_candidate_member').on(t.candidateId, t.taskMemberId),
-    check(
-      'signoffs_refusal_cites_finding',
-      sql`${t.decision} = 'signed' OR ${t.findingId} IS NOT NULL`
-    ),
-  ]
-);
-
-export type Signoff = typeof signoffs.$inferSelect;
-
-export type DeliveryMethod = 'merge' | 'pull_request';
-
-export type DeliveryStatus = 'pending' | 'succeeded' | 'failed';
-
-export const deliveries = pgTable(
-  'deliveries',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskId: uuid('task_id')
-      .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    candidateId: uuid('candidate_id').references(() => candidates.id, { onDelete: 'set null' }),
-    approvalId: uuid('approval_id').references(() => approvals.id, { onDelete: 'set null' }),
-    method: text('method').$type<DeliveryMethod>().notNull(),
-    status: text('status').$type<DeliveryStatus>().notNull().default('pending'),
-    mergeCommit: text('merge_commit'),
-    pullRequestUrl: text('pull_request_url'),
-    error: text('error'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index('deliveries_task').on(t.taskId)]
-);
-
-export type Delivery = typeof deliveries.$inferSelect;
-
 export type HumanRequestKind =
   | 'input'
   | 'permission'
   | 'retry'
   | 'budget'
-  | 'plan_dispute'
-  | 'finding_dispute'
-  | 'fix_limit'
   | 'base_drift';
 
 export type HumanRequestStatus = 'open' | 'answered' | 'expired' | 'cancelled';
@@ -905,23 +584,3 @@ export const humanRequests = pgTable(
 );
 
 export type HumanRequest = typeof humanRequests.$inferSelect;
-
-/**
- * Watermark of timeline context already sent to a member's runtime session;
- * the next turn only carries turns after it. A new session epoch starts at zero.
- */
-export const contextDeliveries = pgTable(
-  'context_deliveries',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    taskMemberId: uuid('task_member_id')
-      .notNull()
-      .references(() => taskMembers.id, { onDelete: 'cascade' }),
-    sessionEpoch: integer('session_epoch').notNull(),
-    deliveredThroughSeq: integer('delivered_through_seq').notNull().default(0),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('context_deliveries_member_epoch').on(t.taskMemberId, t.sessionEpoch)]
-);
-
-export type ContextDelivery = typeof contextDeliveries.$inferSelect;

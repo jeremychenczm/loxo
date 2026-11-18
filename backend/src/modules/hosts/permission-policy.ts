@@ -10,7 +10,7 @@ import type { PermissionRequest } from './host.types';
  */
 
 export interface PolicyContext {
-  /** Lowest of the agent ceiling, the task ceiling, and the phase permission. */
+  /** The agent's ceiling, lowered to read_only for review runs. */
   permission: AgentPermissionLevel;
   /** Absolute root the turn may touch; null means no code access at all. */
   workspaceRoot: string | null;
@@ -149,7 +149,7 @@ export function evaluatePermission(request: PermissionRequest, context: PolicyCo
         : verdict('deny', 'kind.write.read-only', 'This turn is read-only');
     case 'fetch':
       return RANK[permission] >= RANK.edit
-        ? verdict('allow', 'kind.fetch', 'Network reads are allowed in writing phases')
+        ? verdict('allow', 'kind.fetch', 'Network reads are allowed for writing turns')
         : verdict('ask', 'kind.fetch.read-only', 'A read-only turn wants network access');
     case 'switch_mode':
       return verdict('deny', 'kind.switch-mode', 'Agents may not change their own operating mode');

@@ -164,7 +164,7 @@ async function writeRoster(tx: Tx, taskId: string, roster: string[]): Promise<vo
     if (row) {
       await tx
         .update(taskMembers)
-        .set({ position, state: 'active', pausedReason: null, updatedAt: now })
+        .set({ position, state: 'active', updatedAt: now })
         .where(eq(taskMembers.id, row.id));
     } else {
       await tx.insert(taskMembers).values({ taskId, agentId, position });

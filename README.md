@@ -4,7 +4,7 @@
 
 Loxo coordinates continuous work across coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 326 automated tests*
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 312 automated tests*
 
 ## Core loop
 
@@ -91,7 +91,7 @@ flowchart LR
         RUNNER[Agent runner<br/>ACP sessions and API agents]
     end
     subgraph Data
-        PG[(Postgres 16<br/>24 tables and Drizzle ORM)]
+        PG[(Postgres 16<br/>15 tables and Drizzle ORM)]
         FS[Workspace storage<br/>git worktrees and manifests]
     end
     LLM[OpenAI and Anthropic APIs]
@@ -148,7 +148,7 @@ Tasks without a repository run in the agent's own workspace.
 ## Testing
 
 ```bash
-npm test             # 326 backend tests — API, runs, governance, workspaces, and migrations
+npm test             # 312 backend tests — API, runs, governance, workspaces, and migrations
 npm run typecheck    # backend and frontend
 ```
 
@@ -163,7 +163,7 @@ The suite covers admission and agent claims, workspace capture, permission enfor
 
 ## Status and roadmap
 
-Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end, and the data model for multi-agent work (crews, members, turns, plans, work packages, findings, candidates, and sign-offs) is in place. Next up:
+Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end, with crews and task members as the base for multi-agent work. Next up:
 
 - **Crash-safe runs** — leased run ownership with fencing, so a killed backend recovers without lost or silently replayed turns.
 - **Task engine** — declarative playbooks that take a crew through explore, plan, parallel build, integration, cross-review, and sign-off.

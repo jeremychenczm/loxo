@@ -16,7 +16,7 @@ import type {
 } from './host.types';
 import { repoReadTools, type RepoReadContext } from './repo-read-tools';
 
-const REPO_TOOLS = new Set(['read_file', 'list_files', 'get_diff', 'get_checks']);
+const REPO_TOOLS = new Set(['read_file', 'list_files', 'get_diff']);
 
 export interface ApiHostConfig {
   protocol: ApiProtocol;
@@ -37,9 +37,9 @@ const STOP_FOR_ERROR: Record<string, TurnStopReason> = { timeout: 'timeout', abo
 
 /**
  * A provider-API member. It has no file system or shell: it can read the
- * worktree through platform tools and nothing else, which is why the engine
- * only seats it in read-only phases. History lives in memory, so a new
- * session never resumes an old one.
+ * worktree through platform tools and nothing else, so it cannot take a
+ * writing run on a code task. History lives in memory, so a new session
+ * never resumes an old one.
  */
 class ApiSession implements AgentSession {
   readonly sessionId = `api-${crypto.randomUUID()}`;

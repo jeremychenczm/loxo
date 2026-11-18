@@ -1,33 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { db, pool } from '../src/db/client';
-import { checkRuns } from '../src/db/schema';
-import { createApp } from '../src/http/app';
 import { ApiHost } from '../src/modules/hosts/api-host';
 import type { HostEvent } from '../src/modules/hosts/host.types';
 import { repoReadTools } from '../src/modules/hosts/repo-read-tools';
 import { runApiToolLoop, type ApiToolLoopRequest } from '../src/modules/runner/api-tool-loop';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
-const app = createApp();
 let sandbox = '';
 let repo = '';
 let base = '';
-let taskId = '';
 
 beforeAll(async () => {
-  await pool.query('TRUNCATE TABLE users CASCADE');
-  const reg = await request(app)
-    .post('/auth/register')
-    .send({ email: 'apihost@example.com', username: 'apihostuser', password: 'a-strong-password' });
-  const task = await request(app)
-    .post('/api/tasks')
-    .set({ Authorization: `Bearer ${reg.body.token}` })
-    .send({ title: 'Review via API' });
-  taskId = task.body.task.id;
-
   sandbox = makeSandbox('api-host');
   repo = await initFixtureRepo(path.join(sandbox, 'repo'), {
     'README.md': '# fixture\n',
@@ -46,7 +30,7 @@ afterEach(() => vi.unstubAllGlobals());
 afterAll(() => removeSandbox(sandbox));
 
 function tool(name: string) {
-  const found = repoReadTools({ root: repo, baseCommit: base, taskId }).find((t) => t.name === name);
+  const found = repoReadTools({ root: repo, baseCommit: base }).find((t) => t.name === name);
   if (!found) throw new Error(name);
   return found;
 }
@@ -88,18 +72,6 @@ describe('repository read tools', () => {
     expect(diff).toMatch(/Untracked files:[\s\S]*notes\.md/);
   });
 
-  it('shows the latest result per check', async () => {
-    expect(await tool('get_checks').execute({})).toBe('No checks have run yet');
-    await db.insert(checkRuns).values([
-      { taskId, fingerprint: 'f1', name: 'test', command: 'npm test', status: 'failed', exitCode: 1, durationMs: 4200 },
-      { taskId, fingerprint: 'f1', name: 'lint', command: 'npm run lint', status: 'passed', exitCode: 0 },
-    ]);
-    const checks = await tool('get_checks').execute({});
-    expect(checks).toContain('test: failed (exit 1) in 4.2s — npm test');
-    expect(checks).toContain('lint: passed (exit 0) — npm run lint');
-    const unscoped = repoReadTools({ root: repo }).find((t) => t.name === 'get_checks')!;
-    expect(await unscoped.execute({})).toBe('No checks are available for this turn');
-  });
 });
 
 describe('API host', () => {
@@ -110,7 +82,7 @@ describe('API host', () => {
       apiKey: 'sk-test',
       model: 'claude-sonnet-5',
       system: 'You review code.',
-      repo: { baseCommit: base, taskId },
+      repo: { baseCommit: base },
       execute: async (req) => {
         requests.push(req);
         const diff = req.tools.find((t) => t.name === 'get_diff')!;
@@ -134,7 +106,7 @@ describe('API host', () => {
     });
     expect(events.map((e) => e.kind)).toEqual(['tool_call', 'tool_update', 'message_delta']);
     expect(events[0]).toMatchObject({ toolKind: 'read', title: 'get_diff' });
-    expect(requests[0]!.tools.map((t) => t.name)).toEqual(['read_file', 'list_files', 'get_diff', 'get_checks']);
+    expect(requests[0]!.tools.map((t) => t.name)).toEqual(['read_file', 'list_files', 'get_diff']);
 
     await session.prompt({ prompt: 'Anything else?' });
     expect(requests[1]!.history).toEqual([

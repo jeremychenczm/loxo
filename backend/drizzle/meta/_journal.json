@@ -239,6 +239,13 @@
       "when": 1794955050428,
       "tag": "0033_drop-direct-chat",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794965133048,
+      "tag": "0034_drop-engine-placeholders",
+      "breakpoints": true
     }
   ]
 }

@@ -2,9 +2,6 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { and, desc, eq } from 'drizzle-orm';
-import { db } from '../../db/client';
-import { checkRuns } from '../../db/schema';
 import { badRequest } from '../../http/errors';
 import { cleanRelativePath, resolveInside } from '../../storage/path-safety';
 import type { ApiToolDefinition } from '../runner/api-tool-loop';
@@ -26,9 +23,6 @@ export interface RepoReadContext {
   root: string;
   /** Diff base; without it the diff is against HEAD. */
   baseCommit?: string | null;
-  /** Scopes get_checks; without either, no checks are visible. */
-  workspaceId?: string | null;
-  taskId?: string | null;
 }
 
 function cap(text: string): string {
@@ -127,27 +121,6 @@ async function getDiff(ctx: RepoReadContext): Promise<string> {
   return cap(sections.join('\n\n'));
 }
 
-async function getChecks(ctx: RepoReadContext): Promise<string> {
-  const scope = ctx.workspaceId
-    ? eq(checkRuns.workspaceId, ctx.workspaceId)
-    : ctx.taskId
-      ? eq(checkRuns.taskId, ctx.taskId)
-      : null;
-  if (!scope) return 'No checks are available for this turn';
-  const rows = await db.select().from(checkRuns).where(and(scope)).orderBy(desc(checkRuns.createdAt)).limit(50);
-  const latest = new Map<string, (typeof rows)[number]>();
-  for (const row of rows) if (!latest.has(row.name)) latest.set(row.name, row);
-  if (latest.size === 0) return 'No checks have run yet';
-  return [...latest.values()]
-    .map(
-      (c) =>
-        `${c.name}: ${c.status}${c.exitCode !== null ? ` (exit ${c.exitCode})` : ''}${
-          c.durationMs !== null ? ` in ${Math.round(c.durationMs / 100) / 10}s` : ''
-        } — ${c.command}`
-    )
-    .join('\n');
-}
-
 export function repoReadTools(ctx: RepoReadContext): ApiToolDefinition[] {
   return [
     {
@@ -178,12 +151,6 @@ export function repoReadTools(ctx: RepoReadContext): ApiToolDefinition[] {
       description: 'Show every change in the worktree against the task base, including untracked files.',
       parameters: { type: 'object', properties: {} },
       execute: () => getDiff(ctx),
-    },
-    {
-      name: 'get_checks',
-      description: 'Show the latest result of each platform-run check for this work.',
-      parameters: { type: 'object', properties: {} },
-      execute: () => getChecks(ctx),
     },
   ];
 }

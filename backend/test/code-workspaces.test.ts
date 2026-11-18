@@ -134,35 +134,6 @@ describe('multiple workspaces per task', () => {
     expect(await sqlState(db.insert(workspaces).values(row('integration', null)))).toBe('23505');
   });
 
-  it('admits one running writer per workspace while readers run freely', async () => {
-    const task = await request(app)
-      .post('/api/tasks')
-      .set({ Authorization: `Bearer ${token}` })
-      .send({ title: 'Single writer' });
-    const writerTask = task.body.task.id as string;
-    const workspace = one(
-      await db
-        .insert(workspaces)
-        .values({ ...workspaceRow({ taskId: writerTask }), worktreePath: `worktrees/${writerTask}` })
-        .returning()
-    );
-    let seq = 0;
-    const turn = (permission: 'read_only' | 'edit' | 'full', status: 'running' | 'completed') => {
-      seq += 1;
-      return db
-        .insert(turns)
-        .values({ taskId: writerTask, seq, kind: 'agent', agentId, workspaceId: workspace.id, permission, status })
-        .returning();
-    };
-
-    const writer = one(await turn('edit', 'running'));
-    expect(await sqlState(turn('full', 'running'))).toBe('23505');
-    expect(await sqlState(turn('read_only', 'running'))).toBeUndefined();
-    expect(await sqlState(turn('read_only', 'running'))).toBeUndefined();
-
-    await db.update(turns).set({ status: 'completed' }).where(eq(turns.id, writer.id));
-    expect(await sqlState(turn('edit', 'running'))).toBeUndefined();
-  });
 });
 
 describe('repository constraints', () => {

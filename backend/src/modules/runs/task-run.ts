@@ -142,7 +142,7 @@ export async function executeTaskTurn(run: Run, agent: Agent, task: Task): Promi
       model: resolveApiModel(agent, credentials.vendor as ApiProtocol),
       system: agent.manifest.api?.systemPrompt ?? `You are ${agent.name}. ${agent.description}`.trim(),
       turnTimeoutMs: TASK_RUN_TIMEOUT_MS,
-      repo: { baseCommit: taskWorkspace?.baseCommit ?? null, workspaceId: taskWorkspace?.id ?? null, taskId: task.id },
+      repo: { baseCommit: taskWorkspace?.baseCommit ?? null },
       extraTools: buildControlPlaneToolDefs({ run, agent, task }),
     });
   } else {
