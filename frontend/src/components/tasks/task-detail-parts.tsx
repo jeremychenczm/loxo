@@ -3,6 +3,13 @@
 /** Thermal-paper tone shared by every ticket surface. */
 export const PAPER = '#FDFCF7';
 
+/** MM-DD HH:MM in local time. */
+export function formatTime(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /**
  * Torn-paper edge. Top edge: paper sits low, teeth point up. Bottom edge
  * needs the inverse form (transparent-first) so the teeth point down;

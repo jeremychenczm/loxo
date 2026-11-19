@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Agent } from '@/lib/agents';
-import { BracketButton, CircularStamp, PAPER, Rule, TornEdge } from './task-detail-parts';
+import { ActionRequired } from './ActionRequired';
+import { BracketButton, CircularStamp, PAPER, Rule, TornEdge, formatTime } from './task-detail-parts';
 import {
   CLIENT_TRANSITIONS,
   STATUS_META,
@@ -21,7 +22,9 @@ import {
   type TaskStatus,
   type Turn,
 } from '@/lib/tasks';
+import { answerRequest, fetchOpenRequests, type HumanRequest } from '@/lib/human-requests';
 import { ACTIVE_RUN_STATUSES, fetchRuns, wakeTask, type Run, type RunStatus } from '@/lib/runs';
+import { fetchTaskWorkspace, reconcileTaskWorkspace, type TaskWorkspace } from '@/lib/workspaces';
 
 const RUN_STATUS_TEXT: Record<RunStatus, string> = {
   queued: 'text-pixel-gray',
@@ -58,12 +61,6 @@ interface TaskDetailProps {
   onClose: () => void;
   /** Fired after any mutation so the board behind can refresh. */
   onChanged: () => void;
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** Deterministic pseudo-barcode drawn from the task id. */
@@ -112,6 +109,9 @@ export function TaskDetail({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [requests, setRequests] = useState<HumanRequest[]>([]);
+  const [workspace, setWorkspace] = useState<TaskWorkspace | null>(null);
+  const [answering, setAnswering] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
@@ -128,19 +128,29 @@ export function TaskDetail({
   }, [printEntrance]);
 
   const load = useCallback(async () => {
-    const [{ task: fetched }, { turns: timeline }, { runs: ledger }, { approvals: decisions }] =
-      await Promise.all([
-        fetchTask(taskId),
-        fetchTurns(taskId),
-        fetchRuns({ taskId }),
-        fetchApprovals(taskId),
-      ]);
+    const [
+      { task: fetched },
+      { turns: timeline },
+      { runs: ledger },
+      { approvals: decisions },
+      { requests: pending },
+      { workspace: worktree },
+    ] = await Promise.all([
+      fetchTask(taskId),
+      fetchTurns(taskId),
+      fetchRuns({ taskId }),
+      fetchApprovals(taskId),
+      fetchOpenRequests(taskId),
+      fetchTaskWorkspace(taskId),
+    ]);
     setTask(fetched);
     setTitle(fetched.title);
     setBrief(fetched.brief);
     setTurns(timeline);
     setRuns(ledger);
     setApprovals(decisions);
+    setRequests(pending);
+    setWorkspace(worktree);
   }, [taskId]);
 
   useEffect(() => {
@@ -266,6 +276,23 @@ export function TaskDetail({
     void mutate(() => submitApproval(task.id, { decision, body }));
   };
 
+  // One answer at a time: a second click must not race the first.
+  const answer = (request: HumanRequest, choice: string) => {
+    if (
+      choice === 'discard' &&
+      !window.confirm('Discard what the interrupted run changed and put the worktree back the way it found it?')
+    ) {
+      return;
+    }
+    setAnswering(true);
+    void mutate(() => answerRequest(request.id, choice)).finally(() => setAnswering(false));
+  };
+
+  const reconcile = () => {
+    setAnswering(true);
+    void mutate(() => reconcileTaskWorkspace(task.id)).finally(() => setAnswering(false));
+  };
+
   const cancelTask = () => {
     if (window.confirm(`Cancel ${orderNo}? This cannot be undone.`)) {
       void mutate(() => moveTask(task.id, { status: 'cancelled' }));
@@ -364,6 +391,15 @@ export function TaskDetail({
               ! {error}
             </p>
           )}
+
+          <ActionRequired
+            requests={requests}
+            workspace={workspace}
+            agentName={agentName}
+            busy={answering}
+            onAnswer={answer}
+            onReconcile={reconcile}
+          />
 
           <Rule dashed />
 
