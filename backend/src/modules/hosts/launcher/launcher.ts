@@ -1,7 +1,8 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { childEnv } from '../../../lib/child-env';
 import { storage } from '../../../storage/layout';
@@ -44,7 +45,7 @@ export function resolveLauncher(): Promise<Launcher | null> {
   if (override !== undefined) return Promise.resolve(override);
   // Operator escape hatch, and the control arm of crash drills.
   if (process.env.LOXO_AGENT_LAUNCHER === 'off') return Promise.resolve(null);
-  resolved ??= (process.platform === 'win32' ? buildWindowsLauncher() : Promise.resolve(null)).catch((err) => {
+  resolved ??= (process.platform === 'win32' ? buildWindowsLauncher() : checkPosixLauncher()).catch((err) => {
     console.warn(`Agent launcher unavailable; agents start directly: ${err instanceof Error ? err.message : err}`);
     return null;
   });
@@ -62,6 +63,17 @@ export function underLauncher(launcher: Launcher, agent: LaunchCommand, tag: str
     command: launcher.command,
     args: [...launcher.prefixArgs, '--parent', String(process.pid), '--tag', tag, '--', agent.command, ...agent.args],
   };
+}
+
+/** The POSIX launcher is a script run with this node; it only has to pass its self-test. */
+async function checkPosixLauncher(): Promise<Launcher> {
+  const script = fileURLToPath(new URL('./posix-launcher.mjs', import.meta.url));
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, [script, '--self-test'], { stdio: 'ignore', detached: true, env: childEnv('tool') });
+    child.once('error', reject);
+    child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`self-test exited with ${code}`))));
+  });
+  return { kind: 'process-group', command: process.execPath, prefixArgs: [script] };
 }
 
 /**

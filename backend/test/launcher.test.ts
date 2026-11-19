@@ -87,6 +87,14 @@ afterEach(() => {
 
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
 
+describe.skipIf(process.platform === 'win32')('the POSIX launcher', () => {
+  it('passes the platform check script', { timeout: 120_000 }, async () => {
+    expect(launcher.kind).toBe('process-group');
+    const { stdout } = await promisify(execFile)(process.execPath, [fixture('posix-check.mjs')]);
+    expect(stdout).toContain('ALL PASSED');
+  });
+});
+
 describe.skipIf(process.platform !== 'win32')('the Windows launcher', () => {
   it('builds once, passes its self-test, and is reused', { timeout: T }, async () => {
     expect(launcher.kind).toBe('job-object');
