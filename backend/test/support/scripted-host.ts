@@ -17,6 +17,8 @@ export interface ScriptedTurn {
   workspace: string;
   permission: TurnPermission;
   signal: AbortSignal;
+  /** The earlier session the run asked to restore, if any. */
+  resumeSessionId: string | null;
 }
 
 export interface ScriptedReply {
@@ -30,17 +32,24 @@ export type ScriptedAgent = (turn: ScriptedTurn) => Promise<ScriptedReply>;
 
 const STOP_FOR_KIND: Record<string, TurnStopReason> = { timeout: 'timeout', aborted: 'cancelled' };
 
+/** off: no runtime session id until a reply names one; fresh / restorable: an id from the start, restoring only when restorable. */
+export type ScriptedSessions = 'off' | 'fresh' | 'restorable';
+
 class ScriptedSession implements AgentSession {
   readonly sessionId = `scripted-${crypto.randomUUID()}`;
   runtimeSessionId: string | null = null;
-  readonly resumed = false;
+  readonly resumed: boolean;
   private active: AbortController | null = null;
 
   constructor(
     private readonly agent: ScriptedAgent,
     private readonly input: OpenSessionInput,
-    private readonly permission: TurnPermission
-  ) {}
+    private readonly permission: TurnPermission,
+    sessions: ScriptedSessions
+  ) {
+    this.resumed = sessions === 'restorable' && Boolean(input.resumeSessionId);
+    if (sessions !== 'off') this.runtimeSessionId = this.resumed ? input.resumeSessionId! : `runtime-${crypto.randomUUID()}`;
+  }
 
   async prompt(turn: TurnInput): Promise<TurnOutcome> {
     if (this.active) throw new Error('A turn is already running in this session');
@@ -52,6 +61,7 @@ class ScriptedSession implements AgentSession {
         workspace: this.input.cwd,
         permission: this.permission,
         signal: controller.signal,
+        resumeSessionId: this.input.resumeSessionId ?? null,
       });
       if (reply.sessionRef) this.runtimeSessionId = reply.sessionRef;
       if (reply.text) turn.onEvent?.({ kind: 'message_delta', text: reply.text });
@@ -83,9 +93,12 @@ function emptyUsage() {
 }
 
 /** Host factory for `setTaskHostFactoryForTests`, driven by an in-process script. */
-export function scriptedHost(agent: ScriptedAgent): (request: HostRequest) => AgentHost {
+export function scriptedHost(
+  agent: ScriptedAgent,
+  sessions: ScriptedSessions = 'off'
+): (request: HostRequest) => AgentHost {
   return (request) => ({
     transport: 'acp',
-    openSession: async (input) => new ScriptedSession(agent, input, request.permission),
+    openSession: async (input) => new ScriptedSession(agent, input, request.permission, sessions),
   });
 }

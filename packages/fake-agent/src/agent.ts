@@ -184,6 +184,7 @@ async function main(): Promise<void> {
         agentCapabilities: {
           loadSession: scenario.loadSession === true,
           mcpCapabilities: { http: true, sse: false },
+          ...(scenario.resumeSession ? { sessionCapabilities: { resume: {} } } : {}),
         },
         agentInfo: { name: 'loxo-fake-agent', version: '0.1.0' },
       };
@@ -196,6 +197,14 @@ async function main(): Promise<void> {
     })
     .onRequest(methods.agent.session.load, async ({ params }) => {
       if (!scenario.loadSession) throw new Error('session/load is not supported');
+      if (scenario.forgetSessions) throw new Error(`Unknown session ${params.sessionId}`);
+      sessions.set(params.sessionId, { cwd: params.cwd, turn: null });
+      return {};
+    })
+    .onRequest(methods.agent.session.resume, async ({ params }) => {
+      if (!scenario.resumeSession) throw new Error('session/resume is not supported');
+      if (scenario.resumeSession === 'hang') await new Promise<never>(() => {});
+      if (scenario.resumeSession === 'fail') throw new Error(`Unknown session ${params.sessionId}`);
       sessions.set(params.sessionId, { cwd: params.cwd, turn: null });
       return {};
     })

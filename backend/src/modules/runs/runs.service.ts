@@ -258,6 +258,30 @@ export async function recordBeforeState(
   }
 }
 
+/**
+ * Records the runtime's session id as soon as the session opens, so a run
+ * that picks up after this one can restore the conversation even if this
+ * owner never settles. Guarded like recordBeforeState.
+ */
+export async function recordSessionRef(owner: RunOwner, sessionRef: string, executor: Executor = db): Promise<void> {
+  const [row] = await executor
+    .update(runs)
+    .set({ sessionRef })
+    .where(
+      and(
+        eq(runs.id, owner.runId),
+        eq(runs.status, 'running'),
+        eq(runs.ownerEpoch, owner.epoch),
+        eq(runs.ownerInstance, owner.instance)
+      )
+    )
+    .returning({ id: runs.id });
+  if (!row) {
+    recordFenceRejection('session_ref', owner.runId, owner.epoch);
+    throw new FencedError(owner.runId, owner.epoch, 'session_ref');
+  }
+}
+
 /** Fails a run that never started; it holds no gates. */
 export async function failQueuedRun(runId: string, error: string, executor: Executor = db): Promise<void> {
   await executor

@@ -1,4 +1,6 @@
-import type { Agent, Task, Run } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+import { db } from '../../db/client';
+import { runs, type Agent, type Task, type Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { getProviderCredentials } from '../providers/providers.service';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-protocol';
@@ -28,12 +30,17 @@ import { createPermissionArbiter } from '../hosts/permission-arbiter';
 import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
+import { recordSessionRef } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError } from '../ownership/fence';
 import { runLeases, type RunLease } from '../ownership/lease';
 import { HttpError } from '../../http/errors';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
+
+/** Prepended when a run picks up after an earlier attempt whose conversation could not be restored. */
+export const CONTEXT_LOST_NOTE =
+  'Note: this run picks up after an earlier attempt on this task, but that conversation could not be restored, so you are starting without its context. Re-read the task timeline and the worktree before acting.';
 
 
 /** Stop reasons that mean the agent finished its turn, even if it hit a limit. */
@@ -179,6 +186,9 @@ export async function executeTaskTurn(
   });
   const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
   const before = codeWorkspace ? await snapshotBeforeRun(owner, codeWorkspace.workspace) : null;
+  // API agents keep no conversation between runs; their prompt carries the timeline.
+  const picksUp = run.parentRunId !== null && agent.runtime !== 'api';
+  const resumeSessionId = picksUp ? await parentSessionRef(run, agent) : null;
   const stopRecording = () => recorder.stop();
   lease.signal.addEventListener('abort', stopRecording, { once: true });
   try {
@@ -194,6 +204,7 @@ export async function executeTaskTurn(
           agentId: agent.id,
           runId: run.id,
         }),
+        resumeSessionId,
         signal: lease.signal,
       });
     } catch (err) {
@@ -205,11 +216,21 @@ export async function executeTaskTurn(
     }
     const opened = session;
     const killOnLoss = () => void opened.close();
+    if (opened.runtimeSessionId) await recordSessionRef(owner, opened.runtimeSessionId);
+    if (picksUp) {
+      recorder.record({
+        kind: 'status',
+        message: opened.resumed
+          ? `Restored the earlier conversation (${opened.resumedBy ?? 'resume'})`
+          : 'Could not restore the earlier conversation; started a new one',
+      });
+    }
+    const turnPrompt = picksUp && !opened.resumed ? `${CONTEXT_LOST_NOTE}\n\n${prompt}` : prompt;
     lease.signal.addEventListener('abort', killOnLoss, { once: true });
     const supervised = withWatchdog(session);
     try {
       lease.assertHeld();
-      const outcome = await supervised.prompt({ prompt, onEvent: (event) => recorder.record(event) });
+      const outcome = await supervised.prompt({ prompt: turnPrompt, onEvent: (event) => recorder.record(event) });
       lease.assertHeld();
       return {
         ok: COMPLETED.has(outcome.stopReason),
@@ -242,6 +263,15 @@ export async function executeTaskTurn(
       }
     }
   }
+}
+
+/** The earlier attempt's session, when the same agent held it. */
+async function parentSessionRef(run: Run, agent: Agent): Promise<string | null> {
+  const [parent] = await db
+    .select({ agentId: runs.agentId, sessionRef: runs.sessionRef })
+    .from(runs)
+    .where(eq(runs.id, run.parentRunId!));
+  return parent && parent.agentId === agent.id ? parent.sessionRef : null;
 }
 
 /**

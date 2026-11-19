@@ -68,6 +68,10 @@ export interface Scenario {
   startup?: 'ok' | 'hang' | 'crash' | 'garbage';
   /** Advertise and honor `session/load`. */
   loadSession?: boolean;
+  /** Advertise `session/resume` and answer it: reattach, refuse, or never reply. */
+  resumeSession?: 'ok' | 'fail' | 'hang';
+  /** The runtime lost its session store: `session/load` refuses every id. */
+  forgetSessions?: boolean;
   turns: TurnScript[];
 }
 
@@ -141,6 +145,8 @@ const scenarioSchema = z
   .object({
     startup: z.enum(['ok', 'hang', 'crash', 'garbage']).optional(),
     loadSession: z.boolean().optional(),
+    resumeSession: z.enum(['ok', 'fail', 'hang']).optional(),
+    forgetSessions: z.boolean().optional(),
     turns: z
       .array(
         z

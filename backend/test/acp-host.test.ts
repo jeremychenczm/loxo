@@ -27,9 +27,12 @@ const allowAll: PermissionArbiter = async () => ({ outcome: 'allow', reason: 'te
 
 async function start(
   scenario: Scenario,
-  options: { arbiter?: PermissionArbiter; resumeSessionId?: string; startupTimeoutMs?: number } = {}
+  options: { arbiter?: PermissionArbiter; resumeSessionId?: string; startupTimeoutMs?: number; restoreTimeoutMs?: number } = {}
 ): Promise<AgentSession> {
-  const host = new AcpHost(fakeAgentCommand(scenario), { startupTimeoutMs: options.startupTimeoutMs });
+  const host = new AcpHost(fakeAgentCommand(scenario), {
+    startupTimeoutMs: options.startupTimeoutMs,
+    restoreTimeoutMs: options.restoreTimeoutMs,
+  });
   const session = await host.openSession({
     cwd: sandbox,
     mcpServers: [],
@@ -222,6 +225,28 @@ describe('ACP host', () => {
     const fresh = await start({ turns: [{ steps: [] }] }, { resumeSessionId: 'fake-previous-1' });
     expect(fresh.resumed).toBe(false);
     expect(fresh.sessionId).not.toBe('fake-previous-1');
+  });
+
+  it('restores by resume, then load, then gives up on a fresh session without failing', { timeout: T }, async () => {
+    const previous = { resumeSessionId: 'fake-previous-2', restoreTimeoutMs: 500 };
+    const ladder: Array<[Parameters<typeof start>[0], 'resume' | 'load' | null]> = [
+      [{ resumeSession: 'ok', loadSession: true, turns: [{ steps: [] }] }, 'resume'],
+      [{ resumeSession: 'fail', loadSession: true, turns: [{ steps: [] }] }, 'load'],
+      [{ resumeSession: 'hang', loadSession: true, turns: [{ steps: [] }] }, 'load'],
+      [{ resumeSession: 'fail', loadSession: true, forgetSessions: true, turns: [{ steps: [] }] }, null],
+      [{ resumeSession: 'hang', turns: [{ steps: [] }] }, null],
+    ];
+    for (const [scenario, expected] of ladder) {
+      const started = Date.now();
+      const session = await start(scenario, previous);
+      const label = JSON.stringify(scenario);
+      expect(session.resumedBy ?? null, label).toBe(expected);
+      expect(session.resumed, label).toBe(expected !== null);
+      expect(session.sessionId === 'fake-previous-2', label).toBe(expected !== null);
+      // A stalled rung costs its deadline, not the startup.
+      expect(Date.now() - started, label).toBeLessThan(10_000);
+      expect((await session.prompt({ prompt: 'go' })).stopReason, label).toBe('end_turn');
+    }
   });
 
   it('survives a non-protocol line on stdout', { timeout: T }, async () => {

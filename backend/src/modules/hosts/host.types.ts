@@ -107,6 +107,8 @@ export interface AgentSession {
   readonly runtimeSessionId: string | null;
   /** True when resumeSessionId was honored; false means the runtime starts with no memory. */
   readonly resumed: boolean;
+  /** How the earlier conversation came back, when it did. */
+  readonly resumedBy?: 'resume' | 'load' | null;
   /** One turn at a time; a second concurrent call rejects. */
   prompt(turn: TurnInput): Promise<TurnOutcome>;
   /** Asks the runtime to stop the turn in flight; the prompt resolves with `cancelled`. */

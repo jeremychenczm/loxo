@@ -33,9 +33,12 @@ export interface AcpLaunchSpec {
 export interface AcpHostOptions {
   /** Deadline for the process to answer `initialize` and open a session. */
   startupTimeoutMs?: number;
+  /** Deadline for each attempt to restore an earlier session before falling back. */
+  restoreTimeoutMs?: number;
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
+const DEFAULT_RESTORE_TIMEOUT_MS = 15_000;
 const STDERR_TAIL_CHARS = 4000;
 /** How long a failed request waits for the exit event before calling it a protocol error. */
 const EXIT_GRACE_MS = 1000;
@@ -94,6 +97,7 @@ interface ActiveTurn {
 class AcpSession implements AgentSession {
   sessionId = '';
   resumed = false;
+  resumedBy: 'resume' | 'load' | null = null;
 
   get runtimeSessionId(): string | null {
     return this.sessionId || null;
@@ -110,7 +114,8 @@ class AcpSession implements AgentSession {
 
   private constructor(
     private readonly child: ChildProcess,
-    private readonly input: OpenSessionInput
+    private readonly input: OpenSessionInput,
+    private readonly restoreTimeoutMs: number
   ) {
     this.exit = new Promise((resolve) => {
       child.once('exit', (code) => {
@@ -142,7 +147,7 @@ class AcpSession implements AgentSession {
     liveChildren.add(child);
     child.once('exit', () => liveChildren.delete(child));
     child.once('error', () => liveChildren.delete(child));
-    const session = new AcpSession(child, input);
+    const session = new AcpSession(child, input, options.restoreTimeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS);
     session.connect();
     const timeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
@@ -206,21 +211,29 @@ class AcpSession implements AgentSession {
       clientCapabilities: {},
     });
     const mcpServers = this.input.mcpServers.map(toAcpMcpServer);
-    if (this.input.resumeSessionId && init.agentCapabilities?.loadSession) {
-      this.loading = true;
-      try {
-        await agent.request(methods.agent.session.load, {
-          sessionId: this.input.resumeSessionId,
-          cwd: this.input.cwd,
-          mcpServers,
-        });
-        this.sessionId = this.input.resumeSessionId;
-        this.resumed = true;
-        return;
-      } catch {
-        // The runtime no longer has that session; a fresh one is the only option.
-      } finally {
-        this.loading = false;
+    const previous = this.input.resumeSessionId;
+    // Restore ladder: reattach without replay, then load with replay, then a
+    // fresh session. A failed or stalled rung never fails the startup.
+    if (previous) {
+      const params = { sessionId: previous, cwd: this.input.cwd, mcpServers };
+      const rungs: Array<['resume' | 'load', boolean, () => Promise<unknown>]> = [
+        ['resume', Boolean(init.agentCapabilities?.sessionCapabilities?.resume), () => agent.request(methods.agent.session.resume, params)],
+        ['load', Boolean(init.agentCapabilities?.loadSession), () => agent.request(methods.agent.session.load, params)],
+      ];
+      for (const [rung, offered, attempt] of rungs) {
+        if (!offered) continue;
+        this.loading = rung === 'load';
+        try {
+          await withDeadline(attempt(), this.restoreTimeoutMs);
+          this.sessionId = previous;
+          this.resumed = true;
+          this.resumedBy = rung;
+          return;
+        } catch {
+          // The runtime no longer has that session, or did not answer in time.
+        } finally {
+          this.loading = false;
+        }
       }
     }
     const created = await agent.request(methods.agent.session.new, { cwd: this.input.cwd, mcpServers });
@@ -348,6 +361,16 @@ class AcpSession implements AgentSession {
     if (!this.exited) await killProcessTree(this.child);
     await this.exit;
   }
+}
+
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`No answer within ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Long-lived ACP session over the agent's stdio. */
