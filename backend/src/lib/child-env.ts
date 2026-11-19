@@ -59,11 +59,13 @@ const NETWORK_KEYS = [
   'SSL_CERT_DIR',
 ];
 
-export type ChildKind = 'agent' | 'git';
+/** agent: coding agents; git: platform Git calls; tool: platform helpers that need only the system. */
+export type ChildKind = 'agent' | 'git' | 'tool';
 
 const PREFIXES: Record<ChildKind, readonly string[]> = {
   agent: ['ANTHROPIC_', 'CLAUDE_', 'CODEX_', 'OPENAI_'],
   git: ['GIT_'],
+  tool: [],
 };
 
 // Git commands address repositories by cwd; an inherited repository override
