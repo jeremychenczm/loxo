@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { runs, workspaces, type Run } from '../../db/schema';
 import { promoteQueuedRun } from '../runs/wake';
 import type { LeaseKeeper } from './lease';
+import { recoverRun } from './recovery';
 import { takeOverRun } from './takeover';
 
 export interface ReconcileResult {
@@ -15,7 +16,9 @@ export interface ReconcileResult {
  * transaction, so passes can overlap, repeat, or run on several instances.
  *
  * 1. Take over running runs whose lease expired: each in its own transaction
- *    (see takeOverRun), after fencing locally if this instance owned it.
+ *    (see takeOverRun), after fencing locally if this instance owned it, then
+ *    drive it through recovery (see recovery.ts). A run whose recoverer died
+ *    expires again and is resumed here.
  * 2. Promote queued runs whose agent and task are free, oldest first,
  *    skipping tasks whose workspace is quarantined.
  */
@@ -37,13 +40,17 @@ export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResul
     if (candidate.owner === keeper.instance) {
       keeper.get(candidate.id)?.lose('lease expired before it was renewed');
     }
-    const taken = await takeOverRun(candidate.id, { instance: keeper.instance, reason: 'lease expired' }).catch(
-      (err) => {
-        console.error(`Takeover of run ${candidate.id} failed:`, err);
-        return undefined;
-      }
-    );
-    if (taken) result.takenOver.push(taken.id);
+    const taken = await takeOverRun(candidate.id, {
+      instance: keeper.instance,
+      reason: 'lease expired',
+      ttlMs: keeper.ttlMs,
+    }).catch((err) => {
+      console.error(`Takeover of run ${candidate.id} failed:`, err);
+      return undefined;
+    });
+    if (!taken) continue;
+    result.takenOver.push(taken.id);
+    await recoverRun(taken).catch((err) => console.error(`Recovery of run ${taken.id} stopped:`, err));
   }
 
   for (const run of await promotableRuns()) {

@@ -136,11 +136,16 @@ describe('fencing', () => {
   it("refuses the old owner's settlement and writes after a takeover", async () => {
     const run = await startRun();
     const taken = await takeOverRun(run.owner.runId, { instance: 'taker', reason: 'test', force: true });
-    expect(taken).toMatchObject({ status: 'failed', ownerInstance: 'taker', ownerEpoch: run.owner.epoch + 1 });
+    expect(taken).toMatchObject({
+      status: 'running',
+      ownerInstance: 'taker',
+      ownerEpoch: run.owner.epoch + 1,
+      recoveryStep: 'taken_over',
+    });
 
     expect(await settleRun(run.owner, { status: 'succeeded' }, 'idle')).toBeUndefined();
     await expect(db.transaction((tx) => fence(tx, run.owner, 'late_write'))).rejects.toBeInstanceOf(FencedError);
-    expect(await runRow(run.owner.runId)).toMatchObject({ status: 'failed', error: 'Owner lost: test' });
+    expect(await runRow(run.owner.runId)).toMatchObject({ status: 'running', ownerInstance: 'taker', error: 'Owner lost: test' });
   });
 
   it('makes a takeover wait for an in-flight owner write, without deadlock', async () => {

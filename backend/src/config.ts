@@ -17,6 +17,8 @@ export const config = {
   dbConnectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 10_000),
   /** Run lease length on the database clock; owners renew every third of it. */
   runLeaseTtlMs: Number(process.env.RUN_LEASE_TTL_MS ?? 30_000),
+  /** How long an interrupted run waits for a person's decision before it is stopped. */
+  retryDecisionTtlMs: Number(process.env.RETRY_DECISION_TTL_MS ?? 24 * 60 * 60_000),
   corsOrigins: (process.env.CORS_ORIGIN ?? 'http://localhost:3000')
     .split(',')
     .map((origin) => origin.trim())

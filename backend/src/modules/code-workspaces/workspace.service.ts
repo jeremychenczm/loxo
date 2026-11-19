@@ -387,6 +387,66 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
   });
 }
 
+/** What recovery found in the worktree of a run that lost its owner. */
+export interface RecoveryInspection {
+  /** unknown: the run could write but never recorded a before-state to compare with. */
+  worktree: 'unchanged' | 'changed' | 'unknown';
+  /** Snapshot columns, ready to insert under the recoverer's fence; null when Git could not read the worktree. */
+  snapshot: Omit<typeof changeSnapshots.$inferInsert, 'runId' | 'epoch' | 'kind'> | null;
+}
+
+/**
+ * Compares the worktree with the run's before-state and captures what is
+ * there now, outside any transaction. A worktree Git cannot read counts as
+ * changed, since nothing proves otherwise. A run that cannot write and has
+ * no before-state counts as unchanged.
+ */
+export async function inspectWorktreeForRecovery(
+  run: { id: string; userId: string; beforeHead: string | null; beforeTree: string | null },
+  workspace: Workspace,
+  couldWrite: boolean
+): Promise<RecoveryInspection> {
+  try {
+    let worktree: RecoveryInspection['worktree'];
+    if (run.beforeHead && run.beforeTree) {
+      const now = await localGitDriver.snapshotTree(workspace.worktreePath);
+      worktree = now.head === run.beforeHead && now.tree === run.beforeTree ? 'unchanged' : 'changed';
+    } else {
+      worktree = couldWrite ? 'unknown' : 'unchanged';
+    }
+    const beforeHead = run.beforeHead ?? workspace.baseCommit;
+    const captured = await localGitDriver.captureChanges({
+      worktreePath: workspace.worktreePath,
+      beforeHead,
+      baseCommit: workspace.baseCommit,
+    });
+    let patchStorageKey: string | null = null;
+    if (captured.patch.length > 0) {
+      patchStorageKey = path.join(storage.runArtifacts(run.userId, run.id), 'recovery.patch');
+      fs.writeFileSync(patchStorageKey, captured.patch);
+    }
+    return {
+      worktree,
+      snapshot: {
+        workspaceId: workspace.id,
+        beforeHead,
+        afterHead: captured.afterHead,
+        changedFiles: captured.changedFiles,
+        additions: captured.additions,
+        deletions: captured.deletions,
+        afterSummaryJson: captured.summary,
+        changeFingerprint: captured.fingerprint,
+        patchStorageKey,
+        patchTruncated: captured.patchTruncated,
+        policyViolation: !couldWrite && captured.trackedChanges,
+      },
+    };
+  } catch (err) {
+    console.error(`Recovery could not read the worktree of run ${run.id}:`, err);
+    return { worktree: 'changed', snapshot: null };
+  }
+}
+
 /** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */
 export async function latestTaskSnapshot(
   userId: string,

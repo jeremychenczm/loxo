@@ -6,6 +6,8 @@
 export type CrashPoint =
   | 'admission.after_claim'
   | 'run.after_before_ref'
+  | 'recovery.before_assess'
+  | 'recovery.before_resolve'
   | 'run.before_capture'
   | 'control_plane.before_record'
   | 'wake.before_start';

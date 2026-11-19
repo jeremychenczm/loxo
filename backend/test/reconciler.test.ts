@@ -21,9 +21,10 @@ import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo
 import { scriptedHost } from './support/scripted-host';
 
 /**
- * Reconciler v0: runs whose owner died are taken over and failed, their gates
- * open, waiting runs move again, and a workspace a lost writer may still be
- * touching stays shut until a person reconciles it.
+ * Reconciler: runs whose owner died are taken over and recovered. A run that
+ * did nothing frees its gates and waiting runs move again; a writer that may
+ * have touched its workspace is interrupted, and the workspace stays shut
+ * until a person decides (recovery.test.ts covers every class).
  */
 const app = createApp();
 let token = '';
@@ -120,6 +121,8 @@ describe('reconciler', () => {
       ownerInstance: 'reconciler-test',
       ownerEpoch: 2,
       leaseExpiresAt: null,
+      recoveryClass: 'retry',
+      recoveryStep: 'resolved',
     });
     const [agent] = await db.select({ status: agents.status }).from(agents).where(eq(agents.id, deadAgent));
     expect(agent!.status).toBe('error');
@@ -147,7 +150,7 @@ describe('reconciler', () => {
     expect(statuses.find((r) => r.id === theirs!.id)?.status).toBe('open');
   });
 
-  it('quarantines the workspace a lost writer could touch and holds its task until a person reconciles', async () => {
+  it('quarantines the workspace a lost writer could touch and holds its task for a decision', async () => {
     const taskId = await newTask(true);
     await prepareWorkspace(taskId);
     const orphan = await orphanedRun(await newAgent(), taskId);
@@ -156,6 +159,7 @@ describe('reconciler', () => {
     const first = await reconcileOnce(keeper);
     expect(first.takenOver).toContain(orphan);
     expect(first.promoted).not.toContain(waiting);
+    expect((await getRun(userId, orphan)).status).toBe('interrupted');
     const quarantined = await workspaceOf(taskId);
     expect(quarantined.status).toBe('quarantined');
     expect(quarantined.lastError).toContain(orphan);
@@ -168,14 +172,13 @@ describe('reconciler', () => {
     expect((await getRun(userId, waiting)).status).toBe('queued');
     expect((await workspaceOf(taskId)).status).toBe('quarantined');
 
-    // A person reconciles; the next pass lets the waiting runs through in order.
-    await reconcileTaskWorkspace(userId, taskId);
-    expect(['ready', 'dirty']).toContain((await workspaceOf(taskId)).status);
+    // Reconciling cannot lift the quarantine while the decision is pending.
+    await expect(reconcileTaskWorkspace(userId, taskId)).rejects.toMatchObject({ status: 409, code: 'run_interrupted' });
+    expect((await workspaceOf(taskId)).status).toBe('quarantined');
     const second = await reconcileOnce(keeper);
-    expect(second.promoted).toContain(waiting);
-    await drainRunsForTests();
-    expect((await getRun(userId, waiting)).status).toBe('succeeded');
-    expect((await getRun(userId, pushed.run.id)).status).toBe('succeeded');
+    expect(second.promoted).not.toContain(waiting);
+    await db.update(runs).set({ status: 'cancelled' }).where(eq(runs.id, orphan));
+    await db.update(runs).set({ status: 'cancelled' }).where(eq(runs.taskId, taskId));
   });
 
   it('keeps the task open after losing a run that could not write', async () => {
