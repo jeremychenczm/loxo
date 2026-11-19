@@ -262,7 +262,16 @@ export type TaskMember = typeof taskMembers.$inferSelect;
 
 export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review';
 
-export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+/** interrupted: lost its owner with an uncertain outcome; holds the task until a person decides. */
+export type RunStatus = 'queued' | 'running' | 'interrupted' | 'succeeded' | 'failed' | 'cancelled';
+
+/** How far recovery of a taken-over run got; each step is redone safely after a crash. */
+export type RecoveryStep = 'taken_over' | 'assessed' | 'resolved';
+
+/** What recovery concluded from the run's committed effects and its worktree. */
+export type RecoveryClass = 'retry' | 'known' | 'interrupted';
+
+export type SnapshotKind = 'run' | 'recovery';
 
 /**
  * One admitted wake-up of an agent. Every trigger source funnels through the
@@ -315,6 +324,9 @@ export const runs = pgTable(
      */
     beforeHead: text('before_head'),
     beforeTree: text('before_tree'),
+    /** Set when another owner takes the run over; null for runs that never lost one. */
+    recoveryStep: text('recovery_step').$type<RecoveryStep>(),
+    recoveryClass: text('recovery_class').$type<RecoveryClass>(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -327,15 +339,21 @@ export const runs = pgTable(
     index('runs_running_lease').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
     /**
      * The agent claim and the task execution lock: at most one running run
-     * per agent and per task. Admission flips a run to running and a held
-     * gate surfaces as a unique violation. Keep the predicates in step with
-     * GATE_HOLDING_STATUSES.
+     * per agent, and one running or interrupted run per task. Admission flips
+     * a run to running and a held gate surfaces as a unique violation. Keep
+     * the predicates in step with AGENT_GATE_STATUSES and TASK_GATE_STATUSES.
      */
     uniqueIndex('runs_one_running_per_agent').on(t.agentId).where(sql`${t.status} = 'running'`),
-    uniqueIndex('runs_one_running_per_task').on(t.taskId).where(sql`${t.status} = 'running'`),
+    uniqueIndex('runs_one_running_per_task')
+      .on(t.taskId)
+      .where(sql`${t.status} IN ('running', 'interrupted')`),
     check(
       'runs_running_has_lease',
       sql`${t.status} <> 'running' OR (${t.ownerInstance} IS NOT NULL AND ${t.leaseExpiresAt} IS NOT NULL)`
+    ),
+    check(
+      'runs_interrupted_by_recovery',
+      sql`${t.status} <> 'interrupted' OR (${t.recoveryClass} IS NOT NULL AND ${t.recoveryClass} = 'interrupted' AND ${t.leaseExpiresAt} IS NULL)`
     ),
   ]
 );
@@ -590,6 +608,8 @@ export const changeSnapshots = pgTable(
     runId: uuid('run_id')
       .notNull()
       .references(() => runs.id, { onDelete: 'cascade' }),
+    /** run: captured by the run's owner; recovery: captured after the owner was lost. */
+    kind: text('kind').$type<SnapshotKind>().notNull().default('run'),
     /** Owner epoch the capture was written under; null for legacy rows. */
     epoch: integer('epoch'),
     /** Nullable so snapshots outlive their workspace row, mirroring runs vs tasks. */
@@ -619,7 +639,8 @@ export const changeSnapshots = pgTable(
     capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('change_snapshots_run').on(t.runId),
+    uniqueIndex('change_snapshots_run_kind').on(t.runId, t.kind),
+    check('change_snapshots_kind', sql`${t.kind} IN ('run', 'recovery')`),
     index('change_snapshots_workspace').on(t.workspaceId),
   ]
 );

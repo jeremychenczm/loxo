@@ -53,8 +53,9 @@ export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResul
 }
 
 /**
- * Queued runs that could start now: back-off elapsed, no running run on their
- * agent or task, and no quarantined workspace on their task.
+ * Queued runs that could start now: back-off elapsed, both gates free (see
+ * AGENT_GATE_STATUSES and TASK_GATE_STATUSES), and no quarantined workspace
+ * on their task.
  */
 async function promotableRuns(): Promise<Run[]> {
   return db
@@ -64,7 +65,8 @@ async function promotableRuns(): Promise<Run[]> {
       and(
         eq(runs.status, 'queued'),
         or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`)),
-        sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND (r.agent_id = ${runs.agentId} OR r.task_id = ${runs.taskId}))`,
+        sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND r.agent_id = ${runs.agentId})`,
+        sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.task_id = ${runs.taskId})`,
         sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`
       )
     )

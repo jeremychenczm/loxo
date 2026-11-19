@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { and, desc, eq, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { db, type Executor, type Tx } from '../../db/client';
 import {
   WORKSPACE_TERMINAL_STATUSES,
@@ -23,7 +23,7 @@ import { config } from '../../config';
 import { crashPoint } from '../ownership/crash-points';
 import { fence } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
-import { recordBeforeState, type RunOwner } from '../runs/runs.service';
+import { recordBeforeState, TASK_GATE_STATUSES, type RunOwner } from '../runs/runs.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { runBeforeRef, workspaceBranchName, workspaceLeaf } from './branch-name';
@@ -114,16 +114,31 @@ function ratchetStatus(
   return current === 'dirty' && observed === 'ready' ? 'dirty' : observed;
 }
 
-/** Merging or deleting a worktree under a running agent would race its writes. */
+/**
+ * Merging or deleting a worktree under a running agent would race its
+ * writes; under an interrupted run it would preempt the pending decision.
+ */
 async function assertNoRunningRun(taskId: string): Promise<void> {
   const [active] = await db
-    .select({ id: runs.id })
+    .select({ status: runs.status })
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'running')))
+    .where(and(eq(runs.taskId, taskId), inArray(runs.status, [...TASK_GATE_STATUSES])))
     .limit(1);
+  if (active?.status === 'interrupted') {
+    throw conflict('run_interrupted', 'An interrupted run is waiting for a decision; answer its retry request first');
+  }
   if (active) {
     throw conflict('run_in_progress', 'An agent run is working on this task; wait for it to finish');
   }
+}
+
+async function hasInterruptedRun(taskId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'interrupted')))
+    .limit(1);
+  return row !== undefined;
 }
 
 export interface ResolvedWorkspace {
@@ -233,6 +248,10 @@ export async function reconcileTaskWorkspace(
 ): Promise<Workspace> {
   const row = await getTaskWorkspace(userId, taskId);
   if (!row) throw notFound('Task has no active workspace');
+  // Lifting this quarantine is the retry decision's job.
+  if (row.status === 'quarantined' && (await hasInterruptedRun(taskId))) {
+    throw conflict('run_interrupted', 'An interrupted run is waiting for a decision; answer its retry request first');
+  }
   const repository = await findRepository(userId, row.repositoryId);
   if (!repository) throw conflict('repository_removed', 'The task repository was removed');
 

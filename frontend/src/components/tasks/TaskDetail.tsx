@@ -26,6 +26,7 @@ import { ACTIVE_RUN_STATUSES, fetchRuns, wakeTask, type Run, type RunStatus } fr
 const RUN_STATUS_TEXT: Record<RunStatus, string> = {
   queued: 'text-pixel-gray',
   running: 'text-pixel-orange',
+  interrupted: 'text-pixel-red',
   succeeded: 'text-pixel-green',
   failed: 'text-pixel-red',
   cancelled: 'text-pixel-gray',

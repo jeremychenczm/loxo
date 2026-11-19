@@ -10,8 +10,11 @@ import { instanceId } from '../ownership/instance';
 /**
  * Statuses that hold the agent claim and the task lock. The partial unique
  * indexes runs_one_running_per_agent/_task enforce them; keep both in step.
+ * An interrupted run keeps its task (a person decides what happens to its
+ * work) but frees its agent for other tasks.
  */
-export const GATE_HOLDING_STATUSES = ['running'] as const satisfies readonly RunStatus[];
+export const AGENT_GATE_STATUSES = ['running'] as const satisfies readonly RunStatus[];
+export const TASK_GATE_STATUSES = ['running', 'interrupted'] as const satisfies readonly RunStatus[];
 
 const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_task']);
 

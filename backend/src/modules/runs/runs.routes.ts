@@ -13,7 +13,7 @@ runsRouter.get('/', async (req: AuthedRequest, res, next) => {
     const schema = z.object({
       taskId: z.string().uuid().optional(),
       agentId: z.string().uuid().optional(),
-      status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']).optional(),
+      status: z.enum(['queued', 'running', 'interrupted', 'succeeded', 'failed', 'cancelled']).optional(),
     });
     const parsed = schema.safeParse(req.query);
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid run filter');

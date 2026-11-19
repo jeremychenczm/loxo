@@ -1,4 +1,4 @@
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { db, type Executor } from '../../db/client';
 import { changeSnapshots, controlPlaneRequests, turns, TERMINAL_CONTROL_PLANE_TOOLS } from '../../db/schema';
 
@@ -11,7 +11,7 @@ export interface RunLedger {
   controlPlaneWrites: number;
   /** The run's terminal call and the result it returned, once committed. */
   terminal: { tool: TerminalTool; result: unknown } | null;
-  /** The platform committed a change snapshot for the run. */
+  /** The run's owner committed a change snapshot; recovery snapshots are not the run's doing. */
   captured: boolean;
   /** Timeline entries tied to the run: agent posts, evidence notes, the fallback report. */
   timelineEntries: number;
@@ -36,7 +36,7 @@ export async function readRunLedger(runId: string, ex: Executor = db): Promise<R
   const [snapshot] = await ex
     .select({ id: changeSnapshots.id })
     .from(changeSnapshots)
-    .where(eq(changeSnapshots.runId, runId))
+    .where(and(eq(changeSnapshots.runId, runId), eq(changeSnapshots.kind, 'run')))
     .limit(1);
   const [entries] = await ex
     .select({ n: sql<number>`count(*)::int` })
