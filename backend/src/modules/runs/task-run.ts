@@ -177,7 +177,8 @@ export async function executeTaskTurn(
     epoch: lease.epoch,
     instance: runLeases.instance,
   });
-  const before = codeWorkspace ? await snapshotBeforeRun(codeWorkspace.workspace) : null;
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  const before = codeWorkspace ? await snapshotBeforeRun(owner, codeWorkspace.workspace) : null;
   const stopRecording = () => recorder.stop();
   lease.signal.addEventListener('abort', stopRecording, { once: true });
   try {

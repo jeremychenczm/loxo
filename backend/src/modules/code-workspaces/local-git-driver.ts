@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { resolveInside } from '../../storage/path-safety';
-import { assertCommitId, assertManagedBranch, assertSafeRefName } from './branch-name';
+import { assertCommitId, assertManagedBranch, assertManagedRef, assertSafeRefName } from './branch-name';
 import { buildChangeSummary, computeChangeFingerprint } from './change-capture';
 import {
   parseNameStatusZ,
@@ -18,6 +19,8 @@ import {
   GitDriverError,
   type BaseDriftInput,
   type BaseDriftReport,
+  type BeforeRef,
+  type BeforeRefInput,
   type CaptureChangesInput,
   type CaptureLimits,
   type CapturedChanges,
@@ -34,6 +37,7 @@ import {
   type ReconcileWorkspaceResult,
   type RemoveWorkspaceInput,
   type RepositoryInfo,
+  type TreeState,
   type WorkingTreeSnapshot,
   type WorkspaceObservation,
 } from './workspace.types';
@@ -43,13 +47,24 @@ const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 60_000;
 /** Patch capture reads full diffs before capping; anything larger fails soft as truncated. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+const PLATFORM_IDENTITY = {
+  GIT_AUTHOR_NAME: 'Loxo',
+  GIT_AUTHOR_EMAIL: 'runs@loxo.invalid',
+  GIT_COMMITTER_NAME: 'Loxo',
+  GIT_COMMITTER_EMAIL: 'runs@loxo.invalid',
+};
 
 type ExecError = NodeJS.ErrnoException & { stderr?: Buffer; stdout?: Buffer };
 
+interface GitOptions {
+  env?: Record<string, string>;
+  stdin?: string;
+}
+
 /** Fixed-argument Git execution; never a shell, never client-supplied argv. */
-async function runGit(cwd: string, args: string[]): Promise<Buffer> {
+async function runGit(cwd: string, args: string[], options: GitOptions = {}): Promise<Buffer> {
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const pending = execFileAsync('git', args, {
       cwd,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -57,8 +72,10 @@ async function runGit(cwd: string, args: string[]): Promise<Buffer> {
       encoding: 'buffer',
       // No optional locks: read-only commands such as status must not refresh the
       // user's index as a side effect.
-      env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }),
+      env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', ...options.env }),
     });
+    pending.child.stdin?.end(options.stdin ?? '');
+    const { stdout } = await pending;
     return stdout;
   } catch (err) {
     const e = err as ExecError;
@@ -272,6 +289,60 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
     const head = line(await runGit(input.worktreePath, ['rev-parse', 'HEAD']));
     const { summary } = await this.summarizeDiff(input.worktreePath, head, limits);
     return { head, summary };
+  }
+
+  async snapshotTree(worktreePath: string): Promise<TreeState> {
+    const head = assertCommitId(line(await runGit(worktreePath, ['rev-parse', 'HEAD'])));
+    const tree = await this.withScratchIndex(worktreePath, async (env) => {
+      await runGit(worktreePath, ['add', '--all', '--', '.'], { env });
+      return line(await runGit(worktreePath, ['write-tree'], { env }));
+    });
+    return { head, tree };
+  }
+
+  async writeBeforeRef(input: BeforeRefInput): Promise<BeforeRef> {
+    const ref = assertManagedRef(input.ref);
+    const state = await this.snapshotTree(input.worktreePath);
+    // A fixed identity: the commit is platform bookkeeping, never delivered,
+    // and must not fail on repositories without user.name configured.
+    const commit = line(
+      await runGit(input.worktreePath, ['commit-tree', state.tree, '-p', state.head, '-m', input.message], {
+        env: PLATFORM_IDENTITY,
+      })
+    );
+    await runGit(input.worktreePath, ['update-ref', ref, commit]);
+    return { ...state, commit };
+  }
+
+  async deleteManagedRefs(repositoryRoot: string, refs: string[]): Promise<void> {
+    if (refs.length === 0) return;
+    const commands = refs.map((ref) => `delete ${assertManagedRef(ref)}\n`).join('');
+    await runGit(repositoryRoot, ['update-ref', '--stdin'], { stdin: commands });
+  }
+
+  /**
+   * Runs `work` against a private copy of the worktree's index, so staging
+   * for a snapshot never disturbs what the user or agent has staged. The copy
+   * keeps the stat cache, which spares rehashing unchanged files; without an
+   * index the scratch one starts from HEAD so tracked-but-ignored files stay in.
+   */
+  private async withScratchIndex<T>(
+    worktreePath: string,
+    work: (env: Record<string, string>) => Promise<T>
+  ): Promise<T> {
+    const realIndex = path.resolve(
+      worktreePath,
+      line(await runGit(worktreePath, ['rev-parse', '--git-path', 'index']))
+    );
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loxo-index-'));
+    const env = { GIT_INDEX_FILE: path.join(dir, 'index') };
+    try {
+      if (fs.existsSync(realIndex)) fs.copyFileSync(realIndex, env.GIT_INDEX_FILE);
+      else await runGit(worktreePath, ['read-tree', 'HEAD'], { env });
+      return await work(env);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   async captureChanges(input: CaptureChangesInput): Promise<CapturedChanges> {

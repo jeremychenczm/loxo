@@ -308,6 +308,13 @@ export const runs = pgTable(
     parentRunId: uuid('parent_run_id').references((): AnyPgColumn => runs.id, { onDelete: 'set null' }),
     /** Earliest time a queued run may be promoted; retries back off with it. */
     notBefore: timestamp('not_before', { withTimezone: true }),
+    /**
+     * Worktree state pinned at refs/loxo/runs/<id>/before before the agent
+     * started; recovery compares against it. Null for runs without a code
+     * workspace, or when the owner died before recording it.
+     */
+    beforeHead: text('before_head'),
+    beforeTree: text('before_tree'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

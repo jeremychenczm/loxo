@@ -20,11 +20,13 @@ import { badRequest, conflict, notFound } from '../../http/errors';
 import { storage } from '../../storage/layout';
 import { addSystemTurn } from '../tasks/turns.service';
 import { config } from '../../config';
+import { crashPoint } from '../ownership/crash-points';
 import { fence } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
+import { recordBeforeState, type RunOwner } from '../runs/runs.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
-import { workspaceBranchName, workspaceLeaf } from './branch-name';
+import { runBeforeRef, workspaceBranchName, workspaceLeaf } from './branch-name';
 import { localGitDriver } from './local-git-driver';
 import {
   GitDriverError,
@@ -256,10 +258,34 @@ export async function reconcileTaskWorkspace(
   });
 }
 
+/**
+ * The worktree as the run found it: the summary change snapshots report
+ * against, plus a ref pinning the full content (untracked files included)
+ * for recovery to compare with or restore. Git first, then the fenced row
+ * update; an owner that dies between the two leaves a ref the run never
+ * recorded, and recovery treats the before-state as unknown.
+ */
 export async function snapshotBeforeRun(
+  owner: RunOwner,
   workspace: Workspace
 ): Promise<WorkingTreeSnapshot> {
-  return localGitDriver.snapshotWorkingTree({ worktreePath: workspace.worktreePath });
+  const snapshot = await localGitDriver.snapshotWorkingTree({ worktreePath: workspace.worktreePath });
+  const pinned = await localGitDriver.writeBeforeRef({
+    worktreePath: workspace.worktreePath,
+    ref: runBeforeRef(owner.runId),
+    message: `Before-state of run ${owner.runId}`,
+  });
+  crashPoint('run.after_before_ref');
+  await recordBeforeState(owner, pinned);
+  return snapshot;
+}
+
+/** Before-state refs outlive the worktree (refs are repository-wide); drop them with it. */
+async function dropBeforeRefs(repositoryRoot: string, taskId: string): Promise<void> {
+  const rows = await db.select({ id: runs.id }).from(runs).where(eq(runs.taskId, taskId));
+  await localGitDriver
+    .deleteManagedRefs(repositoryRoot, rows.map((r) => runBeforeRef(r.id)))
+    .catch((err) => console.error(`Dropping run before-state refs failed for task ${taskId}:`, err));
 }
 
 export interface CaptureRunInput {
@@ -522,6 +548,7 @@ async function recoverStaleMergeLock(
       (await isAncestorIn(root, workspace.headCommit, checkout.head));
     if (provable) {
       await updateWorkspace(workspace.id, { status: 'merged', mergedAt: new Date() });
+      await dropBeforeRefs(root, workspace.taskId);
       await moveTask(userId, workspace.taskId, { status: 'done' }).catch(() => {});
       await addSystemTurn(
         userId,
@@ -658,6 +685,7 @@ export async function finalizeTaskWorkspace(
     await localGitDriver
       .removeWorkspace({ repositoryRoot: root, worktreePath: workspace.worktreePath })
       .catch(rethrowGitError);
+    await dropBeforeRefs(root, taskId);
     const updated = await updateWorkspace(workspace.id, {
       status: 'retained',
       headCommit: current.afterHead,
@@ -696,6 +724,7 @@ export async function finalizeTaskWorkspace(
         .catch((err) => {
           console.error(`Worktree cleanup after merge failed for ${workspace.id}:`, err);
         });
+      await dropBeforeRefs(root, taskId);
       const updated = await updateWorkspace(workspace.id, {
         status: 'merged',
         headCommit: current.afterHead,
@@ -778,6 +807,7 @@ export async function abandonTaskWorkspace(
     }
     rethrowGitError(err);
   }
+  await dropBeforeRefs(repository.rootPath, taskId);
 
   const updated = await updateWorkspace(workspace.id, {
     status: 'abandoned',

@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { repositories } from '../src/db/schema';
+import { repositories, runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { setMergeLockTtlForTests } from '../src/modules/code-workspaces/workspace.service';
 import { recordApproval } from '../src/modules/tasks/approvals.service';
@@ -79,6 +79,13 @@ async function workspaceOf(taskId: string) {
   } | null;
 }
 
+/** Before-state refs pinned by the task's runs that still exist in the repository. */
+async function beforeRefsOf(taskId: string): Promise<string[]> {
+  const rows = await db.select({ id: runs.id }).from(runs).where(eq(runs.taskId, taskId));
+  const refs = (await git(repoDir, 'for-each-ref', '--format=%(refname)', 'refs/loxo/runs/')).split('\n');
+  return refs.filter((ref) => rows.some((r) => ref === `refs/loxo/runs/${r.id}/before`));
+}
+
 function finalize(taskId: string, action: 'merge' | 'keep-branch', body: object = {}) {
   return request(app).post(`/api/tasks/${taskId}/workspace/${action}`).set(auth()).send(body);
 }
@@ -137,6 +144,7 @@ describe('merge finalization', () => {
       fs.writeFileSync(path.join(ws, 'ledger.ts'), 'export const ledger = 1;\n');
     });
     await approve(task.id);
+    expect(await beforeRefsOf(task.id)).not.toHaveLength(0);
 
     const unconfirmed = await finalize(task.id, 'merge');
     expect(unconfirmed.status).toBe(409);
@@ -154,6 +162,7 @@ describe('merge finalization', () => {
     const branches = await git(repoDir, 'branch', '--list', merged.body.workspace.branchName);
     expect(branches).toContain(merged.body.workspace.branchName);
     expect(await taskStatus(task.id)).toBe('done');
+    expect(await beforeRefsOf(task.id)).toEqual([]);
 
     const [repo] = await db
       .select()
@@ -341,6 +350,7 @@ describe('keep branch and abandon', () => {
       fs.writeFileSync(path.join(ws, 'kept.txt'), 'kept\n');
     });
     await approve(task.id);
+    expect(await beforeRefsOf(task.id)).not.toHaveLength(0);
 
     const res = await finalize(task.id, 'keep-branch', { confirmCheckpoint: true });
     expect(res.status).toBe(200);
@@ -351,6 +361,7 @@ describe('keep branch and abandon', () => {
     expect(branches).toContain(res.body.workspace.branchName);
     // Retained work is not on the base branch.
     expect(fs.existsSync(path.join(repoDir, 'kept.txt'))).toBe(false);
+    expect(await beforeRefsOf(task.id)).toEqual([]);
   });
 
   it('abandon requires confirmation for dirty work, then cancels the task', { timeout: T }, async () => {
@@ -364,6 +375,7 @@ describe('keep branch and abandon', () => {
       .send({});
     expect(refused.status).toBe(409);
     expect(refused.body.code).toBe('discard_confirmation_required');
+    expect(await beforeRefsOf(task.id)).not.toHaveLength(0);
 
     const res = await request(app)
       .post(`/api/tasks/${task.id}/workspace/abandon`)
@@ -374,5 +386,6 @@ describe('keep branch and abandon', () => {
     expect(res.body.taskStatus).toBe('cancelled');
     expect(fs.existsSync(res.body.workspace.worktreePath)).toBe(false);
     expect(await taskStatus(task.id)).toBe('cancelled');
+    expect(await beforeRefsOf(task.id)).toEqual([]);
   });
 });

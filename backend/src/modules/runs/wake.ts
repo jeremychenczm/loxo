@@ -15,7 +15,7 @@ import {
   type RunOutcome,
 } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
-import { fence } from '../ownership/fence';
+import { fence, FencedError } from '../ownership/fence';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -186,7 +186,8 @@ async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
     }
   } catch (error) {
     const detail = error instanceof RunnerError ? error.message : 'Task run failed unexpectedly';
-    if (!(error instanceof RunnerError) && !(error instanceof OwnershipLostError)) {
+    // Fenced writes are already logged as fence rejections.
+    if (!(error instanceof RunnerError) && !(error instanceof OwnershipLostError) && !(error instanceof FencedError)) {
       console.error(`Run ${run.id} failed:`, error);
     }
     outcome = { status: 'failed', error: detail };

@@ -49,6 +49,21 @@ export function assertManagedBranch(branch: string): string {
   return branch;
 }
 
+/** Non-branch refs Loxo writes (run before-states); nothing outside it is written or deleted. */
+const MANAGED_REF_PREFIX = `refs/${MANAGED_BRANCH_PREFIX}/`;
+
+export function assertManagedRef(ref: string): string {
+  if (!isSafeRefName(ref) || !ref.startsWith(MANAGED_REF_PREFIX)) {
+    throw new GitDriverError('invalid_ref', `Refusing to touch ${JSON.stringify(ref)}: not under ${MANAGED_REF_PREFIX}`);
+  }
+  return ref;
+}
+
+/** Where a run's before-state is pinned; refs are shared across worktrees, so it outlives the worktree. */
+export function runBeforeRef(runId: string): string {
+  return assertManagedRef(`${MANAGED_REF_PREFIX}runs/${runId}/before`);
+}
+
 /** Ref-safe, human-readable member label: slugged name plus a short id for uniqueness. */
 export function memberSlug(name: string, agentId: string): string {
   const base = name

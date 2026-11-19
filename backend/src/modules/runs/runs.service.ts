@@ -4,7 +4,7 @@ import { db, type Executor } from '../../db/client';
 import { agents, runs, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
-import { recordFenceRejection } from '../ownership/fence';
+import { FencedError, recordFenceRejection } from '../ownership/fence';
 import { instanceId } from '../ownership/instance';
 
 /**
@@ -218,6 +218,33 @@ export async function settleRun(
     }
     return run;
   });
+}
+
+/**
+ * Records the pinned before-state on the run, guarded by ownership in the
+ * same statement (see settleRun). Throws FencedError when the run moved on.
+ */
+export async function recordBeforeState(
+  owner: RunOwner,
+  state: { head: string; tree: string },
+  executor: Executor = db
+): Promise<void> {
+  const [row] = await executor
+    .update(runs)
+    .set({ beforeHead: state.head, beforeTree: state.tree })
+    .where(
+      and(
+        eq(runs.id, owner.runId),
+        eq(runs.status, 'running'),
+        eq(runs.ownerEpoch, owner.epoch),
+        eq(runs.ownerInstance, owner.instance)
+      )
+    )
+    .returning({ id: runs.id });
+  if (!row) {
+    recordFenceRejection('before_state', owner.runId, owner.epoch);
+    throw new FencedError(owner.runId, owner.epoch, 'before_state');
+  }
 }
 
 /** Fails a run that never started; it holds no gates. */

@@ -102,6 +102,24 @@ export interface WorkingTreeSnapshot {
   summary: ChangeSummary;
 }
 
+/** The worktree's content as Git objects: tracked and untracked files, ignored files excluded. */
+export interface TreeState {
+  head: string;
+  tree: string;
+}
+
+export interface BeforeRefInput {
+  worktreePath: string;
+  /** Must live under refs/loxo/. */
+  ref: string;
+  message: string;
+}
+
+export interface BeforeRef extends TreeState {
+  /** Commit the ref points at: `tree` with `head` as its only parent. */
+  commit: string;
+}
+
 export interface CaptureChangesInput {
   worktreePath: string;
   /** HEAD captured before the run started; the stored patch is relative to it. */
@@ -193,6 +211,12 @@ export interface WorkspaceDriver {
     worktreePath: string;
     limits?: CaptureLimits;
   }): Promise<WorkingTreeSnapshot>;
+  /** Hashes the worktree into a tree object without touching its index or files. */
+  snapshotTree(worktreePath: string): Promise<TreeState>;
+  /** Pins the worktree's current content under `ref`, untracked files included. */
+  writeBeforeRef(input: BeforeRefInput): Promise<BeforeRef>;
+  /** Deletes managed refs; missing ones are ignored. */
+  deleteManagedRefs(repositoryRoot: string, refs: string[]): Promise<void>;
   captureChanges(input: CaptureChangesInput): Promise<CapturedChanges>;
   reportBaseDrift(input: BaseDriftInput): Promise<BaseDriftReport>;
   inspectPrimaryCheckout(repositoryRoot: string): Promise<PrimaryCheckoutState>;
