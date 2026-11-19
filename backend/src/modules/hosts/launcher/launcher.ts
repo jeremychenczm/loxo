@@ -42,6 +42,8 @@ export function setLauncherForTests(launcher: Launcher | null | undefined): void
  */
 export function resolveLauncher(): Promise<Launcher | null> {
   if (override !== undefined) return Promise.resolve(override);
+  // Operator escape hatch, and the control arm of crash drills.
+  if (process.env.LOXO_AGENT_LAUNCHER === 'off') return Promise.resolve(null);
   resolved ??= (process.platform === 'win32' ? buildWindowsLauncher() : Promise.resolve(null)).catch((err) => {
     console.warn(`Agent launcher unavailable; agents start directly: ${err instanceof Error ? err.message : err}`);
     return null;

@@ -18,10 +18,12 @@ import type {
   HostEvent,
   HostMcpServer,
   OpenSessionInput,
+  ProcessIdentity,
   TurnInput,
   TurnOutcome,
 } from './host.types';
 import { childEnv } from '../../lib/child-env';
+import { newLaunchTag, resolveLauncher, underLauncher } from './launcher/launcher';
 
 /** How to start an ACP agent process; the runtime catalog builds one per agent. */
 export interface AcpLaunchSpec {
@@ -115,7 +117,8 @@ class AcpSession implements AgentSession {
   private constructor(
     private readonly child: ChildProcess,
     private readonly input: OpenSessionInput,
-    private readonly restoreTimeoutMs: number
+    private readonly restoreTimeoutMs: number,
+    readonly processIdentity: ProcessIdentity
   ) {
     this.exit = new Promise((resolve) => {
       child.once('exit', (code) => {
@@ -137,7 +140,12 @@ class AcpSession implements AgentSession {
     input: OpenSessionInput,
     options: AcpHostOptions
   ): Promise<AcpSession> {
-    const child = spawn(launch.command, launch.args, {
+    // Under a launcher the agent's whole tree ends with this backend, including
+    // descendants whose own parent already exited.
+    const launcher = await resolveLauncher();
+    const tag = launcher ? newLaunchTag() : null;
+    const command = launcher ? underLauncher(launcher, launch, tag!) : launch;
+    const child = spawn(command.command, command.args, {
       cwd: input.cwd,
       env: childEnv('agent', launch.env ?? {}),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -147,7 +155,11 @@ class AcpSession implements AgentSession {
     liveChildren.add(child);
     child.once('exit', () => liveChildren.delete(child));
     child.once('error', () => liveChildren.delete(child));
-    const session = new AcpSession(child, input, options.restoreTimeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS);
+    const session = new AcpSession(child, input, options.restoreTimeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS, {
+      pid: child.pid ?? null,
+      tag,
+      launcher: launcher?.kind ?? null,
+    });
     session.connect();
     const timeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;

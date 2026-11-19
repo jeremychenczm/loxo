@@ -101,6 +101,14 @@ export interface TurnOutcome {
   error: string | null;
 }
 
+/** Identifies the process a host started: the launcher when there is one, else the agent itself. */
+export interface ProcessIdentity {
+  pid: number | null;
+  /** Random marker on the launcher's command line; null without a launcher. */
+  tag: string | null;
+  launcher: 'job-object' | 'process-group' | null;
+}
+
 export interface AgentSession {
   readonly sessionId: string;
   /** The runtime's own id for this conversation, for resuming later; null when it cannot resume. */
@@ -109,6 +117,8 @@ export interface AgentSession {
   readonly resumed: boolean;
   /** How the earlier conversation came back, when it did. */
   readonly resumedBy?: 'resume' | 'load' | null;
+  /** The OS process the host started, for recovery to find and end later; absent for in-process hosts. */
+  readonly processIdentity?: ProcessIdentity;
   /** One turn at a time; a second concurrent call rejects. */
   prompt(turn: TurnInput): Promise<TurnOutcome>;
   /** Asks the runtime to stop the turn in flight; the prompt resolves with `cancelled`. */

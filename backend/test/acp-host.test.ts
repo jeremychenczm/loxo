@@ -1,6 +1,10 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { fakeAgentCommand, type Scenario } from '@swarmdev/fake-agent';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AcpHost, HostStartupError } from '../src/modules/hosts/acp-host';
+import { setLauncherForTests } from '../src/modules/hosts/launcher/launcher';
 import type {
   AgentSession,
   HostEvent,
@@ -22,6 +26,62 @@ afterEach(async () => {
 });
 
 afterAll(() => removeSandbox(sandbox));
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pidFrom(file: string): Promise<number> {
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8')) return Number(fs.readFileSync(file, 'utf8'));
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`${file} was never written`);
+}
+
+async function goneWithin(pid: number, ms: number): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (!alive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+describe.skipIf(process.platform !== 'win32')('ACP host under the launcher', () => {
+  const backgroundTurn = (pidFile: string): Scenario => ({
+    turns: [{ steps: [{ background: { pidFile } }, { say: 'started a build' }, { hang: {} }] }],
+  });
+
+  afterEach(() => setLauncherForTests(undefined));
+
+  it('runs the agent under the launcher and ends its whole tree on close', { timeout: T }, async () => {
+    const session = await start(backgroundTurn('bg-launched.pid'));
+    expect(session.processIdentity).toMatchObject({ launcher: 'job-object', tag: expect.stringMatching(/^[0-9a-f]{24}$/) });
+    void session.prompt({ prompt: 'build' });
+    const descendant = await pidFrom(path.join(sandbox, 'bg-launched.pid'));
+    expect(alive(descendant)).toBe(true);
+    await session.close();
+    expect(await goneWithin(descendant, 5_000)).toBe(true);
+  });
+
+  it('leaves that descendant behind when the agent starts directly', { timeout: T }, async () => {
+    setLauncherForTests(null);
+    const session = await start(backgroundTurn('bg-direct.pid'));
+    expect(session.processIdentity).toEqual({ pid: expect.any(Number), tag: null, launcher: null });
+    void session.prompt({ prompt: 'build' });
+    const descendant = await pidFrom(path.join(sandbox, 'bg-direct.pid'));
+    await session.close();
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(alive(descendant)).toBe(true);
+    execFileSync('taskkill', ['/PID', String(descendant), '/F'], { stdio: 'ignore' });
+  });
+});
 
 const allowAll: PermissionArbiter = async () => ({ outcome: 'allow', reason: 'test' });
 

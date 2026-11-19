@@ -43,6 +43,12 @@ export type Step =
   | { stderr: string }
   /** Writes inside the session cwd; paths outside it are refused. */
   | { writeFile: { path: string; content: string } }
+  /**
+   * Starts a long-lived descendant through a short-lived shell, the way a
+   * tool call would, and writes its pid to `pidFile` inside the session cwd.
+   * Once the shell exits, nothing but a job or process group links it back.
+   */
+  | { background: { pidFile: string } }
   | { repeat: { times: number; steps: Step[] } };
 
 export type ToolKind =
@@ -133,6 +139,7 @@ const stepSchema: z.ZodType<Step> = z.lazy(() =>
     z.object({ garbage: z.string() }).strict(),
     z.object({ stderr: z.string() }).strict(),
     z.object({ writeFile: z.object({ path: z.string().min(1), content: z.string() }).strict() }).strict(),
+    z.object({ background: z.object({ pidFile: z.string().min(1) }).strict() }).strict(),
     z
       .object({
         repeat: z.object({ times: z.number().int().min(1).max(10_000), steps: z.array(stepSchema) }).strict(),

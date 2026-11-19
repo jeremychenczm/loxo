@@ -1,5 +1,7 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import {
   agent,
@@ -158,6 +160,17 @@ async function play(
       const target = insideCwd(state.cwd, step.writeFile.path);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, step.writeFile.content);
+    } else if ('background' in step) {
+      const pidFile = insideCwd(state.cwd, step.background.pidFile);
+      const script = fileURLToPath(new URL('./idle-descendant.mjs', import.meta.url));
+      const shell =
+        process.platform === 'win32'
+          ? spawn('cmd.exe', ['/d', '/s', '/c', `start "" /b "${process.execPath}" "${script}" "${pidFile}"`], {
+              stdio: 'ignore',
+              windowsVerbatimArguments: true,
+            })
+          : spawn('/bin/sh', ['-c', `"${process.execPath}" "${script}" "${pidFile}" &`], { stdio: 'ignore' });
+      shell.unref();
     } else if ('repeat' in step) {
       for (let i = 0; i < step.repeat.times; i += 1) {
         await play(step.repeat.steps, sessionId, state, client, signal);
