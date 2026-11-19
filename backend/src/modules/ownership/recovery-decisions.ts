@@ -5,6 +5,7 @@ import { badRequest, conflict } from '../../http/errors';
 import {
   getTaskWorkspace,
   leaveQuarantine,
+  relabelQuarantine,
   settleWorkspaceForDecision,
   type ObservedWorkspace,
 } from '../code-workspaces/workspace.service';
@@ -71,6 +72,7 @@ export async function decideInterruptedRun(
     if (!decided) throw closed();
 
     if (observed && workspace) await leaveQuarantine(tx, workspace.id, observed);
+    if (choice === 'stop' && run.taskId) await relabelQuarantine(tx, run.taskId, stoppedLock(run.id));
     const queued: Run[] = [];
     if (choice !== 'stop' && run.agentId) {
       queued.push(
@@ -109,6 +111,10 @@ const DECISION_NOTE = {
   discard: 'worktree restored to its before-state; the run starts again from there.',
   stop: 'stopped. The workspace stays quarantined until it is reconciled or abandoned.',
 } as const;
+
+function stoppedLock(runId: string): string {
+  return `Run ${runId} was stopped after it was interrupted; whatever it changed is still in the worktree. Reconcile the workspace before running again.`;
+}
 
 function followUpReason(run: Run, choice: 'continue' | 'discard'): string {
   const state =
@@ -160,6 +166,7 @@ export async function stopExpiredDecisions(): Promise<string[]> {
         .where(and(eq(humanRequests.id, row.requestId), inArray(humanRequests.status, ['open', 'expired'])));
       const decided = await closeInterruptedRun(tx, row.runId, 'cancelled', 'Interrupted; stopped when its retry request expired');
       if (decided && row.taskId) {
+        await relabelQuarantine(tx, row.taskId, stoppedLock(row.runId));
         await addSystemTurn(
           row.userId,
           row.taskId,

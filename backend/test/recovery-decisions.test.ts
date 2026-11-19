@@ -178,7 +178,10 @@ describe('deciding on an interrupted run', () => {
     expect((await answer(decision.id, 'stop')).status).toBe(200);
     expect(await runRow(ctx.run.id)).toMatchObject({ status: 'cancelled', error: 'Interrupted; stopped by a person' });
     expect(await followUps(ctx.run.id)).toEqual([]);
-    expect((await workspaceOf(ctx.task.id)).status).toBe('quarantined');
+    expect(await workspaceOf(ctx.task.id)).toMatchObject({
+      status: 'quarantined',
+      lastError: expect.stringContaining('was stopped after it was interrupted'),
+    });
     const notes = await db
       .select({ content: turns.content })
       .from(turns)
@@ -256,7 +259,10 @@ describe('an unanswered decision', () => {
       const [row] = await db.select().from(humanRequests).where(eq(humanRequests.id, decision.id));
       expect(row!.status).toBe('expired');
     }
-    expect((await workspaceOf(first.ctx.task.id)).status).toBe('quarantined');
+    expect(await workspaceOf(first.ctx.task.id)).toMatchObject({
+      status: 'quarantined',
+      lastError: expect.stringContaining('was stopped after it was interrupted'),
+    });
     expect((await reconcileOnce(keeper)).stopped).toEqual([]);
   });
 });

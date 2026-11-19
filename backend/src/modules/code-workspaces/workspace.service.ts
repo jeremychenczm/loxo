@@ -487,6 +487,14 @@ export async function leaveQuarantine(tx: Tx, workspaceId: string, observed: Obs
     .where(and(eq(workspaces.id, workspaceId), eq(workspaces.status, 'quarantined')));
 }
 
+/** Rewrites why a quarantined workspace is locked, once the reason it was locked for has moved on. */
+export async function relabelQuarantine(tx: Tx, taskId: string, reason: string): Promise<void> {
+  await tx
+    .update(workspaces)
+    .set({ lastError: reason, updatedAt: new Date() })
+    .where(and(eq(workspaces.taskId, taskId), eq(workspaces.status, 'quarantined')));
+}
+
 /** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */
 export async function latestTaskSnapshot(
   userId: string,
