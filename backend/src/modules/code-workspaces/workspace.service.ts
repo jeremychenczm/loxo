@@ -447,6 +447,46 @@ export async function inspectWorktreeForRecovery(
   }
 }
 
+export interface ObservedWorkspace {
+  status: 'ready' | 'dirty' | 'missing' | 'error';
+  headCommit: string | null;
+  lastError: string | null;
+}
+
+/**
+ * Git side of a retry decision, run before the decision commits and safe to
+ * repeat: with `discardTo` the worktree first goes back to the run's
+ * before-state. Returns what the workspace looks like afterwards.
+ */
+export async function settleWorkspaceForDecision(
+  userId: string,
+  workspace: Workspace,
+  discardTo: { head: string; tree: string } | null
+): Promise<ObservedWorkspace> {
+  const repository = await findRepository(userId, workspace.repositoryId);
+  if (!repository) throw conflict('repository_removed', 'The task repository was removed');
+  if (discardTo) {
+    await localGitDriver.restoreTree({ worktreePath: workspace.worktreePath, ...discardTo }).catch(rethrowGitError);
+  }
+  const result = await localGitDriver
+    .reconcileWorkspace({
+      repositoryRoot: repository.rootPath,
+      worktreePath: workspace.worktreePath,
+      branchName: workspace.branchName,
+      baseCommit: workspace.baseCommit,
+    })
+    .catch(rethrowGitError);
+  return { status: result.state, headCommit: result.headCommit, lastError: result.error };
+}
+
+/** Releases a quarantined workspace in the observed state; a no-op once it left quarantine. */
+export async function leaveQuarantine(tx: Tx, workspaceId: string, observed: ObservedWorkspace): Promise<void> {
+  await tx
+    .update(workspaces)
+    .set({ ...observed, updatedAt: new Date() })
+    .where(and(eq(workspaces.id, workspaceId), eq(workspaces.status, 'quarantined')));
+}
+
 /** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */
 export async function latestTaskSnapshot(
   userId: string,

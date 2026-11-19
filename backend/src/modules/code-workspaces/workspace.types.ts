@@ -120,6 +120,14 @@ export interface BeforeRef extends TreeState {
   commit: string;
 }
 
+export interface RestoreTreeInput {
+  worktreePath: string;
+  /** Commit the checked-out branch is reset to. */
+  head: string;
+  /** Content the worktree ends with; files outside it are removed, ignored ones kept. */
+  tree: string;
+}
+
 export interface CaptureChangesInput {
   worktreePath: string;
   /** HEAD captured before the run started; the stored patch is relative to it. */
@@ -215,6 +223,8 @@ export interface WorkspaceDriver {
   snapshotTree(worktreePath: string): Promise<TreeState>;
   /** Pins the worktree's current content under `ref`, untracked files included. */
   writeBeforeRef(input: BeforeRefInput): Promise<BeforeRef>;
+  /** Puts the worktree back to a pinned state and proves it by hashing the result. */
+  restoreTree(input: RestoreTreeInput): Promise<void>;
   /** Deletes managed refs; missing ones are ignored. */
   deleteManagedRefs(repositoryRoot: string, refs: string[]): Promise<void>;
   captureChanges(input: CaptureChangesInput): Promise<CapturedChanges>;

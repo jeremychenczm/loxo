@@ -4,11 +4,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, changeSnapshots, humanRequests, runs, tasks, turns, workspaces, type Run } from '../src/db/schema';
+import { agents, changeSnapshots, humanRequests, runs, turns, workspaces, type Run } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { runBeforeRef } from '../src/modules/code-workspaces/branch-name';
-import { prepareTaskWorkspace, snapshotBeforeRun } from '../src/modules/code-workspaces/workspace.service';
-import { commentOnTask, submitResult, type RunToolContext } from '../src/modules/control-plane/tools';
+import { commentOnTask, submitResult } from '../src/modules/control-plane/tools';
 import { armCrashPointForTests } from '../src/modules/ownership/crash-points';
 import { FencedError } from '../src/modules/ownership/fence';
 import { LeaseKeeper } from '../src/modules/ownership/lease';
@@ -16,15 +15,14 @@ import { reconcileOnce } from '../src/modules/ownership/reconciler';
 import { classifyRecovery, recoverRun } from '../src/modules/ownership/recovery';
 import { admitRun } from '../src/modules/runs/runs.service';
 import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
+import { deadRun as deadRunIn, type DeadRunOptions, type DeadRun } from './support/dead-run';
 
 const app = createApp();
 const T = 30_000;
-const DEAD = 'dead-instance';
 let token = '';
 let userId = '';
 let repositoryId = '';
 let sandbox = '';
-let counter = 0;
 let keeper: LeaseKeeper;
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -47,50 +45,8 @@ afterAll(async () => {
   removeSandbox(sandbox);
 });
 
-interface DeadRun {
-  ctx: RunToolContext;
-  worktree: string | null;
-}
-
-/**
- * A run admitted by an instance that is about to die: running under epoch 1,
- * with a before-state when the task has a repository. `act` plays what the
- * run did before its owner died; then the lease runs out.
- */
-async function deadRun(
-  options: { trigger?: 'manual' | 'review'; repository?: boolean; pinBefore?: boolean },
-  act: (run: DeadRun) => Promise<void> = async () => {}
-): Promise<DeadRun> {
-  counter += 1;
-  const agentRes = await request(app).post('/api/agents').set(auth()).send({ name: `Worker ${counter}`, runtime: 'claude-code' });
-  const taskRes = await request(app)
-    .post('/api/tasks')
-    .set(auth())
-    .send({ title: `Task ${counter}`, ...(options.repository ? { repositoryId } : {}) });
-  const [task] = await db.select().from(tasks).where(eq(tasks.id, taskRes.body.task.id));
-  await db.update(tasks).set({ status: 'in_progress' }).where(eq(tasks.id, task!.id));
-  const workspace = options.repository ? await prepareTaskWorkspace(userId, task!) : null;
-  const [queued] = await db
-    .insert(runs)
-    .values({
-      userId,
-      agentId: agentRes.body.agent.id,
-      agentName: `Worker ${counter}`,
-      taskId: task!.id,
-      trigger: options.trigger ?? 'manual',
-    })
-    .returning();
-  const admission = await admitRun(queued!.id, { instance: DEAD });
-  const run = admission!.run;
-  if (workspace && options.pinBefore !== false) {
-    await snapshotBeforeRun({ runId: run.id, epoch: run.ownerEpoch, instance: DEAD }, workspace);
-  }
-  const [agent] = await db.select().from(agents).where(eq(agents.id, agentRes.body.agent.id));
-  const dead: DeadRun = { ctx: { run, epoch: run.ownerEpoch, agent: agent!, task: task! }, worktree: workspace?.worktreePath ?? null };
-  await act(dead);
-  await db.update(runs).set({ leaseExpiresAt: sql`clock_timestamp() - interval '1 second'` }).where(eq(runs.id, run.id));
-  return dead;
-}
+const deadRun = (options: DeadRunOptions = {}, act?: (run: DeadRun) => Promise<void>) =>
+  deadRunIn({ app, token, userId, repositoryId }, options, act);
 
 async function runRow(id: string): Promise<Run> {
   const [row] = await db.select().from(runs).where(eq(runs.id, id));

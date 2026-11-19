@@ -177,8 +177,21 @@ describe('reconciler', () => {
     expect((await workspaceOf(taskId)).status).toBe('quarantined');
     const second = await reconcileOnce(keeper);
     expect(second.promoted).not.toContain(waiting);
-    await db.update(runs).set({ status: 'cancelled' }).where(eq(runs.id, orphan));
-    await db.update(runs).set({ status: 'cancelled' }).where(eq(runs.taskId, taskId));
+
+    // A person stops the interrupted run, then reconciles; the waiting runs go through in order.
+    const [decision] = await db.select().from(humanRequests).where(eq(humanRequests.runId, orphan));
+    const stopped = await request(app)
+      .post(`/api/human-requests/${decision!.id}/answer`)
+      .set(auth())
+      .send({ choice: 'stop' });
+    expect(stopped.status).toBe(200);
+    await reconcileTaskWorkspace(userId, taskId);
+    expect(['ready', 'dirty']).toContain((await workspaceOf(taskId)).status);
+    const third = await reconcileOnce(keeper);
+    expect(third.promoted).toContain(waiting);
+    await drainRunsForTests();
+    expect((await getRun(userId, waiting)).status).toBe('succeeded');
+    expect((await getRun(userId, pushed.run.id)).status).toBe('succeeded');
   });
 
   it('keeps the task open after losing a run that could not write', async () => {

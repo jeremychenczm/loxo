@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { badRequest } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
-import { answerHumanRequest, listHumanRequests } from './human-requests.service';
+import { decideInterruptedRun } from '../ownership/recovery-decisions';
+import { answerHumanRequest, listHumanRequests, ownedRequest } from './human-requests.service';
 
 export const humanRequestsRouter = Router();
 humanRequestsRouter.use(requireAuth);
@@ -29,8 +30,13 @@ humanRequestsRouter.post('/:id/answer', async (req: AuthedRequest, res, next) =>
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'An answer needs a choice');
+    const userId = req.auth!.userId;
+    const request = await ownedRequest(userId, String(req.params.id));
     res.json({
-      request: await answerHumanRequest(req.auth!.userId, String(req.params.id), parsed.data),
+      request:
+        request.kind === 'retry'
+          ? await decideInterruptedRun(userId, request, parsed.data)
+          : await answerHumanRequest(userId, request.id, parsed.data),
     });
   } catch (error) {
     next(error);

@@ -4,10 +4,13 @@ import { runs, workspaces, type Run } from '../../db/schema';
 import { promoteQueuedRun } from '../runs/wake';
 import type { LeaseKeeper } from './lease';
 import { recoverRun } from './recovery';
+import { stopExpiredDecisions } from './recovery-decisions';
 import { takeOverRun } from './takeover';
 
 export interface ReconcileResult {
   takenOver: string[];
+  /** Interrupted runs stopped because their retry request expired. */
+  stopped: string[];
   promoted: string[];
 }
 
@@ -19,11 +22,12 @@ export interface ReconcileResult {
  *    (see takeOverRun), after fencing locally if this instance owned it, then
  *    drive it through recovery (see recovery.ts). A run whose recoverer died
  *    expires again and is resumed here.
- * 2. Promote queued runs whose agent and task are free, oldest first,
+ * 2. Stop interrupted runs whose retry request expired unanswered.
+ * 3. Promote queued runs whose agent and task are free, oldest first,
  *    skipping tasks whose workspace is quarantined.
  */
 export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResult> {
-  const result: ReconcileResult = { takenOver: [], promoted: [] };
+  const result: ReconcileResult = { takenOver: [], stopped: [], promoted: [] };
 
   const expired = await db
     .select({ id: runs.id, owner: runs.ownerInstance })
@@ -52,6 +56,11 @@ export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResul
     result.takenOver.push(taken.id);
     await recoverRun(taken).catch((err) => console.error(`Recovery of run ${taken.id} stopped:`, err));
   }
+
+  result.stopped = await stopExpiredDecisions().catch((err) => {
+    console.error('Stopping runs with expired retry decisions failed:', err);
+    return [];
+  });
 
   for (const run of await promotableRuns()) {
     if (await promoteQueuedRun(run)) result.promoted.push(run.id);

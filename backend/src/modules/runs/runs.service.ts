@@ -25,6 +25,9 @@ export interface CreateRunInput {
   trigger: RunTrigger;
   reason?: string;
   model?: string | null;
+  /** Set when the run picks up after an earlier attempt. */
+  parentRunId?: string | null;
+  attempt?: number;
 }
 
 export interface RunOutcome {
@@ -70,6 +73,8 @@ export async function createQueuedRun(userId: string, input: CreateRunInput, ex:
       trigger: input.trigger,
       reason: input.reason ?? '',
       model: input.model ?? null,
+      parentRunId: input.parentRunId ?? null,
+      attempt: input.attempt ?? 1,
     })
     .returning();
   return run!;

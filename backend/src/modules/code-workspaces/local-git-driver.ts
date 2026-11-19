@@ -37,6 +37,7 @@ import {
   type ReconcileWorkspaceResult,
   type RemoveWorkspaceInput,
   type RepositoryInfo,
+  type RestoreTreeInput,
   type TreeState,
   type WorkingTreeSnapshot,
   type WorkspaceObservation,
@@ -312,6 +313,30 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
     );
     await runGit(input.worktreePath, ['update-ref', ref, commit]);
     return { ...state, commit };
+  }
+
+  async restoreTree(input: RestoreTreeInput): Promise<void> {
+    const head = assertCommitId(input.head);
+    const tree = assertCommitId(input.tree);
+    const cwd = input.worktreePath;
+    // Branch and index back to the pinned HEAD; files created since go, ignored ones stay.
+    await runGit(cwd, ['reset', '--hard', '--quiet', head]);
+    await runGit(cwd, ['clean', '-f', '-d', '--quiet']);
+    // Write the pinned content over the checkout without staging it, so edits
+    // and untracked files come back as they were found.
+    await this.withScratchIndex(cwd, async (env) => {
+      await runGit(cwd, ['read-tree', tree], { env });
+      await runGit(cwd, ['checkout-index', '--all', '--force'], { env });
+    });
+    const deleted = parseNulList(
+      text(await runGit(cwd, ['diff', '--name-only', '--no-renames', '--diff-filter=D', '-z', head, tree, '--']))
+    );
+    for (const rel of deleted) fs.rmSync(resolveInside(cwd, rel), { force: true });
+
+    const now = await this.snapshotTree(cwd);
+    if (now.head !== head || now.tree !== tree) {
+      throw new GitDriverError('git_failed', 'The worktree did not match its before-state after restoring it');
+    }
   }
 
   async deleteManagedRefs(repositoryRoot: string, refs: string[]): Promise<void> {

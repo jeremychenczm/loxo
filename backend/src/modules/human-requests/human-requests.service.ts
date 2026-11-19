@@ -47,7 +47,7 @@ export async function openHumanRequest(input: OpenRequestInput): Promise<HumanRe
   return row!;
 }
 
-async function ownedRequest(userId: string, requestId: string): Promise<HumanRequest> {
+export async function ownedRequest(userId: string, requestId: string): Promise<HumanRequest> {
   const [row] = await db
     .select({ request: humanRequests })
     .from(humanRequests)
@@ -75,6 +75,10 @@ export async function answerHumanRequest(
   input: { choice: string; note?: string }
 ): Promise<HumanRequest> {
   const request = await ownedRequest(userId, requestId);
+  // A retry decision changes run and workspace state; it has its own path.
+  if (request.kind === 'retry') {
+    throw conflict('decision_path_required', 'Retry decisions are applied by the recovery service');
+  }
   if (request.choices.length > 0 && !request.choices.includes(input.choice)) {
     throw badRequest('invalid_choice', `Choose one of: ${request.choices.join(', ')}`);
   }
