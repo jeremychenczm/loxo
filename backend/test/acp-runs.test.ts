@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fakeAgentCommand, type Scenario } from '@swarmdev/fake-agent';
 import { eq } from 'drizzle-orm';
@@ -7,7 +8,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import { runs } from '../src/db/schema';
 import { createApp } from '../src/http/app';
+import { liveAgentProcessesForTests } from '../src/modules/hosts/acp-host';
 import { setAcpLaunchForTests } from '../src/modules/hosts/runtime-catalog';
+import { armCrashPointForTests } from '../src/modules/ownership/crash-points';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
 import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
@@ -105,6 +108,14 @@ describe('single-agent runs over ACP', () => {
     });
     expect(run!.costUsd).toBeCloseTo(0.07);
     expect(run!.sessionRef).toMatch(/^fake-/);
+    // The launcher is recorded so recovery could find it; there is none off Windows yet.
+    if (process.platform === 'win32') {
+      expect(run).toMatchObject({
+        launcherPid: expect.any(Number),
+        launcherTag: expect.stringMatching(/^[0-9a-f]{24}$/),
+        launcherHost: os.hostname(),
+      });
+    }
 
     const events = await request(app).get(`/api/runs/${run!.id}/events`).set(auth());
     const kinds = events.body.events.map((e: { kind: string }) => e.kind);
@@ -119,6 +130,19 @@ describe('single-agent runs over ACP', () => {
 
     const workspace = await request(app).get(`/api/tasks/${taskId}/workspace`).set(auth());
     expect(fs.readFileSync(path.join(workspace.body.workspace.worktreePath, 'export.ts'), 'utf8')).toContain('csv');
+  });
+
+  it('ends the agent when the owner dies between starting it and recording the launcher', { timeout: T }, async () => {
+    const disarm = armCrashPointForTests('run.after_spawn_before_pid_recorded');
+    try {
+      const taskId = await runScenario({ turns: [{ steps: [{ say: 'never prompted' }] }] }, 'Crash before the record');
+      await drainRunsForTests();
+      const [run] = await db.select().from(runs).where(eq(runs.taskId, taskId));
+      expect(run).toMatchObject({ status: 'failed', launcherPid: null, launcherTag: null, sessionRef: null });
+      expect(liveAgentProcessesForTests()).toBe(0);
+    } finally {
+      disarm();
+    }
   });
 
   it('fails the run when the agent crashes, keeping what it said', { timeout: T }, async () => {

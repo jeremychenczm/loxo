@@ -20,6 +20,7 @@ import { createQueuedRun, ownerOf, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
 import { fence } from './fence';
+import { endOrphans, type LauncherIdentity } from './orphans';
 
 /**
  * Recovery of a run that lost its owner. The taker owns the run (running,
@@ -27,7 +28,8 @@ import { fence } from './fence';
  *
  *   taken_over --assess--> assessed --resolve--> resolved
  *
- * Assessing reads what the run committed and inspects its worktree outside
+ * Assessing ends what is left of the agent's processes (see orphans.ts), then
+ * reads what the run committed and inspects its worktree outside
  * any transaction, then records a recovery snapshot and the class in one
  * fenced transaction. Resolving applies the class in one fenced transaction.
  * A recoverer that dies leaves the run running at the step it reached; once
@@ -45,7 +47,7 @@ export type WorktreeState = 'none' | 'unchanged' | 'changed' | 'unknown';
 export interface RecoveryFacts {
   ledger: RunLedger;
   worktree: WorktreeState;
-  /** Agent processes of the run may still be alive and writing its worktree. */
+  /** Agent processes of the run may still be alive and writing its worktree: no launcher could be found and ended. */
   orphanRisk: boolean;
 }
 
@@ -83,6 +85,12 @@ async function agentOf(run: Run): Promise<AgentTraits | undefined> {
   return agent;
 }
 
+function launcherOf(run: Run): LauncherIdentity | null {
+  return run.launcherPid && run.launcherTag && run.launcherHost
+    ? { pid: run.launcherPid, tag: run.launcherTag, host: run.launcherHost }
+    : null;
+}
+
 async function workspaceOf(run: Run): Promise<Workspace | null> {
   return run.taskId ? getTaskWorkspace(run.userId, run.taskId) : null;
 }
@@ -107,12 +115,14 @@ async function assess(run: Run, owner: RunOwner): Promise<Run> {
   const writer = couldWriteWorktree(run, agent);
   const ledger = await readRunLedger(run.id);
   const workspace = await workspaceOf(run);
+  // End what is left of the agent before looking at its worktree, so nothing
+  // can still change it once it has been compared.
+  const orphans = await endOrphans(launcherOf(run));
   const inspection = workspace ? await inspectWorktreeForRecovery(run, workspace, writer) : null;
   const recoveryClass = classifyRecovery({
     ledger,
     worktree: inspection?.worktree ?? 'none',
-    // TODO(durability): drop to "a launcher that is still alive" once D4 verifies orphan processes are gone.
-    orphanRisk: writer && workspace !== null && run.beforeTree !== null,
+    orphanRisk: writer && workspace !== null && run.beforeTree !== null && orphans !== 'cleared',
   });
 
   return db.transaction(async (tx) => {

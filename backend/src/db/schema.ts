@@ -325,6 +325,14 @@ export const runs = pgTable(
     beforeHead: text('before_head'),
     beforeTree: text('before_tree'),
     /** Set when another owner takes the run over; null for runs that never lost one. */
+    /**
+     * The launcher that started the agent, recorded when the session opens:
+     * recovery finds it by pid on this host and confirms it by the tag on its
+     * command line before ending it. Null without a launcher.
+     */
+    launcherPid: integer('launcher_pid'),
+    launcherTag: text('launcher_tag'),
+    launcherHost: text('launcher_host'),
     recoveryStep: text('recovery_step').$type<RecoveryStep>(),
     recoveryClass: text('recovery_class').$type<RecoveryClass>(),
     startedAt: timestamp('started_at', { withTimezone: true }),

@@ -23,6 +23,8 @@ export interface DeadRunOptions {
   pinBefore?: boolean;
   /** Worktree state the run starts from, set up before the before-state is pinned. */
   beforePin?: (worktree: string) => Promise<void> | void;
+  /** The launcher the run's session recorded, as task-run does when it opens. */
+  launcher?: { pid: number; tag: string; host: string };
 }
 
 export interface DeadRun {
@@ -71,6 +73,12 @@ export async function deadRun(
   const run = admission!.run;
   if (workspace && options.pinBefore !== false) {
     await snapshotBeforeRun({ runId: run.id, epoch: run.ownerEpoch, instance: DEAD_INSTANCE }, workspace);
+  }
+  if (options.launcher) {
+    await db
+      .update(runs)
+      .set({ launcherPid: options.launcher.pid, launcherTag: options.launcher.tag, launcherHost: options.launcher.host })
+      .where(eq(runs.id, run.id));
   }
   const [agent] = await db.select().from(agents).where(eq(agents.id, agentRes.body.agent.id));
   const dead: DeadRun = {

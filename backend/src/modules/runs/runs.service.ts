@@ -258,15 +258,26 @@ export async function recordBeforeState(
   }
 }
 
+export interface SessionStart {
+  sessionRef: string | null;
+  launcher: { pid: number; tag: string; host: string } | null;
+}
+
 /**
- * Records the runtime's session id as soon as the session opens, so a run
- * that picks up after this one can restore the conversation even if this
- * owner never settles. Guarded like recordBeforeState.
+ * Records what a run needs after its owner is gone, as soon as the session
+ * opens: the runtime session, so a follow-up run can restore the
+ * conversation, and the launcher, so recovery can end what is left of the
+ * agent. Guarded like recordBeforeState.
  */
-export async function recordSessionRef(owner: RunOwner, sessionRef: string, executor: Executor = db): Promise<void> {
+export async function recordSessionStart(owner: RunOwner, start: SessionStart, executor: Executor = db): Promise<void> {
   const [row] = await executor
     .update(runs)
-    .set({ sessionRef })
+    .set({
+      sessionRef: start.sessionRef,
+      launcherPid: start.launcher?.pid ?? null,
+      launcherTag: start.launcher?.tag ?? null,
+      launcherHost: start.launcher?.host ?? null,
+    })
     .where(
       and(
         eq(runs.id, owner.runId),
@@ -277,8 +288,8 @@ export async function recordSessionRef(owner: RunOwner, sessionRef: string, exec
     )
     .returning({ id: runs.id });
   if (!row) {
-    recordFenceRejection('session_ref', owner.runId, owner.epoch);
-    throw new FencedError(owner.runId, owner.epoch, 'session_ref');
+    recordFenceRejection('session_start', owner.runId, owner.epoch);
+    throw new FencedError(owner.runId, owner.epoch, 'session_start');
   }
 }
 

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { runs, type Agent, type Task, type Run } from '../../db/schema';
@@ -30,7 +31,7 @@ import { createPermissionArbiter } from '../hosts/permission-arbiter';
 import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
-import { recordSessionRef } from './runs.service';
+import { recordSessionStart } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError } from '../ownership/fence';
 import { runLeases, type RunLease } from '../ownership/lease';
@@ -216,19 +217,26 @@ export async function executeTaskTurn(
     }
     const opened = session;
     const killOnLoss = () => void opened.close();
-    if (opened.runtimeSessionId) await recordSessionRef(owner, opened.runtimeSessionId);
-    if (picksUp) {
-      recorder.record({
-        kind: 'status',
-        message: opened.resumed
-          ? `Restored the earlier conversation (${opened.resumedBy ?? 'resume'})`
-          : 'Could not restore the earlier conversation; started a new one',
-      });
-    }
-    const turnPrompt = picksUp && !opened.resumed ? `${CONTEXT_LOST_NOTE}\n\n${prompt}` : prompt;
     lease.signal.addEventListener('abort', killOnLoss, { once: true });
+    // From here on the session is closed however this turn ends.
     const supervised = withWatchdog(session);
     try {
+      crashPoint('run.after_spawn_before_pid_recorded');
+      const started = opened.processIdentity;
+      await recordSessionStart(owner, {
+        sessionRef: opened.runtimeSessionId,
+        launcher:
+          started?.pid && started.tag ? { pid: started.pid, tag: started.tag, host: os.hostname() } : null,
+      });
+      if (picksUp) {
+        recorder.record({
+          kind: 'status',
+          message: opened.resumed
+            ? `Restored the earlier conversation (${opened.resumedBy ?? 'resume'})`
+            : 'Could not restore the earlier conversation; started a new one',
+        });
+      }
+      const turnPrompt = picksUp && !opened.resumed ? `${CONTEXT_LOST_NOTE}\n\n${prompt}` : prompt;
       lease.assertHeld();
       const outcome = await supervised.prompt({ prompt: turnPrompt, onEvent: (event) => recorder.record(event) });
       lease.assertHeld();
