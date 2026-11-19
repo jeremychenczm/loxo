@@ -12,7 +12,7 @@ import { armCrashPointForTests } from '../src/modules/ownership/crash-points';
 import { FencedError } from '../src/modules/ownership/fence';
 import { LeaseKeeper } from '../src/modules/ownership/lease';
 import { reconcileOnce } from '../src/modules/ownership/reconciler';
-import { classifyRecovery, recoverRun } from '../src/modules/ownership/recovery';
+import { classifyRecovery, recoverRun, setRetryPolicyForTests } from '../src/modules/ownership/recovery';
 import { admitRun } from '../src/modules/runs/runs.service';
 import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 import { deadRun as deadRunIn, type DeadRunOptions, type DeadRun } from './support/dead-run';
@@ -38,9 +38,12 @@ beforeAll(async () => {
   const created = await request(app).post('/api/repositories').set(auth()).send({ rootPath: repo });
   repositoryId = created.body.repository.id;
   keeper = new LeaseKeeper({ instance: 'recovery-test' });
+  // Retries stay queued here; auto-retry.test.ts runs them.
+  setRetryPolicyForTests({ backoffMs: 3_600_000 });
 });
 
 afterAll(async () => {
+  setRetryPolicyForTests(null);
   await keeper.stop();
   removeSandbox(sandbox);
 });
@@ -190,7 +193,7 @@ describe('recovering a run whose owner died', () => {
     await reconcileOnce(keeper);
     expect(await runRow(ctx.run.id)).toMatchObject({
       status: 'failed',
-      error: 'Owner lost: lease expired',
+      error: 'Owner lost: lease expired; retrying as attempt 2',
       recoveryClass: 'retry',
       recoveryStep: 'resolved',
     });

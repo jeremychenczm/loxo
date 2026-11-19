@@ -16,7 +16,7 @@ import {
 import { runBeforeRef } from '../code-workspaces/branch-name';
 import { getTaskWorkspace, inspectWorktreeForRecovery } from '../code-workspaces/workspace.service';
 import { hasCommittedEffects, readRunLedger, type RunLedger } from '../runs/run-ledger';
-import { ownerOf, type RunOwner } from '../runs/runs.service';
+import { createQueuedRun, ownerOf, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
 import { fence } from './fence';
@@ -35,7 +35,7 @@ import { fence } from './fence';
  * anything the dead recoverer still tries to write.
  *
  *   class        run                    workspace              decision request
- *   retry        failed                 untouched              none
+ *   retry        failed + queued retry  untouched              none (gives up at the attempt cap)
  *   known        succeeded (owner_lost) quarantined if writer  none
  *   interrupted  interrupted            quarantined            retry (continue / discard / stop)
  */
@@ -152,8 +152,18 @@ async function resolve(run: Run, owner: RunOwner): Promise<Run> {
         await quarantine(tx, run, `Run ${run.id} was interrupted; decide on its retry request before running again.`);
         await openRetryDecision(tx, run, owner, ledger, agent);
         break;
-      default:
-        resolved = await update(tx, run.id, { ...finished, status: 'failed' });
+      default: {
+        const retrying = run.agentId !== null && run.attempt < retryPolicy.maxAttempts;
+        const lost = run.error ?? 'Owner lost';
+        resolved = await update(tx, run.id, {
+          ...finished,
+          status: 'failed',
+          error: retrying
+            ? `${lost}; retrying as attempt ${run.attempt + 1}`
+            : `${lost}; gave up after ${run.attempt} attempt(s)`,
+        });
+        if (retrying) await queueRetry(tx, run);
+      }
     }
     if (run.agentId) {
       await tx
@@ -163,6 +173,38 @@ async function resolve(run: Run, owner: RunOwner): Promise<Run> {
     }
     return resolved;
   });
+}
+
+let retryPolicy = { maxAttempts: config.runMaxAttempts, backoffMs: config.runRetryBackoffMs };
+
+/** Test seam: change how often and how soon runs that did nothing are retried. */
+export function setRetryPolicyForTests(policy: Partial<typeof retryPolicy> | null): void {
+  retryPolicy = policy
+    ? { ...retryPolicy, ...policy }
+    : { maxAttempts: config.runMaxAttempts, backoffMs: config.runRetryBackoffMs };
+}
+
+/**
+ * The retry is a new run queued in the resolving transaction: same agent,
+ * task, trigger, and reason, the next attempt, and an exponential back-off
+ * the promoter honors through not_before. Nothing ran, so nothing repeats.
+ */
+async function queueRetry(tx: Tx, run: Run): Promise<void> {
+  await createQueuedRun(
+    run.userId,
+    {
+      agentId: run.agentId!,
+      agentName: run.agentName,
+      taskId: run.taskId,
+      trigger: run.trigger,
+      reason: run.reason,
+      model: run.model,
+      parentRunId: run.id,
+      attempt: run.attempt + 1,
+      delayMs: retryPolicy.backoffMs * 2 ** (run.attempt - 1),
+    },
+    tx
+  );
 }
 
 async function update(tx: Tx, runId: string, patch: Partial<typeof runs.$inferInsert>): Promise<Run> {

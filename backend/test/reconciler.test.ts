@@ -117,7 +117,7 @@ describe('reconciler', () => {
     expect(result.promoted).toContain(waiting);
     expect(await getRun(userId, orphan)).toMatchObject({
       status: 'failed',
-      error: 'Owner lost: lease expired',
+      error: 'Owner lost: lease expired; retrying as attempt 2',
       ownerInstance: 'reconciler-test',
       ownerEpoch: 2,
       leaseExpiresAt: null,

@@ -28,6 +28,8 @@ export interface CreateRunInput {
   /** Set when the run picks up after an earlier attempt. */
   parentRunId?: string | null;
   attempt?: number;
+  /** Keeps the run from being promoted for this long, measured on the database clock. */
+  delayMs?: number;
 }
 
 export interface RunOutcome {
@@ -75,6 +77,7 @@ export async function createQueuedRun(userId: string, input: CreateRunInput, ex:
       model: input.model ?? null,
       parentRunId: input.parentRunId ?? null,
       attempt: input.attempt ?? 1,
+      notBefore: input.delayMs ? sql`clock_timestamp() + ${input.delayMs}::integer * interval '1 millisecond'` : null,
     })
     .returning();
   return run!;
