@@ -35,6 +35,11 @@ services:
       - full_page_writes=off
       - -c
       - max_connections=200
+      # Every trial clones a database; on tmpfs, retained WAL is memory.
+      - -c
+      - min_wal_size=32MB
+      - -c
+      - max_wal_size=64MB
     ports:
       - "5435:5432"
     tmpfs:
