@@ -17,6 +17,8 @@ export const config = {
   dbConnectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 10_000),
   /** Run lease length on the database clock; owners renew every third of it. */
   runLeaseTtlMs: Number(process.env.RUN_LEASE_TTL_MS ?? 30_000),
+  /** Time reserved before the lease ends to stop a run's agent processes; part of the self-fence margin. */
+  runKillBudgetMs: Number(process.env.RUN_KILL_BUDGET_MS ?? 3_000),
   /** Attempts a run that lost its owner before committing anything gets in total. */
   runMaxAttempts: Number(process.env.RUN_MAX_ATTEMPTS ?? 3),
   /** Delay before the first automatic retry; it doubles with every further attempt. */

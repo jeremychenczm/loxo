@@ -165,7 +165,7 @@ export class LeaseKeeper {
   constructor(options: LeaseKeeperOptions = {}) {
     this.ttlMs = options.ttlMs ?? config.runLeaseTtlMs;
     this.instance = options.instance ?? instanceId;
-    this.marginMs = (options.killBudgetMs ?? 3_000) + (options.jitterMs ?? 1_000);
+    this.marginMs = (options.killBudgetMs ?? config.runKillBudgetMs) + (options.jitterMs ?? 1_000);
     this.connectionString = options.connectionString ?? config.databaseUrl;
     if (this.marginMs >= this.ttlMs / 2) {
       throw new Error(`Lease margin ${this.marginMs} ms leaves no room in a ${this.ttlMs} ms lease`);
