@@ -10,7 +10,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "runtimes:install": "tsx scripts/install-runtimes.ts"
+    "runtimes:install": "tsx scripts/install-runtimes.ts",
+    "chaos": "tsx scripts/chaos/run.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.6.0",
