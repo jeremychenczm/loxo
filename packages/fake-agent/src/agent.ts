@@ -21,8 +21,9 @@ import { parseScenario, type Scenario, type Step, type TurnScript } from './scen
  * With LOXO_FAKE_AGENT_WITNESS_DIR set, every prompt is witnessed in
  * <dir>/<pid>.jsonl: a start line, a heartbeat every 50 ms, and an end line
  * unless the process dies first. Each line names the run and owner epoch
- * read from the control-plane token, so a checker outside the database can
- * tell whether two executions overlapped.
+ * read from the control-plane token, and the host:port of the control plane
+ * that issued it, so a checker outside the database can tell whether two
+ * executions overlapped or one outlived the backend it worked for.
  */
 
 class TurnCancelled extends Error {}
@@ -131,13 +132,17 @@ const WITNESS_BEAT_MS = 50;
 function witness(state: SessionState): () => void {
   const dir = process.env.LOXO_FAKE_AGENT_WITNESS_DIR;
   if (!dir) return () => {};
-  const claims = RUN_TOKEN.exec(state.mcp[0]?.headers.Authorization ?? '');
+  const server = state.mcp[0];
+  const claims = RUN_TOKEN.exec(server?.headers.Authorization ?? '');
+  const base = {
+    run: claims?.[1] ?? null,
+    epoch: claims ? Number(claims[2]) : null,
+    via: server ? new URL(server.url).host : null,
+    pid: process.pid,
+  };
   const file = path.join(dir, `${process.pid}.jsonl`);
   const write = (mark: 'start' | 'beat' | 'end') =>
-    fs.appendFileSync(
-      file,
-      `${JSON.stringify({ run: claims?.[1] ?? null, epoch: claims ? Number(claims[2]) : null, pid: process.pid, t: Date.now(), mark })}\n`
-    );
+    fs.appendFileSync(file, `${JSON.stringify({ ...base, t: Date.now(), mark })}\n`);
   write('start');
   const beat = setInterval(() => write('beat'), WITNESS_BEAT_MS);
   return () => {

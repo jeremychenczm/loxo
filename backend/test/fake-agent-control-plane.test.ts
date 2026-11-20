@@ -55,6 +55,7 @@ afterAll(async () => {
 interface WitnessLine {
   run: string | null;
   epoch: number | null;
+  via: string | null;
   pid: number;
   t: number;
   mark: 'start' | 'beat' | 'end';
@@ -119,7 +120,8 @@ describe('fake agent on the control plane', () => {
 
     const lines = readWitness().filter((line) => line.run === run!.id);
     expect(lines.length).toBeGreaterThanOrEqual(5);
-    expect(lines.every((line) => line.epoch === run!.ownerEpoch && line.pid === lines[0]!.pid)).toBe(true);
+    const via = new URL(process.env.MCP_PUBLIC_URL!).host;
+    expect(lines.every((line) => line.epoch === run!.ownerEpoch && line.pid === lines[0]!.pid && line.via === via)).toBe(true);
     expect(lines[0]!.mark).toBe('start');
     expect(lines.at(-1)!.mark).toBe('end');
     expect(lines.filter((line) => line.mark === 'beat').length).toBeGreaterThanOrEqual(3);

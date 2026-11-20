@@ -23,6 +23,10 @@ export interface InvariantInput {
   wakeRuns?: string[];
   /** Fake-agent witness logs (INV-9). */
   witnessDir?: string;
+  /** Backend instances that died, by the control-plane host:port their agents saw (INV-9). */
+  deaths?: { via: string; at: number }[];
+  /** How long an agent may outlive the backend it worked for; default 1 s (INV-9). */
+  graceMs?: number;
   /** Reconciler period; a queued run free to start for longer than this is stuck (INV-7). */
   cycleMs: number;
   /** Attempts an automatic retry chain may reach (INV-6). */
@@ -274,21 +278,22 @@ const unsettledWakes: Check = async ({ db, wakeRuns = [] }) => {
   return out;
 };
 
-interface Execution {
+export interface Execution {
   key: string;
   run: string;
   epoch: number;
+  via: string | null;
   start: number;
   end: number;
 }
 
 /** Witnessed executions, one per (pid, run, epoch), from first to last line. */
-function readExecutions(dir: string): Execution[] {
+export function readExecutions(dir: string): Execution[] {
   const byKey = new Map<string, Execution>();
   for (const file of fs.readdirSync(dir)) {
     for (const line of fs.readFileSync(path.join(dir, file), 'utf8').split('\n')) {
       if (!line.trim()) continue;
-      const w = JSON.parse(line) as { run: string | null; epoch: number | null; pid: number; t: number };
+      const w = JSON.parse(line) as { run: string | null; epoch: number | null; via?: string | null; pid: number; t: number };
       if (!w.run || w.epoch === null) continue;
       const key = `${w.pid}/${w.run}/${w.epoch}`;
       const seen = byKey.get(key);
@@ -296,7 +301,7 @@ function readExecutions(dir: string): Execution[] {
         seen.start = Math.min(seen.start, w.t);
         seen.end = Math.max(seen.end, w.t);
       } else {
-        byKey.set(key, { key, run: w.run, epoch: w.epoch, start: w.t, end: w.t });
+        byKey.set(key, { key, run: w.run, epoch: w.epoch, via: w.via ?? null, start: w.t, end: w.t });
       }
     }
   }
@@ -306,9 +311,11 @@ function readExecutions(dir: string): Execution[] {
 /**
  * INV-9: no double execution. Executions on the same task, or by the same
  * agent, never overlap; an orphaned agent still beating next to the next
- * attempt shows up here, which a per-run check would miss.
+ * attempt shows up here, which a per-run check would miss. An agent also
+ * stops within the grace period once the backend it worked for dies, so an
+ * orphan is caught even when it happens to finish before the next attempt.
  */
-const doubleExecutions: Check = async ({ db, witnessDir }) => {
+const doubleExecutions: Check = async ({ db, witnessDir, deaths = [], graceMs = 1_000 }) => {
   if (!witnessDir || !fs.existsSync(witnessDir)) return [];
   const executions = readExecutions(witnessDir);
   if (executions.length === 0) return [];
@@ -340,6 +347,17 @@ const doubleExecutions: Check = async ({ db, witnessDir }) => {
             detail: `${scope === 'task_id' ? 'task' : 'agent'} executed ${earlier.key} and ${list[i]!.key} at once (${list[i]!.start} < ${earlier.end})`,
           });
         }
+      }
+    }
+  }
+  for (const death of deaths) {
+    for (const e of executions) {
+      if (e.via === death.via && e.start <= death.at && e.end > death.at + graceMs) {
+        out.push({
+          invariant: 'INV-9',
+          subject: e.run,
+          detail: `agent ${e.key} kept running ${e.end - death.at} ms after the backend at ${death.via} died`,
+        });
       }
     }
   }

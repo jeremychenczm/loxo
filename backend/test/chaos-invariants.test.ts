@@ -115,16 +115,18 @@ async function snapshot(runId: string, kind: 'run' | 'recovery', changedFiles: n
   });
 }
 
-/** A witnessed execution: a line every 50 ms from `start` to `end`. */
-function witnessed(pid: number, runId: string, epoch: number, start: number, end: number): void {
+/** A witnessed execution: a line every 50 ms from `start` to `end`, for the control plane at `via`. */
+function witnessed(pid: number, runId: string, epoch: number, start: number, end: number, via = '127.0.0.1:4000'): void {
   const lines: string[] = [];
   for (let t = start; t <= end; t += 50) {
-    lines.push(JSON.stringify({ run: runId, epoch, pid, t, mark: t === start ? 'start' : 'beat' }));
+    lines.push(JSON.stringify({ run: runId, epoch, via, pid, t, mark: t === start ? 'start' : 'beat' }));
   }
   fs.appendFileSync(path.join(witnessDir, `${pid}.jsonl`), `${lines.join('\n')}\n`);
 }
 
-async function check(only: InvariantId, extra: { wakeRuns?: string[] } = {}): Promise<Violation[]> {
+type Extra = Pick<Parameters<typeof checkInvariants>[0], 'wakeRuns' | 'deaths'>;
+
+async function check(only: InvariantId, extra: Extra = {}): Promise<Violation[]> {
   return checkInvariants({ db, ...LIMITS, witnessDir, ...extra, skip: ALL.filter((id) => id !== only) });
 }
 
@@ -321,6 +323,24 @@ describe('chaos invariant checker', () => {
     witnessed(206, f, 1, t0 + 1_100, t0 + 2_000);
 
     expect(found(await check('INV-9'))).toEqual([`INV-9 ${shared}`, `INV-9 ${busy}`].sort());
+  });
+
+  it('INV-9: names an agent that kept running after the backend it worked for died', async () => {
+    const orphan = await run(await task(), await agent());
+    const stopped = await run(await task(), await agent());
+    const elsewhere = await run(await task(), await agent());
+    const later = await run(await task(), await agent());
+
+    const t0 = Date.now() - 60_000;
+    const dead = '127.0.0.1:4100';
+    witnessed(301, orphan, 1, t0, t0 + 3_000, dead);
+    witnessed(302, stopped, 1, t0, t0 + 1_200, dead);
+    witnessed(303, elsewhere, 1, t0, t0 + 5_000, '127.0.0.1:4200');
+    witnessed(304, later, 1, t0 + 2_000, t0 + 5_000, dead);
+
+    const violations = await check('INV-9', { deaths: [{ via: dead, at: t0 + 500 }] });
+    expect(found(violations)).toEqual([`INV-9 ${orphan}`]);
+    expect(violations[0]!.detail).toContain('kept running 2500 ms');
   });
 
   it('INV-3: refuses to run without commit timestamps rather than pass', async () => {
