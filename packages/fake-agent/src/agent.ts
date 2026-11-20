@@ -170,8 +170,9 @@ async function play(
   client: AgentContext,
   signal: AbortSignal
 ): Promise<void> {
+  // A client that has gone away does not stop the turn (see main).
   const update = (u: SessionUpdate) =>
-    client.notify(methods.client.session.update, { sessionId, update: u });
+    client.notify(methods.client.session.update, { sessionId, update: u }).catch(() => {});
 
   for (const step of steps) {
     if (signal.aborted) throw new TurnCancelled();
@@ -286,6 +287,10 @@ function requireSession(sessionId: string): SessionState {
 }
 
 async function main(): Promise<void> {
+  // Like an agent deep in a tool call, the turn in flight plays to its end even
+  // after the client is gone; only killing the process stops it. Orphan checks
+  // depend on this: an agent that died at its next write would look harmless.
+  process.stdout.on('error', () => {});
   if (scenario.startup === 'crash') process.exit(3);
   if (scenario.startup === 'garbage') process.stdout.write('this is not json-rpc\n');
 
