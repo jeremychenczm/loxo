@@ -12,7 +12,7 @@ import {
   workspaceBranchName,
   workspaceLeaf,
 } from '../src/modules/code-workspaces/branch-name';
-import { localGitDriver } from '../src/modules/code-workspaces/local-git-driver';
+import { localGitDriver, runGit } from '../src/modules/code-workspaces/local-git-driver';
 import {
   GitDriverError,
   type PrepareWorkspaceResult,
@@ -766,5 +766,13 @@ describe('several worktrees on a user repository', () => {
       })
     ).rejects.toMatchObject({ code: 'unmanaged_branch' });
     expect(await git(ws.repo, 'rev-parse', '--verify', 'refs/heads/main')).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
+
+describe('running git', () => {
+  it('survives git exiting before it reads its input', { timeout: T }, async () => {
+    // Far more than a pipe buffer holds, to a command that never reads stdin.
+    const out = await runGit(os.tmpdir(), ['--version'], { stdin: 'x'.repeat(4 * 1024 * 1024) });
+    expect(out.toString('utf8')).toMatch(/^git version/);
   });
 });

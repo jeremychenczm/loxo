@@ -62,8 +62,8 @@ interface GitOptions {
   stdin?: string;
 }
 
-/** Fixed-argument Git execution; never a shell, never client-supplied argv. */
-async function runGit(cwd: string, args: string[], options: GitOptions = {}): Promise<Buffer> {
+/** Fixed-argument Git execution; never a shell, never client-supplied argv. Exported for tests only. */
+export async function runGit(cwd: string, args: string[], options: GitOptions = {}): Promise<Buffer> {
   try {
     const pending = execFileAsync('git', args, {
       cwd,
@@ -75,6 +75,10 @@ async function runGit(cwd: string, args: string[], options: GitOptions = {}): Pr
       // user's index as a side effect.
       env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', ...options.env }),
     });
+    // Git may exit before reading its input (an early failure, or a command that
+    // reads none); the write then fails with EPIPE. The exit status reports the
+    // outcome; an unhandled stream error would take the whole process down.
+    pending.child.stdin?.on('error', () => {});
     pending.child.stdin?.end(options.stdin ?? '');
     const { stdout } = await pending;
     return stdout;
