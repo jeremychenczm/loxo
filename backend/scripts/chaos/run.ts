@@ -60,6 +60,16 @@ function resultsDir(requested: string | undefined): string {
   return dir;
 }
 
+let unstartable = 0;
+
+/** Stops once instances keep failing to start (usually memory pressure) rather than burning through the cells. */
+function noteStart(error: string | null): void {
+  unstartable = error?.includes('did not become ready') ? unstartable + 1 : 0;
+  if (unstartable >= 3) {
+    throw new Error('Three trials in a row could not start a backend instance; stopped. Check free memory.');
+  }
+}
+
 function verdict(result: TrialResult): string {
   if (!result.reached) return 'UNREACHED';
   if (result.error) return `ERROR ${result.error}`;
@@ -137,6 +147,7 @@ async function runMatrix(values: Values): Promise<number> {
       const result = { cell: label, ...(await runTrial({ ...cell, seed: baseSeed + index }, { failuresDir })) };
       trials.push(result);
       fs.appendFileSync(path.join(out, 'trials.jsonl'), `${JSON.stringify(result)}\n`);
+      noteStart(result.error);
       const timing = [
         result.recoveredMs !== null ? `recovered ${(result.recoveredMs / 1000).toFixed(1)}s` : null,
         result.settledMs !== null ? `settled ${(result.settledMs / 1000).toFixed(1)}s` : null,
@@ -153,6 +164,7 @@ async function runMatrix(values: Values): Promise<number> {
       const result = await runTrial({ kind, first: 'random', launcher: false, seed: baseSeed + index }, { failuresDir });
       controls.push(result);
       fs.appendFileSync(path.join(out, 'controls.jsonl'), `${JSON.stringify(result)}\n`);
+      noteStart(result.error);
       const found = result.violations.map((v) => v.invariant).join(',') || 'none';
       console.log(`${step()} control ${kind} random, no launcher: violations ${found} | afterlife ${result.afterlifeMs ?? '-'} ms`);
     }
@@ -170,6 +182,7 @@ async function runMatrix(values: Values): Promise<number> {
       });
       races.push(result);
       fs.appendFileSync(path.join(out, 'two-instances.jsonl'), `${JSON.stringify(result)}\n`);
+      noteStart(result.error);
       const state = result.error ? `ERROR ${result.error}` : `violations ${result.violations.length}`;
       console.log(
         `${step()} two instances, ${fault}: ${state} | takeovers ${result.takeovers}, fence rejections ${result.fenceRejections}, peak running ${result.peakRunning}`

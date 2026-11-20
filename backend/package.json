@@ -13,7 +13,8 @@
     "db:migrate": "drizzle-kit migrate",
     "runtimes:install": "tsx scripts/install-runtimes.ts",
     "chaos": "tsx scripts/chaos/run.ts",
-    "chaos:two": "tsx scripts/chaos/run.ts --two-instances"
+    "chaos:two": "tsx scripts/chaos/run.ts --two-instances",
+    "chaos:results": "tsx scripts/chaos/results-block.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.6.0",
