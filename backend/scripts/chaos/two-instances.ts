@@ -19,7 +19,7 @@ import {
   startInstance,
   writeAgentScript,
   type Instance,
-} from './harness';
+} from './infra';
 import { checkInvariants, readExecutions, type Violation } from './invariants';
 
 /**

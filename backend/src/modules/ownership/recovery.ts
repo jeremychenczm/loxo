@@ -15,7 +15,7 @@ import {
 } from '../../db/schema';
 import { runBeforeRef } from '../code-workspaces/branch-name';
 import { getTaskWorkspace, inspectWorktreeForRecovery } from '../code-workspaces/workspace.service';
-import { hasCommittedEffects, readRunLedger, type RunLedger } from '../runs/run-ledger';
+import { hasCommittedEffects, readRunEffects, type RunEffects } from '../runs/run-effects';
 import { createQueuedRun, ownerOf, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
@@ -45,7 +45,7 @@ import { endOrphans, type LauncherIdentity } from './orphans';
 export type WorktreeState = 'none' | 'unchanged' | 'changed' | 'unknown';
 
 export interface RecoveryFacts {
-  ledger: RunLedger;
+  effects: RunEffects;
   worktree: WorktreeState;
   /** Agent processes of the run may still be alive and writing its worktree: no launcher could be found and ended. */
   orphanRisk: boolean;
@@ -57,8 +57,8 @@ export interface RecoveryFacts {
  * is for a person to decide.
  */
 export function classifyRecovery(facts: RecoveryFacts): RecoveryClass {
-  if (facts.ledger.terminal) return 'known';
-  if (hasCommittedEffects(facts.ledger)) return 'interrupted';
+  if (facts.effects.terminal) return 'known';
+  if (hasCommittedEffects(facts.effects)) return 'interrupted';
   if (facts.worktree === 'changed' || facts.worktree === 'unknown') return 'interrupted';
   if (facts.orphanRisk) return 'interrupted';
   return 'retry';
@@ -113,14 +113,14 @@ export async function recoverRun(run: Run): Promise<Run> {
 async function assess(run: Run, owner: RunOwner): Promise<Run> {
   const agent = await agentOf(run);
   const writer = couldWriteWorktree(run, agent);
-  const ledger = await readRunLedger(run.id);
+  const effects = await readRunEffects(run.id);
   const workspace = await workspaceOf(run);
   // End what is left of the agent before looking at its worktree, so nothing
   // can still change it once it has been compared.
   const orphans = await endOrphans(launcherOf(run));
   const inspection = workspace ? await inspectWorktreeForRecovery(run, workspace, writer) : null;
   const recoveryClass = classifyRecovery({
-    ledger,
+    effects,
     worktree: inspection?.worktree ?? 'none',
     orphanRisk: writer && workspace !== null && run.beforeTree !== null && orphans !== 'cleared',
   });
@@ -145,7 +145,7 @@ async function assess(run: Run, owner: RunOwner): Promise<Run> {
 async function resolve(run: Run, owner: RunOwner): Promise<Run> {
   const agent = await agentOf(run);
   const writer = couldWriteWorktree(run, agent);
-  const ledger = await readRunLedger(run.id);
+  const effects = await readRunEffects(run.id);
   return db.transaction(async (tx) => {
     await fence(tx, owner, 'recovery_resolve');
     const finished = { leaseExpiresAt: null, recoveryStep: 'resolved' as const, finishedAt: new Date() };
@@ -160,7 +160,7 @@ async function resolve(run: Run, owner: RunOwner): Promise<Run> {
       case 'interrupted':
         resolved = await update(tx, run.id, { ...finished, finishedAt: null, status: 'interrupted' });
         await quarantine(tx, run, `Run ${run.id} was interrupted; decide on its retry request before running again.`);
-        await openRetryDecision(tx, run, owner, ledger, agent);
+        await openRetryDecision(tx, run, owner, effects, agent);
         break;
       default: {
         const retrying = run.agentId !== null && run.attempt < retryPolicy.maxAttempts;
@@ -235,7 +235,7 @@ async function openRetryDecision(
   tx: Tx,
   run: Run,
   owner: RunOwner,
-  ledger: RunLedger,
+  effects: RunEffects,
   agent: AgentTraits | undefined
 ): Promise<void> {
   if (!run.taskId) return;
@@ -255,8 +255,8 @@ async function openRetryDecision(
       payload: {
         runId: run.id,
         agentName: agent?.name ?? run.agentName,
-        controlPlaneWrites: ledger.controlPlaneWrites,
-        timelineEntries: ledger.timelineEntries,
+        controlPlaneWrites: effects.controlPlaneWrites,
+        timelineEntries: effects.timelineEntries,
         changedFiles: snapshot?.changedFiles ?? null,
         beforeRef: canDiscard ? runBeforeRef(run.id) : null,
       },
@@ -270,7 +270,7 @@ async function openRetryDecision(
   await addSystemTurn(
     run.userId,
     run.taskId,
-    `Run by ${agent?.name ?? run.agentName} lost its owner partway through (${ledger.controlPlaneWrites} control-plane write(s)${changed}). The task waits until someone decides: continue, ${canDiscard ? 'discard the changes, ' : ''}or stop.`,
+    `Run by ${agent?.name ?? run.agentName} lost its owner partway through (${effects.controlPlaneWrites} control-plane write(s)${changed}). The task waits until someone decides: continue, ${canDiscard ? 'discard the changes, ' : ''}or stop.`,
     { runId: run.id, epoch: owner.epoch },
     tx
   );

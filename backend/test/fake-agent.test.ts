@@ -28,7 +28,7 @@ afterEach(() => {
 
 afterAll(() => removeSandbox(sandbox));
 
-interface Harness {
+interface Launched {
   child: ChildProcess;
   updates: SessionUpdate[];
   exited: Promise<number | null>;
@@ -36,7 +36,7 @@ interface Harness {
   run<T>(op: (ctx: ClientContext, sessionId: string) => Promise<T>): Promise<T>;
 }
 
-function launch(scenario: Scenario, answer: 'allow' | 'reject' | 'cancelled' = 'allow'): Harness {
+function launch(scenario: Scenario, answer: 'allow' | 'reject' | 'cancelled' = 'allow'): Launched {
   const cmd = fakeAgentCommand(scenario);
   const child = spawn(cmd.command, cmd.args, {
     cwd: sandbox,

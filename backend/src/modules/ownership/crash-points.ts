@@ -4,7 +4,7 @@ import fs from 'node:fs';
  * Named places in a run's life where the backend can be made to fail.
  *
  * Tests arm a point in-process (armCrashPointForTests) to prove the
- * surrounding transaction leaves nothing half-written. The chaos harness arms
+ * surrounding transaction leaves nothing half-written. The chaos driver arms
  * one through the environment instead:
  *
  *   LOXO_CRASH_AT=<point>[@<n>]        on the n-th hit (default 1), append a

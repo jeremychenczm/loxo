@@ -18,7 +18,7 @@ let rejections = 0;
 
 /**
  * Logs a refused write as one structured line. The count is per process; the
- * chaos harness (D5) keeps the durable record outside the database.
+ * chaos driver counts these lines in each instance's log.
  */
 export function recordFenceRejection(operation: string, runId: string, epoch: number): void {
   rejections += 1;

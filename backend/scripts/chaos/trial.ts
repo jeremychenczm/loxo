@@ -20,7 +20,7 @@ import {
   startInstance,
   writeAgentScript,
   type Instance,
-} from './harness';
+} from './infra';
 import { checkInvariants, readExecutions, type Violation } from './invariants';
 import { RUN_KIND_SPECS, type RunKind, type RunKindSpec } from './scenarios';
 
@@ -297,7 +297,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     const first = await launch('i1', spec.first === 'random' ? undefined : spec.first);
     const api = new Api(first.baseUrl);
     await setUp(api, kind, paths, id, setup).catch(async (err) => {
-      // A crash point may fire inside a setup request; anything else is a harness failure.
+      // A crash point may fire inside a setup request; anything else is a driver failure.
       if (!(await exitWithin(first, 2_000))) throw err;
     });
 

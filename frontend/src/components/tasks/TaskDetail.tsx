@@ -131,7 +131,7 @@ export function TaskDetail({
     const [
       { task: fetched },
       { turns: timeline },
-      { runs: ledger },
+      { runs: runHistory },
       { approvals: decisions },
       { requests: pending },
       { workspace: worktree },
@@ -147,7 +147,7 @@ export function TaskDetail({
     setTitle(fetched.title);
     setBrief(fetched.brief);
     setTurns(timeline);
-    setRuns(ledger);
+    setRuns(runHistory);
     setApprovals(decisions);
     setRequests(pending);
     setWorkspace(worktree);
@@ -520,7 +520,7 @@ export function TaskDetail({
 
           <Rule dashed />
 
-          {/* Runs ledger */}
+          {/* Run history */}
           <div className="mb-2 flex items-end justify-between">
             <p className="font-pixel text-[10px] uppercase tracking-[0.2em] text-pixel-gray">
               Runs

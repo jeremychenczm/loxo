@@ -19,7 +19,7 @@ export default defineConfig({
         'src/modules/ownership/**/*.ts',
         'src/modules/hosts/launcher/launcher.ts',
         'src/modules/control-plane/run-token.ts',
-        'src/modules/runs/run-ledger.ts',
+        'src/modules/runs/run-effects.ts',
       ],
       reporter: ['text', 'json-summary'],
       thresholds: { lines: 90 },

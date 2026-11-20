@@ -74,19 +74,19 @@ function expireLease(runId: string) {
 }
 
 describe('classifying a run that lost its owner', () => {
-  const ledger = { controlPlaneWrites: 0, terminal: null, captured: false, timelineEntries: 0 };
+  const effects = { controlPlaneWrites: 0, terminal: null, captured: false, timelineEntries: 0 };
   it('retries only a run that committed nothing, changed nothing, and leaves no possible orphan', () => {
     const cases: Array<[Parameters<typeof classifyRecovery>[0], string]> = [
-      [{ ledger, worktree: 'none', orphanRisk: false }, 'retry'],
-      [{ ledger, worktree: 'unchanged', orphanRisk: false }, 'retry'],
-      [{ ledger, worktree: 'unchanged', orphanRisk: true }, 'interrupted'],
-      [{ ledger, worktree: 'unknown', orphanRisk: false }, 'interrupted'],
-      [{ ledger, worktree: 'changed', orphanRisk: false }, 'interrupted'],
-      [{ ledger: { ...ledger, timelineEntries: 1 }, worktree: 'none', orphanRisk: false }, 'interrupted'],
-      [{ ledger: { ...ledger, captured: true }, worktree: 'unchanged', orphanRisk: false }, 'interrupted'],
-      [{ ledger: { ...ledger, controlPlaneWrites: 1 }, worktree: 'none', orphanRisk: false }, 'interrupted'],
+      [{ effects, worktree: 'none', orphanRisk: false }, 'retry'],
+      [{ effects, worktree: 'unchanged', orphanRisk: false }, 'retry'],
+      [{ effects, worktree: 'unchanged', orphanRisk: true }, 'interrupted'],
+      [{ effects, worktree: 'unknown', orphanRisk: false }, 'interrupted'],
+      [{ effects, worktree: 'changed', orphanRisk: false }, 'interrupted'],
+      [{ effects: { ...effects, timelineEntries: 1 }, worktree: 'none', orphanRisk: false }, 'interrupted'],
+      [{ effects: { ...effects, captured: true }, worktree: 'unchanged', orphanRisk: false }, 'interrupted'],
+      [{ effects: { ...effects, controlPlaneWrites: 1 }, worktree: 'none', orphanRisk: false }, 'interrupted'],
       [
-        { ledger: { ...ledger, controlPlaneWrites: 2, terminal: { tool: 'submit_result', result: {} } }, worktree: 'changed', orphanRisk: true },
+        { effects: { ...effects, controlPlaneWrites: 2, terminal: { tool: 'submit_result', result: {} } }, worktree: 'changed', orphanRisk: true },
         'known',
       ],
     ];
@@ -97,7 +97,7 @@ describe('classifying a run that lost its owner', () => {
 describe('recovering a run whose owner died', () => {
   it('settles a run whose result was already submitted, and shuts its worktree', { timeout: T }, async () => {
     const { ctx } = await deadRun({ repository: true }, async ({ ctx, worktree }) => {
-      fs.writeFileSync(path.join(worktree!, 'ledger.ts'), 'export const ledger = [];\n');
+      fs.writeFileSync(path.join(worktree!, 'effects.ts'), 'export const effects = [];\n');
       await submitResult(ctx, 'Ledger module added.');
       fs.writeFileSync(path.join(worktree!, 'after.ts'), 'export const after = 1;\n');
     });

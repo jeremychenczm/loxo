@@ -9,7 +9,7 @@ import { createApp } from '../src/http/app';
 import { mintRunToken } from '../src/modules/control-plane/run-token';
 import { buildControlPlaneToolDefs, type RunToolContext } from '../src/modules/control-plane/tools';
 import { armCrashPointForTests } from '../src/modules/ownership/crash-points';
-import { hasCommittedEffects, readRunLedger } from '../src/modules/runs/run-ledger';
+import { hasCommittedEffects, readRunEffects } from '../src/modules/runs/run-effects';
 import { admitRun } from '../src/modules/runs/runs.service';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
@@ -43,10 +43,10 @@ beforeAll(async () => {
   setTaskHostFactoryForTests(scriptedHost(async (turn) => ({ text: await behavior(turn) })));
   const reg = await request(app)
     .post('/auth/register')
-    .send({ email: 'ledger@example.com', username: 'ledgeruser', password: 'a-strong-password' });
+    .send({ email: 'effects@example.com', username: 'effectsuser', password: 'a-strong-password' });
   token = reg.body.token;
   userId = reg.body.user.id;
-  sandbox = makeSandbox('run-ledger');
+  sandbox = makeSandbox('run-effects');
 });
 
 afterAll(() => {
@@ -89,33 +89,33 @@ async function mcpToolNames(run: Run, epoch: number): Promise<string[]> {
   return (res.body.result.tools as Array<{ name: string }>).map((t) => t.name).sort();
 }
 
-describe('the run ledger', () => {
+describe("a run's committed effects", () => {
   it('records exactly one entry per committed write on every tool surface', { timeout: T }, async () => {
-    const lead = await heldRun('Ledger Lead', 'manual', 'in_progress');
-    const reviewer = await heldRun('Ledger Reviewer', 'review', 'in_review');
+    const lead = await heldRun('Effects Lead', 'manual', 'in_progress');
+    const reviewer = await heldRun('Effects Reviewer', 'review', 'in_review');
 
     for (const ctx of [lead, reviewer]) {
-      expect(await readRunLedger(ctx.run.id)).toEqual(EMPTY);
+      expect(await readRunEffects(ctx.run.id)).toEqual(EMPTY);
       const defs = buildControlPlaneToolDefs(ctx);
       expect(await mcpToolNames(ctx.run, ctx.epoch)).toEqual(defs.map((d) => d.name).sort());
       for (const def of defs) expect(SAMPLE_ARGS, `sample args for ${def.name}`).toHaveProperty(def.name);
 
       const ordered = [...defs].sort((a, b) => CALL_ORDER.indexOf(a.name) - CALL_ORDER.indexOf(b.name));
       for (const def of ordered) {
-        const before = await readRunLedger(ctx.run.id);
+        const before = await readRunEffects(ctx.run.id);
         await def.execute(SAMPLE_ARGS[def.name]!);
-        const after = await readRunLedger(ctx.run.id);
+        const after = await readRunEffects(ctx.run.id);
         expect(after.controlPlaneWrites - before.controlPlaneWrites, def.name).toBe(READ_ONLY_TOOLS.has(def.name) ? 0 : 1);
       }
     }
 
-    expect(await readRunLedger(lead.run.id)).toEqual({
+    expect(await readRunEffects(lead.run.id)).toEqual({
       controlPlaneWrites: 4,
       terminal: { tool: 'submit_result', result: { status: 'in_review' } },
       captured: false,
       timelineEntries: 3,
     });
-    const review = await readRunLedger(reviewer.run.id);
+    const review = await readRunEffects(reviewer.run.id);
     expect(review).toMatchObject({ controlPlaneWrites: 2, terminal: { tool: 'submit_review' }, captured: false });
     expect(review.terminal!.result).toMatchObject({ status: 'in_review', halted: false });
     expect(hasCommittedEffects(review)).toBe(true);
@@ -132,9 +132,9 @@ describe('the run ledger', () => {
     } finally {
       disarm();
     }
-    const ledger = await readRunLedger(ctx.run.id);
-    expect(ledger).toEqual(EMPTY);
-    expect(hasCommittedEffects(ledger)).toBe(false);
+    const effects = await readRunEffects(ctx.run.id);
+    expect(effects).toEqual(EMPTY);
+    expect(hasCommittedEffects(effects)).toBe(false);
     await settleByHand(ctx.run);
   });
 
@@ -170,7 +170,7 @@ describe('the run ledger', () => {
         return 'Added totals.';
       });
       expect(run.status).toBe('succeeded');
-      expect(await readRunLedger(run.id)).toEqual({
+      expect(await readRunEffects(run.id)).toEqual({
         controlPlaneWrites: 0,
         terminal: null,
         captured: true,
@@ -188,7 +188,7 @@ describe('the run ledger', () => {
         return 'Finished, as far as I know.';
       });
       expect(run).toMatchObject({ status: 'running', ownerInstance: 'other-instance' });
-      expect(await readRunLedger(run.id)).toEqual(EMPTY);
+      expect(await readRunEffects(run.id)).toEqual(EMPTY);
       await db.update(runs).set({ status: 'failed', leaseExpiresAt: null }).where(eq(runs.id, run.id));
     });
   });

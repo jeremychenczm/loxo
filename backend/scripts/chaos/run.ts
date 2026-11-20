@@ -12,7 +12,7 @@ import {
   MAX_ATTEMPTS,
   prepareTemplate,
   RETRY_BACKOFF_MS,
-} from './harness';
+} from './infra';
 import { cellLabel, chaosMatrix, summarize, summarizeControls, summarizeTwoInstances } from './matrix';
 import { RUN_KINDS, type RunKind } from './scenarios';
 import { runTrial, type NamedFault, type TrialResult, type TrialSpec } from './trial';

@@ -8,7 +8,7 @@ import { changeSnapshots, runs, workspaces } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { reconcileOnce } from '../src/modules/ownership/reconciler';
 import { LeaseKeeper } from '../src/modules/ownership/lease';
-import { readRunLedger } from '../src/modules/runs/run-ledger';
+import { readRunEffects } from '../src/modules/runs/run-effects';
 import { admitRun } from '../src/modules/runs/runs.service';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
@@ -128,7 +128,7 @@ describe('interrupted runs and the gates', () => {
 });
 
 describe('snapshots by kind', () => {
-  it('keeps one run snapshot and one recovery snapshot per run, and the ledger counts only the first', { timeout: T }, async () => {
+  it('keeps one run snapshot and one recovery snapshot per run, and only the first counts as a committed effect', { timeout: T }, async () => {
     const agentId = await agent('Snapshot Agent');
     const taskId = await task('Snapshot task');
     const run = await queuedRun(agentId, taskId);
@@ -140,9 +140,9 @@ describe('snapshots by kind', () => {
     };
 
     await db.insert(changeSnapshots).values({ ...base, kind: 'recovery' });
-    expect((await readRunLedger(run.id)).captured).toBe(false);
+    expect((await readRunEffects(run.id)).captured).toBe(false);
     await db.insert(changeSnapshots).values({ ...base, kind: 'run' });
-    expect((await readRunLedger(run.id)).captured).toBe(true);
+    expect((await readRunEffects(run.id)).captured).toBe(true);
 
     expect(await db.insert(changeSnapshots).values({ ...base, kind: 'recovery' }).then(() => undefined, pgCode)).toBe('23505');
     expect(

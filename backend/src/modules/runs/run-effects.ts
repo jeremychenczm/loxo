@@ -6,7 +6,7 @@ type TerminalTool = (typeof TERMINAL_CONTROL_PLANE_TOOLS)[number];
 
 const TERMINAL: readonly string[] = TERMINAL_CONTROL_PLANE_TOOLS;
 
-export interface RunLedger {
+export interface RunEffects {
   /** Committed control-plane calls, terminal ones included. */
   controlPlaneWrites: number;
   /** The run's terminal call and the result it returned, once committed. */
@@ -22,12 +22,12 @@ export interface RunLedger {
  * writes leave. Each source row commits in the same fenced transaction as
  * the write it stands for: a control-plane request row with the tool's
  * writes, the change snapshot with the capture, a timeline entry with the
- * post. The ledger therefore never shows a write that rolled back and never
+ * post. The record therefore never shows a write that rolled back and never
  * misses one that committed. Run events, permission requests, and the
  * before-state are bookkeeping, not effects; worktree changes are measured
  * against the before-state instead.
  */
-export async function readRunLedger(runId: string, ex: Executor = db): Promise<RunLedger> {
+export async function readRunEffects(runId: string, ex: Executor = db): Promise<RunEffects> {
   const requests = await ex
     .select({ tool: controlPlaneRequests.tool, result: controlPlaneRequests.result })
     .from(controlPlaneRequests)
@@ -52,6 +52,6 @@ export async function readRunLedger(runId: string, ex: Executor = db): Promise<R
 }
 
 /** Whether anything the run did is visible in platform state; a retry could repeat it. */
-export function hasCommittedEffects(ledger: RunLedger): boolean {
-  return ledger.controlPlaneWrites > 0 || ledger.captured || ledger.timelineEntries > 0;
+export function hasCommittedEffects(effects: RunEffects): boolean {
+  return effects.controlPlaneWrites > 0 || effects.captured || effects.timelineEntries > 0;
 }
