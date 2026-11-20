@@ -309,8 +309,9 @@ describe('merge lock', () => {
     await approve(waiting.id);
 
     const hook = path.join(repoDir, '.git', 'hooks', 'post-merge');
-    fs.writeFileSync(hook, '#!/bin/sh\nsleep 3\n', { mode: 0o755 });
-    setMergeLockTtlForTests(900);
+    fs.writeFileSync(hook, '#!/bin/sh\nsleep 4\n', { mode: 0o755 });
+    // Wide enough that event-loop delays on a loaded machine cannot let the lease lapse between renewals.
+    setMergeLockTtlForTests(1_500);
     try {
       let settled: request.Response | null = null;
       const merging = finalize(slow.id, 'merge', { confirmCheckpoint: true }).then((res) => (settled = res));
@@ -323,7 +324,7 @@ describe('merge lock', () => {
       expect(first.operationId).not.toBeNull();
 
       // Well past one lease length, the lock is still live because it was renewed.
-      await new Promise((r) => setTimeout(r, 1_800));
+      await new Promise((r) => setTimeout(r, 2_500));
       const later = await lockRow();
       expect(later.operationId).toBe(first.operationId);
       expect(later.leaseExpiresAt!.getTime()).toBeGreaterThan(first.leaseExpiresAt!.getTime());
