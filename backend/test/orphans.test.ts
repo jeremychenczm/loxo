@@ -39,6 +39,25 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Liveness of each pid once killed ones have had a moment to be reaped (a killed child stays a zombie until then). */
+async function aliveAfterKill(pids: number[]): Promise<boolean[]> {
+  for (let i = 0; i < 30 && pids.some(alive); i++) await sleep(100);
+  return pids.map(alive);
+}
+
+function forceKill(pid: number): void {
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    else process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 async function pidFrom(file: string): Promise<number> {
   for (let i = 0; i < 100; i++) {
     const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
@@ -56,7 +75,8 @@ async function liveTree() {
   const tag = newLaunchTag();
   const files = { grandchild: path.join(sandbox, `g-${tag}.pid`), agent: path.join(sandbox, `a-${tag}.pid`) };
   const command = underLauncher(launcher, { command: process.execPath, args: [fixture('tree-agent.mjs'), files.grandchild, files.agent] }, tag);
-  const child = spawn(command.command, command.args, { stdio: 'ignore' });
+  // Started the way the ACP host starts it: on POSIX the launcher leads its own process group.
+  const child = spawn(command.command, command.args, { stdio: 'ignore', detached: process.platform !== 'win32' });
   strays.add(child.pid!);
   const agent = await pidFrom(files.agent);
   const grandchild = await pidFrom(files.grandchild);
@@ -91,13 +111,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  for (const pid of strays) {
-    try {
-      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-    } catch {
-      // Already gone.
-    }
-  }
+  for (const pid of strays) forceKill(pid);
   strays.clear();
 });
 
@@ -115,12 +129,12 @@ async function runRow(id: string): Promise<Run> {
   return row!;
 }
 
-describe.skipIf(process.platform !== 'win32')('ending orphaned agent processes', () => {
+describe('ending orphaned agent processes', () => {
   it('ends a recognized launcher and everything under it', { timeout: T }, async () => {
     const tree = await liveTree();
     expect(alive(tree.grandchild)).toBe(true);
     expect(await endOrphans(tree.identity)).toBe('cleared');
-    expect([tree.identity.pid, tree.agent, tree.grandchild].map(alive)).toEqual([false, false, false]);
+    expect(await aliveAfterKill([tree.identity.pid, tree.agent, tree.grandchild])).toEqual([false, false, false]);
   });
 
   it('never kills a process that merely reuses the pid', { timeout: T }, async () => {
@@ -143,14 +157,14 @@ describe.skipIf(process.platform !== 'win32')('ending orphaned agent processes',
   });
 });
 
-describe.skipIf(process.platform !== 'win32')('recovery with a recorded launcher', () => {
+describe('recovery with a recorded launcher', () => {
   it('ends the stalled agent and retries a writer that changed nothing', { timeout: T }, async () => {
     const tree = await liveTree();
     const { ctx } = await deadRun({ repository: true, launcher: tree.identity });
     expect(alive(tree.grandchild)).toBe(true);
 
     await reconcileOnce(keeper);
-    expect([tree.identity.pid, tree.agent, tree.grandchild].map(alive)).toEqual([false, false, false]);
+    expect(await aliveAfterKill([tree.identity.pid, tree.agent, tree.grandchild])).toEqual([false, false, false]);
     expect(await runRow(ctx.run.id)).toMatchObject({ status: 'failed', recoveryClass: 'retry' });
     const [retry] = await db.select().from(runs).where(eq(runs.parentRunId, ctx.run.id));
     expect(retry).toMatchObject({ status: 'queued', attempt: 2 });
