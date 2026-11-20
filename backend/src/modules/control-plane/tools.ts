@@ -162,6 +162,7 @@ async function controlPlaneWrite<T>(
     });
     return value;
   });
+  crashPoint('control_plane.after_commit');
   await startQueuedRuns(queued);
   return result;
 }

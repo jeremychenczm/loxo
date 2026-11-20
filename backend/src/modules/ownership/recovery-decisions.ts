@@ -12,6 +12,7 @@ import {
 import { createQueuedRun } from '../runs/runs.service';
 import { startQueuedRuns } from '../runs/wake';
 import { addSystemTurn } from '../tasks/turns.service';
+import { crashPoint } from './crash-points';
 
 /**
  * A person's answer to an interrupted run's retry request. Git work happens
@@ -51,6 +52,7 @@ export async function decideInterruptedRun(
     observed = await settleWorkspaceForDecision(userId, workspace, discardTo);
   }
 
+  crashPoint('decision.before_commit');
   const { answered, queued } = await db.transaction(async (tx) => {
     const [answered] = await tx
       .update(humanRequests)

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { assertRequiredEnv, config } from './config';
 import { closeDb } from './db/client';
+import { describeArmedFaults } from './modules/ownership/crash-points';
 import { runLeases } from './modules/ownership/lease';
 import { startReconciler } from './modules/ownership/reconciler';
 import { configureEgressProxy } from './http/egress-proxy';
@@ -9,6 +10,9 @@ import { attachWsGateway } from './ws/gateway';
 
 assertRequiredEnv();
 configureEgressProxy();
+
+const faults = describeArmedFaults();
+if (faults) console.warn(`Fault injection armed: ${faults}`);
 
 const app = createApp();
 const server = createServer(app);
