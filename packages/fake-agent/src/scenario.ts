@@ -49,6 +49,12 @@ export type Step =
    * Once the shell exits, nothing but a job or process group links it back.
    */
   | { background: { pidFile: string } }
+  /**
+   * Calls a tool on the session's first HTTP MCP server with the headers the
+   * client gave, as a tool call the agent made. A refusal or an unreachable
+   * server is reported on the tool call, never thrown.
+   */
+  | { mcp: { tool: string; args?: Record<string, unknown> } }
   | { repeat: { times: number; steps: Step[] } };
 
 export type ToolKind =
@@ -140,6 +146,9 @@ const stepSchema: z.ZodType<Step> = z.lazy(() =>
     z.object({ stderr: z.string() }).strict(),
     z.object({ writeFile: z.object({ path: z.string().min(1), content: z.string() }).strict() }).strict(),
     z.object({ background: z.object({ pidFile: z.string().min(1) }).strict() }).strict(),
+    z
+      .object({ mcp: z.object({ tool: z.string().min(1), args: z.record(z.unknown()).optional() }).strict() })
+      .strict(),
     z
       .object({
         repeat: z.object({ times: z.number().int().min(1).max(10_000), steps: z.array(stepSchema) }).strict(),

@@ -8,11 +8,19 @@ export { parseScenario, type Scenario, type Step, type ToolKind, type TurnScript
 /** Absolute path of the agent entry. */
 export const FAKE_AGENT_ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent.ts');
 
+export interface FakeAgentOptions {
+  /** Directory the agent witnesses its prompts in (see agent.ts). */
+  witnessDir?: string;
+}
+
 /**
  * Command that starts the fake agent playing `scenario`. The TypeScript
  * loader is referenced by absolute URL so the process can run in any cwd.
  */
-export function fakeAgentCommand(scenario: Scenario): {
+export function fakeAgentCommand(
+  scenario: Scenario,
+  options: FakeAgentOptions = {}
+): {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -21,6 +29,9 @@ export function fakeAgentCommand(scenario: Scenario): {
   return {
     command: process.execPath,
     args: ['--import', loader, FAKE_AGENT_ENTRY],
-    env: { LOXO_FAKE_AGENT_SCENARIO: JSON.stringify(scenario) },
+    env: {
+      LOXO_FAKE_AGENT_SCENARIO: JSON.stringify(scenario),
+      ...(options.witnessDir ? { LOXO_FAKE_AGENT_WITNESS_DIR: options.witnessDir } : {}),
+    },
   };
 }
