@@ -1,7 +1,8 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db } from '../../db/client';
-import { humanRequests, runs, type Run } from '../../db/schema';
+import { humanRequests, runEvents, runs, type Run } from '../../db/schema';
+import { runEventBus, type RunEventFrame } from '../runs/run-events.service';
 
 export interface TakeoverOptions {
   /** Instance recorded as the new owner. */
@@ -26,12 +27,15 @@ export interface TakeoverOptions {
  * decides its outcome. A run already in recovery, whose recoverer died, keeps
  * the step it reached. Open questions the run asked (permission requests) are
  * cancelled in the same transaction, so no one answers for an agent that is
- * gone. Returns undefined when the run was not running or its lease was
- * still valid.
+ * gone. The takeover is recorded as a run event under the new epoch, in the
+ * same transaction: its commit time is the moment the old epoch stopped
+ * counting, which the chaos invariant checker compares stale writes against.
+ * Returns undefined when the run was not running or its lease was still
+ * valid.
  */
 export async function takeOverRun(runId: string, options: TakeoverOptions): Promise<Run | undefined> {
   const ttlMs = options.ttlMs ?? config.runLeaseTtlMs;
-  return db.transaction(async (tx) => {
+  const taken = await db.transaction(async (tx) => {
     const [current] = await tx
       .select({
         status: runs.status,
@@ -60,6 +64,31 @@ export async function takeOverRun(runId: string, options: TakeoverOptions): Prom
       .update(humanRequests)
       .set({ status: 'cancelled', answeredAt: new Date() })
       .where(and(eq(humanRequests.runId, run.id), eq(humanRequests.status, 'open')));
-    return run;
+
+    // Every writer of this run's events locks the run row first, so seq cannot race here.
+    const [event] = await tx
+      .insert(runEvents)
+      .values({
+        runId: run.id,
+        epoch: run.ownerEpoch,
+        seq: sql`(SELECT COALESCE(MAX(${runEvents.seq}), 0) + 1 FROM ${runEvents} WHERE ${runEvents.runId} = ${run.id})`,
+        kind: 'status',
+        payload: { message: `Taken over by another instance: ${options.reason}` },
+      })
+      .returning();
+    return { run, event: event! };
   });
+  if (!taken) return undefined;
+
+  const { run, event } = taken;
+  runEventBus.emit('event', {
+    userId: run.userId,
+    taskId: run.taskId,
+    runId: run.id,
+    seq: event.seq,
+    kind: event.kind,
+    payload: event.payload,
+    createdAt: event.createdAt.toISOString(),
+  } satisfies RunEventFrame);
+  return run;
 }

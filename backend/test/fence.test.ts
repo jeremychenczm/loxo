@@ -1,12 +1,13 @@
-import { eq, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { runs, tasks, turns } from '../src/db/schema';
+import { runEvents, runs, tasks, turns } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { fence, FencedError, fenceRejectionsForTests } from '../src/modules/ownership/fence';
 import { LeaseKeeper } from '../src/modules/ownership/lease';
 import { takeOverRun } from '../src/modules/ownership/takeover';
+import { RunEventRecorder, runEventBus, type RunEventFrame } from '../src/modules/runs/run-events.service';
 import { createQueuedRun, settleRun, type RunOwner } from '../src/modules/runs/runs.service';
 
 /**
@@ -210,6 +211,95 @@ describe('fencing', () => {
     expect((await settling)?.status).toBe('succeeded');
     expect(await takeover).toBeUndefined();
     expect(await runRow(run.owner.runId)).toMatchObject({ status: 'succeeded', ownerEpoch: run.owner.epoch });
+    keeper.release(run.owner.runId);
+  });
+});
+
+async function eventLog(runId: string) {
+  const rows = await db.select().from(runEvents).where(eq(runEvents.runId, runId)).orderBy(asc(runEvents.seq));
+  return rows.map((row) => [row.seq, row.epoch, row.kind, row.payload.message]);
+}
+
+describe('takeover event', () => {
+  it('is written under the new epoch after everything the old owner recorded, and the old recorder is fenced', async () => {
+    const run = await startRun();
+    const recorder = new RunEventRecorder({
+      id: run.owner.runId,
+      userId,
+      taskId: run.taskId,
+      epoch: run.owner.epoch,
+      instance: keeper.instance,
+    });
+    recorder.record({ kind: 'status', message: 'working' });
+    recorder.record({ kind: 'status', message: 'still working' });
+    await recorder.flush();
+
+    const frames: RunEventFrame[] = [];
+    const listen = (frame: RunEventFrame) => {
+      if (frame.runId === run.owner.runId) frames.push(frame);
+    };
+    runEventBus.on('event', listen);
+    try {
+      await takeOverRun(run.owner.runId, { instance: 'taker', reason: 'lease expired', force: true });
+      recorder.record({ kind: 'status', message: 'too late' });
+      await recorder.flush();
+    } finally {
+      runEventBus.off('event', listen);
+    }
+
+    const e = run.owner.epoch;
+    expect(await eventLog(run.owner.runId)).toEqual([
+      [1, e, 'status', 'working'],
+      [2, e, 'status', 'still working'],
+      [3, e + 1, 'status', 'Taken over by another instance: lease expired'],
+    ]);
+    expect(frames).toEqual([expect.objectContaining({ seq: 3, kind: 'status', taskId: run.taskId, userId })]);
+    keeper.release(run.owner.runId);
+  });
+
+  it('is written again for each later takeover', async () => {
+    const run = await startRun();
+    await takeOverRun(run.owner.runId, { instance: 'taker', reason: 'lease expired', force: true });
+    await takeOverRun(run.owner.runId, { instance: 'second-taker', reason: 'recovery stalled', force: true });
+
+    const e = run.owner.epoch;
+    expect(await eventLog(run.owner.runId)).toEqual([
+      [1, e + 1, 'status', 'Taken over by another instance: lease expired'],
+      [2, e + 2, 'status', 'Taken over by another instance: recovery stalled'],
+    ]);
+    keeper.release(run.owner.runId);
+  });
+
+  it('follows an owner event write that was in flight when the takeover began', async () => {
+    const run = await startRun();
+    const hold = gate();
+    const write = db.transaction(async (tx) => {
+      await fence(tx, run.owner, 'test_event');
+      await tx.insert(runEvents).values({
+        runId: run.owner.runId,
+        epoch: run.owner.epoch,
+        seq: 1,
+        kind: 'status',
+        payload: { message: 'last words' },
+      });
+      hold.entered();
+      await hold.opened;
+    });
+    await hold.inside;
+
+    const takeover = takeOverRun(run.owner.runId, { instance: 'taker', reason: 'lease expired', force: true });
+    const progress = track(takeover);
+    await sleep(300);
+    expect(progress.done).toBe(false);
+
+    hold.open();
+    await write;
+    await takeover;
+    const e = run.owner.epoch;
+    expect(await eventLog(run.owner.runId)).toEqual([
+      [1, e, 'status', 'last words'],
+      [2, e + 1, 'status', 'Taken over by another instance: lease expired'],
+    ]);
     keeper.release(run.owner.runId);
   });
 });
