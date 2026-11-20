@@ -1,19 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { CRASH_POINTS, type CrashPoint } from '../../src/modules/ownership/crash-points';
-import {
-  BACKEND_DIR,
-  CYCLE_MS,
-  KILL_BUDGET_MS,
-  LEASE_TTL_MS,
-  MAX_ATTEMPTS,
-  prepareTemplate,
-  RETRY_BACKOFF_MS,
-} from './infra';
-import { cellLabel, chaosMatrix, summarize, summarizeControls, summarizeTwoInstances } from './matrix';
+import { BACKEND_DIR, prepareTemplate } from './infra';
+import { cellLabel, chaosMatrix } from './matrix';
+import { appendLine, FILES, hostInfo, writeSummary, type Invocation } from './results';
 import { RUN_KINDS, type RunKind } from './scenarios';
 import { runTrial, type NamedFault, type TrialResult, type TrialSpec } from './trial';
 import { runTwoInstances, type TwoInstanceFault, type TwoInstanceResult } from './two-instances';
@@ -25,6 +17,9 @@ import { runTwoInstances, type TwoInstanceFault, type TwoInstanceResult } from '
  * all into one results/chaos/<date>/ directory:
  *   npm run chaos -w backend -- --trials 3 --controls 2 --two 3
  *   npm run chaos -w backend -- --only comment,submit --match after_commit
+ * Add to an existing results directory (the summary covers everything it holds), or only rebuild its summary:
+ *   npm run chaos -w backend -- --trials 0 --two 1 --seed 2 --out results/chaos/2026-11-20
+ *   npm run chaos -w backend -- --summarize results/chaos/2026-11-20
  * One trial, printed:
  *   npm run chaos -w backend -- --kind edit-dirty --first run.before_settle --second decision.before_commit --answer discard
  *   npm run chaos -w backend -- --kind read --first random --no-launcher
@@ -53,7 +48,8 @@ function git(...args: string[]): string {
 }
 
 function resultsDir(requested: string | undefined): string {
-  if (requested) return path.resolve(requested);
+  // Relative to the repository root, so a run can add to an existing results directory from anywhere.
+  if (requested) return path.resolve(REPO_DIR, requested);
   const base = path.join(REPO_DIR, 'results', 'chaos', new Date().toISOString().slice(0, 10));
   let dir = base;
   for (let n = 2; fs.existsSync(dir); n += 1) dir = `${base}-${n}`;
@@ -139,94 +135,94 @@ async function runMatrix(values: Values): Promise<number> {
   const total = cells.length * perCell + RUN_KINDS.length * controlsPerKind + 2 * twoPerFault;
   let index = 0;
   const step = () => `[${(index += 1)}/${total}]`;
+  const pass = (r: TrialResult) => r.reached && !r.error && r.violations.length === 0 && r.leftovers.length === 0;
 
-  const trials: (TrialResult & { cell: string })[] = [];
-  for (let round = 0; round < perCell; round += 1) {
-    for (const cell of cells) {
-      const label = cellLabel(cell);
-      const result = { cell: label, ...(await runTrial({ ...cell, seed: baseSeed + index }, { failuresDir })) };
-      trials.push(result);
-      fs.appendFileSync(path.join(out, 'trials.jsonl'), `${JSON.stringify(result)}\n`);
-      noteStart(result.error);
-      const timing = [
-        result.recoveredMs !== null ? `recovered ${(result.recoveredMs / 1000).toFixed(1)}s` : null,
-        result.settledMs !== null ? `settled ${(result.settledMs / 1000).toFixed(1)}s` : null,
-      ]
-        .filter(Boolean)
-        .join(' ');
-      console.log(`${step()} ${label}: ${verdict(result)} | ${result.runs.join(' > ')} | ${timing}`);
-    }
-  }
-
-  const controls: TrialResult[] = [];
-  for (let round = 0; round < controlsPerKind; round += 1) {
-    for (const kind of RUN_KINDS) {
-      const result = await runTrial({ kind, first: 'random', launcher: false, seed: baseSeed + index }, { failuresDir });
-      controls.push(result);
-      fs.appendFileSync(path.join(out, 'controls.jsonl'), `${JSON.stringify(result)}\n`);
-      noteStart(result.error);
-      const found = result.violations.map((v) => v.invariant).join(',') || 'none';
-      console.log(`${step()} control ${kind} random, no launcher: violations ${found} | afterlife ${result.afterlifeMs ?? '-'} ms`);
-    }
-  }
-
+  const trials: TrialResult[] = [];
   const races: TwoInstanceResult[] = [];
-  for (let round = 0; round < twoPerFault; round += 1) {
-    for (const fault of ['kill', 'stall'] as const) {
-      const result = await runTwoInstances({
-        fault,
-        runs: TWO_INSTANCE_RUNS,
-        agents: TWO_INSTANCE_AGENTS,
-        seed: baseSeed + round,
-        failuresDir,
-      });
-      races.push(result);
-      fs.appendFileSync(path.join(out, 'two-instances.jsonl'), `${JSON.stringify(result)}\n`);
-      noteStart(result.error);
-      const state = result.error ? `ERROR ${result.error}` : `violations ${result.violations.length}`;
-      console.log(
-        `${step()} two instances, ${fault}: ${state} | takeovers ${result.takeovers}, fence rejections ${result.fenceRejections}, peak running ${result.peakRunning}`
-      );
+  let stopped: string | null = null;
+  try {
+    for (let round = 0; round < perCell; round += 1) {
+      for (const cell of cells) {
+        const label = cellLabel(cell);
+        const result = { cell: label, ...(await runTrial({ ...cell, seed: baseSeed + index }, { failuresDir })) };
+        trials.push(result);
+        appendLine(out, FILES.trials, result);
+        noteStart(result.error);
+        const timing = [
+          result.recoveredMs !== null ? `recovered ${(result.recoveredMs / 1000).toFixed(1)}s` : null,
+          result.settledMs !== null ? `settled ${(result.settledMs / 1000).toFixed(1)}s` : null,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        console.log(`${step()} ${label}: ${verdict(result)} | ${result.runs.join(' > ')} | ${timing}`);
+      }
     }
+
+    for (let round = 0; round < controlsPerKind; round += 1) {
+      for (const kind of RUN_KINDS) {
+        const result = await runTrial({ kind, first: 'random', launcher: false, seed: baseSeed + index }, { failuresDir });
+        appendLine(out, FILES.controls, result);
+        noteStart(result.error);
+        const found = result.violations.map((v) => v.invariant).join(',') || 'none';
+        console.log(`${step()} control ${kind} random, no launcher: violations ${found} | afterlife ${result.afterlifeMs ?? '-'} ms`);
+      }
+    }
+
+    for (let round = 0; round < twoPerFault; round += 1) {
+      for (const fault of ['kill', 'stall'] as const) {
+        const result = await runTwoInstances({
+          fault,
+          runs: TWO_INSTANCE_RUNS,
+          agents: TWO_INSTANCE_AGENTS,
+          seed: baseSeed + round,
+          failuresDir,
+        });
+        races.push(result);
+        appendLine(out, FILES.twoInstances, result);
+        noteStart(result.error);
+        const state = result.error ? `ERROR ${result.error}` : `violations ${result.violations.length}`;
+        console.log(
+          `${step()} two instances, ${fault}: ${state} | takeovers ${result.takeovers}, fence rejections ${result.fenceRejections}, peak running ${result.peakRunning}`
+        );
+      }
+    }
+  } catch (err) {
+    stopped = err instanceof Error ? err.message : String(err);
+    console.error(stopped);
   }
 
-  const matrix = summarize(trials);
-  const twoInstances = summarizeTwoInstances(races);
-  const summary = {
+  appendLine(out, FILES.invocations, {
     commit,
     dirty,
     startedAt,
     finishedAt: new Date().toISOString(),
-    host: {
-      platform: `${os.platform()} ${os.release()}`,
-      node: process.version,
-      cpus: os.cpus().length,
-      memoryGb: Math.round(os.totalmem() / 2 ** 30),
-    },
-    settings: {
-      leaseTtlMs: LEASE_TTL_MS,
-      killBudgetMs: KILL_BUDGET_MS,
-      retryBackoffMs: RETRY_BACKOFF_MS,
-      maxAttempts: MAX_ATTEMPTS,
-      reconcilerCycleMaxMs: CYCLE_MS,
-    },
-    trialsPerCell: perCell,
-    crashPoints: [...new Set(cells.flatMap((c) => [c.first, c.second]).filter((f): f is NamedFault => typeof f === 'object').map((f) => f.point))].length,
-    runKinds: new Set(cells.map((c) => c.kind)).size,
-    ...matrix,
-    controls: summarizeControls(controls),
-    twoInstances,
-  };
-  fs.writeFileSync(path.join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-  const t = matrix.totals;
+    requested: { trials: perCell, controls: controlsPerKind, two: twoPerFault },
+    host: hostInfo(),
+    ...(stopped ? { note: `stopped early: ${stopped}` } : {}),
+  } satisfies Invocation);
+  const summary = writeSummary(out);
+  const t = summary.totals;
   const racesFailed = races.filter((r) => r.error || r.violations.length > 0 || r.leftovers.length > 0).length;
   console.log(
-    `\nmatrix: ${t.trials} trials, ${t.passed} passed, ${t.violations} violations, ${t.errors} errors, ${t.unreached} unreached` +
-      `\ntwo instances: ${races.length} races, ${racesFailed} failed` +
-      `\ncontrols: ${controls.length} trials, ${summary.controls.trialsWithViolations} with violations (expected)` +
-      `\n-> ${path.relative(REPO_DIR, out)}`
+    `
+this invocation: ${trials.length} matrix trials (${trials.filter(pass).length} passed), ${races.length} races (${racesFailed} failed)` +
+      `
+directory: matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; controls ${summary.controls.trials}; races ${summary.twoInstances.kill.runs + summary.twoInstances.stall.runs}` +
+      `
+-> ${path.relative(REPO_DIR, out)}`
   );
-  return t.passed === t.trials && racesFailed === 0 ? 0 : 1;
+  return !stopped && trials.every(pass) && racesFailed === 0 ? 0 : 1;
+}
+
+/** Rebuilds summary.json from the lines a results directory holds, without running anything. */
+function runSummarize(dir: string): number {
+  const out = path.resolve(REPO_DIR, dir);
+  const summary = writeSummary(out);
+  const t = summary.totals;
+  console.log(
+    `matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; controls ${summary.controls.trials}; races ${summary.twoInstances.kill.runs + summary.twoInstances.stall.runs} -> ${path.relative(REPO_DIR, out)}`
+  );
+  return 0;
 }
 
 async function main(): Promise<void> {
@@ -247,9 +243,13 @@ async function main(): Promise<void> {
       only: { type: 'string' },
       match: { type: 'string' },
       out: { type: 'string' },
+      summarize: { type: 'string' },
     },
   });
-  process.exitCode = values.kind
+  const summarizeDir = str(values, 'summarize');
+  process.exitCode = summarizeDir
+    ? runSummarize(summarizeDir)
+    : values.kind
     ? await runOne(values)
     : values['two-instances']
       ? await runTwoOnce(values)

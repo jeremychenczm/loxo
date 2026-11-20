@@ -36,7 +36,7 @@ interface TwoInstanceGroup {
 }
 
 interface Summary {
-  commit: string;
+  commits: string[];
   dirty: boolean;
   finishedAt: string;
   host: { platform: string; node: string };
@@ -67,7 +67,8 @@ export function renderBlock(summary: Summary): string {
     `| **Orphaned agents** | Longest an agent kept working after its backend died: **${summary.timingsMs.afterlife.max === null ? 'n/a' : `${summary.timingsMs.afterlife.max} ms`}** with the launcher; up to **${seconds(summary.controls.afterlifeMs.max)}** without it, caught in ${summary.controls.trialsWithViolations} of ${summary.controls.trials} control trials |`,
     `| **Two instances, one database** | ${raceCount} races of ${wakesPerRace} concurrent wakes, one instance killed or frozen past its lease mid-run: **${sum((g) => g.violations)} invariant violations** (no run executed twice), ${sum((g) => g.takeovers)} takeovers, ${sum((g) => g.fenceRejections)} stale writes refused by the fence, up to ${Math.max(...races.map((g) => g.peakRunning ?? 0))} runs at once |`,
   ];
-  const source = `Commit \`${summary.commit.slice(0, 7)}\`${summary.dirty ? ' with uncommitted changes' : ''}, ${platform}, Node ${summary.host.node}, ${summary.finishedAt.slice(0, 10)}.`;
+  const commits = summary.commits.map((c) => `\`${c.slice(0, 7)}\``).join(' and ');
+  const source = `${summary.commits.length > 1 ? 'Commits' : 'Commit'} ${commits}${summary.dirty ? ' with uncommitted changes' : ''}, ${platform}, Node ${summary.host.node}, ${summary.finishedAt.slice(0, 10)}.`;
   return `${rows.join('\n')}\n\n${source}\n`;
 }
 
