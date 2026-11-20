@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseArgs } from 'node:util';
 import pg from 'pg';
 import {
   Api,
@@ -31,16 +30,18 @@ import { checkInvariants, readExecutions, type Violation } from './invariants';
  * refused by the fence.
  *
  *   npm run chaos:two -w backend -- --fault kill
- *   npm run chaos:two -w backend -- --fault stall --runs 50 --agents 10
+ *   npm run chaos:two -w backend -- --fault stall --seed 2
  */
 
-type Fault = 'kill' | 'stall';
+export type TwoInstanceFault = 'kill' | 'stall';
 
-interface Options {
-  fault: Fault;
+export interface TwoInstanceOptions {
+  fault: TwoInstanceFault;
   runs: number;
   agents: number;
   seed: number;
+  /** Where a failed run leaves its logs and witness files; the temp directory by default. */
+  failuresDir?: string;
 }
 
 const SCENARIO = {
@@ -60,8 +61,8 @@ const SCENARIO_MS = 4_000;
 // Long enough for every lease the frozen instance holds to expire and be taken over.
 const STALL_MS = LEASE_TTL_MS * 3;
 
-interface TwoInstanceResult {
-  fault: Fault;
+export interface TwoInstanceResult {
+  fault: TwoInstanceFault;
   runs: number;
   agents: number;
   seed: number;
@@ -82,7 +83,7 @@ interface TwoInstanceResult {
   durationMs: number;
 }
 
-async function runTwoInstances(options: Options): Promise<TwoInstanceResult> {
+export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoInstanceResult> {
   const started = Date.now();
   const id = `${started.toString(36)}${crypto.randomBytes(2).toString('hex')}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `loxo-chaos2-${id}-`));
@@ -255,7 +256,7 @@ async function runTwoInstances(options: Options): Promise<TwoInstanceResult> {
       return n + (text.match(/"event":"fence_rejected"/g)?.length ?? 0);
     }, 0);
     if (result.error || result.violations.length > 0) {
-      const keep = path.join(os.tmpdir(), `loxo-chaos2-failed-${id}`);
+      const keep = path.join(options.failuresDir ?? os.tmpdir(), `two-instances-${id}`);
       fs.cpSync(logs, path.join(keep, 'logs'), { recursive: true });
       fs.cpSync(witness, path.join(keep, 'witness'), { recursive: true });
       console.error(`Evidence kept in ${keep}`);
@@ -267,30 +268,3 @@ async function runTwoInstances(options: Options): Promise<TwoInstanceResult> {
   }
   return result;
 }
-
-async function main(): Promise<void> {
-  const { values } = parseArgs({
-    options: {
-      fault: { type: 'string' },
-      runs: { type: 'string' },
-      agents: { type: 'string' },
-      seed: { type: 'string' },
-    },
-  });
-  const fault = (values.fault ?? 'kill') as Fault;
-  if (fault !== 'kill' && fault !== 'stall') throw new Error('--fault is kill or stall');
-  await prepareTemplate();
-  const result = await runTwoInstances({
-    fault,
-    runs: Number(values.runs ?? 50),
-    agents: Number(values.agents ?? 10),
-    seed: Number(values.seed ?? 1),
-  });
-  console.log(JSON.stringify(result, null, 2));
-  process.exitCode = result.error || result.violations.length > 0 ? 1 : 0;
-}
-
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exitCode = 2;
-});

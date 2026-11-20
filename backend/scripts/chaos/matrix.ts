@@ -1,5 +1,6 @@
 import type { CrashPoint } from '../../src/modules/ownership/crash-points';
 import { RUN_KIND_SPECS, RUN_KINDS, type RunKind } from './scenarios';
+import type { TwoInstanceResult } from './two-instances';
 import { faultLabel, type TrialResult, type TrialSpec } from './trial';
 
 /**
@@ -123,4 +124,38 @@ export function summarize(results: (TrialResult & { cell: string })[]): ChaosSum
       outcomes: [...new Set(list.map((r) => r.runs.join(' > ')))],
     })),
   };
+}
+
+/** Control trials run without the launcher; their violations are the point, so they are counted, not failed. */
+export function summarizeControls(results: TrialResult[]) {
+  const byInvariant: Record<string, number> = {};
+  for (const r of results) {
+    for (const v of r.violations) byInvariant[v.invariant] = (byInvariant[v.invariant] ?? 0) + 1;
+  }
+  return {
+    trials: results.length,
+    trialsWithViolations: results.filter((r) => r.violations.length > 0).length,
+    errors: results.filter((r) => r.error).length,
+    violationsByInvariant: byInvariant,
+    afterlifeMs: spread(results.map((r) => r.afterlifeMs)),
+  };
+}
+
+export function summarizeTwoInstances(results: TwoInstanceResult[]) {
+  const group = (fault: TwoInstanceResult['fault']) => {
+    const list = results.filter((r) => r.fault === fault);
+    return {
+      runs: list.length,
+      passed: list.filter((r) => !r.error && r.violations.length === 0 && r.leftovers.length === 0).length,
+      violations: list.reduce((n, r) => n + r.violations.length, 0),
+      errors: list.filter((r) => r.error).length,
+      wokenRuns: list.reduce((n, r) => n + r.runs, 0),
+      takeovers: list.reduce((n, r) => n + r.takeovers, 0),
+      fenceRejections: list.reduce((n, r) => n + r.fenceRejections, 0),
+      peakRunning: list.length ? Math.max(...list.map((r) => r.peakRunning)) : null,
+      settledMs: spread(list.map((r) => r.settledMs)),
+      afterlifeMs: spread(list.map((r) => r.afterlifeMs)),
+    };
+  };
+  return { kill: group('kill'), stall: group('stall') };
 }
