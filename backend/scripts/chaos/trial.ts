@@ -131,9 +131,8 @@ async function setUp(api: Api, kind: RunKindSpec, paths: TrialPaths, id: string,
     ...(repositoryId ? { repositoryId } : {}),
   });
   setup.taskId = task.id;
-  // Moving the task wakes its lead through the outbox, as a person dragging the card does.
+  // Entering todo wakes the lead through the outbox, as a person dragging the card does.
   await api.call('POST', `/api/tasks/${task.id}/move`, { status: 'todo' });
-  await api.call('POST', `/api/tasks/${task.id}/move`, { status: 'in_progress' });
   setup.wakeAccepted = true;
 }
 
