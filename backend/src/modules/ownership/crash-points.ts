@@ -64,10 +64,21 @@ function parseFault(variable: string, value: string | undefined, withDuration: b
   return { point, hit: match[2] ? Number(match[2]) : 1, stallMs };
 }
 
-const crashAt = parseFault('LOXO_CRASH_AT', process.env.LOXO_CRASH_AT, false);
-const stallAt = parseFault('LOXO_STALL_AT', process.env.LOXO_STALL_AT, true);
+let crashAt: Fault | null = null;
+let stallAt: Fault | null = null;
 const hits = new Map<CrashPoint, number>();
 const armed = new Map<CrashPoint, () => void>();
+
+/** Replaces the armed faults with those `env` names and restarts hit counting; throws on a malformed value. */
+export function armFaultsFromEnv(env: NodeJS.ProcessEnv): void {
+  const crash = parseFault('LOXO_CRASH_AT', env.LOXO_CRASH_AT, false);
+  const stall = parseFault('LOXO_STALL_AT', env.LOXO_STALL_AT, true);
+  crashAt = crash;
+  stallAt = stall;
+  hits.clear();
+}
+
+armFaultsFromEnv(process.env);
 
 export function crashPoint(name: CrashPoint): void {
   armed.get(name)?.();

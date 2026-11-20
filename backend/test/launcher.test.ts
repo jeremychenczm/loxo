@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { resolveLauncher, underLauncher, type Launcher } from '../src/modules/hosts/launcher/launcher';
+import { storage } from '../src/storage/layout';
 
 const T = 30_000;
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/launcher/${name}`, import.meta.url));
@@ -75,6 +76,15 @@ async function tree(mode: 'launcher' | 'launcher-outside-job' | 'direct', agentA
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loxo-launcher-'));
+  // Start without a cached binary so the build runs too, not only its reuse; one in use stays.
+  const builds = path.join(storage.root, 'runtimes', 'launcher');
+  for (const file of fs.existsSync(builds) ? fs.readdirSync(builds) : []) {
+    try {
+      fs.rmSync(path.join(builds, file), { force: true });
+    } catch {
+      // A running agent holds it open.
+    }
+  }
   const built = await resolveLauncher();
   if (!built) throw new Error('launcher unavailable on this machine');
   launcher = built;

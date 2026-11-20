@@ -13,7 +13,7 @@ import {
   type FinalizeInput,
 } from '../src/modules/code-workspaces/workspace.service';
 import { LeaseKeeper } from '../src/modules/ownership/lease';
-import { reconcileOnce } from '../src/modules/ownership/reconciler';
+import { reconcileOnce, startReconciler } from '../src/modules/ownership/reconciler';
 import { createQueuedRun, getRun } from '../src/modules/runs/runs.service';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests, requestWake } from '../src/modules/runs/wake';
@@ -239,5 +239,31 @@ describe('reconciler', () => {
     const passes = await Promise.all([reconcileOnce(keeper), reconcileOnce(keeper), reconcileOnce(keeper)]);
     expect(passes.flatMap((p) => p.takenOver).filter((id) => id === orphan)).toHaveLength(1);
     expect((await getRun(userId, orphan)).ownerEpoch).toBe(2);
+  });
+
+  it('runs a pass at start-up, keeps passing on its period, and stops when told', async () => {
+    const until = async (done: () => Promise<boolean>) => {
+      for (let i = 0; i < 100 && !(await done()); i += 1) await new Promise((r) => setTimeout(r, 50));
+      expect(await done()).toBe(true);
+    };
+    const resolved = (runId: string) => async () => (await getRun(userId, runId)).recoveryStep === 'resolved';
+    // A one-second lease makes the period about half a second.
+    const looping = new LeaseKeeper({ instance: 'reconciler-loop', ttlMs: 1_000, killBudgetMs: 100, jitterMs: 100 });
+    const first = await orphanedRun(await newAgent(), await newTask(false));
+    const stop = startReconciler(looping);
+    try {
+      await until(resolved(first));
+      const second = await orphanedRun(await newAgent(), await newTask(false));
+      await until(resolved(second));
+    } finally {
+      stop();
+    }
+    const third = await orphanedRun(await newAgent(), await newTask(false));
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect((await getRun(userId, third)).status).toBe('running');
+
+    await reconcileOnce(keeper);
+    await drainRunsForTests();
+    await looping.stop();
   });
 });

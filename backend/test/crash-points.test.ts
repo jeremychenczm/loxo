@@ -5,6 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  armFaultsFromEnv,
+  crashPoint,
+  describeArmedFaults,
+  type CrashPoint,
+} from '../src/modules/ownership/crash-points';
 
 const CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'crash-point-child.ts');
 const TSX = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
@@ -94,5 +100,38 @@ describe('crash points armed through the environment', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(message);
     expect(passes(lines)).toEqual([]);
+  });
+});
+
+describe('crash points armed in-process', () => {
+  afterEach(() => armFaultsFromEnv({}));
+
+  const timed = (point: CrashPoint) => {
+    const t0 = performance.now();
+    crashPoint(point);
+    return performance.now() - t0;
+  };
+
+  it('stall on the n-th pass of their own point only', () => {
+    armFaultsFromEnv({ LOXO_STALL_AT: 'run.before_settle@2=150' });
+    expect(describeArmedFaults()).toBe('stall 150 ms at run.before_settle@2');
+
+    expect(timed('run.before_settle')).toBeLessThan(50);
+    expect(timed('run.after_settle')).toBeLessThan(50);
+    expect(timed('run.before_settle')).toBeGreaterThanOrEqual(140);
+    expect(timed('run.before_settle')).toBeLessThan(50);
+  });
+
+  it('describe a crash without reaching it, and nothing once disarmed', () => {
+    armFaultsFromEnv({ LOXO_CRASH_AT: 'run.after_settle@3' });
+    expect(describeArmedFaults()).toBe('crash at run.after_settle@3');
+    armFaultsFromEnv({});
+    expect(describeArmedFaults()).toBeNull();
+  });
+
+  it('keep what was armed when a new value is malformed', () => {
+    armFaultsFromEnv({ LOXO_STALL_AT: 'run.before_settle=100' });
+    expect(() => armFaultsFromEnv({ LOXO_CRASH_AT: 'run.nowhere' })).toThrow('unknown crash point "run.nowhere"');
+    expect(describeArmedFaults()).toBe('stall 100 ms at run.before_settle@1');
   });
 });
