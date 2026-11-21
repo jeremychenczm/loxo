@@ -124,6 +124,11 @@ export interface Instance {
   hasExited(): boolean;
   /** Ends the process at once, as kill -9 does; agents go with it only if the launcher takes them. */
   kill(): void;
+  /**
+   * Asks for a graceful shutdown, as a deploy does: SIGTERM on POSIX, a
+   * message over IPC on Windows, where a signal from outside cannot be caught.
+   */
+  shutdown(): void;
 }
 
 /** Starts one backend process the way production does, without npm or a file watcher, and waits for /health. */
@@ -157,9 +162,11 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: BACKEND_DIR,
     env,
-    stdio: ['ignore', out, err],
+    stdio: ['ignore', out, err, 'ipc'],
     windowsHide: true,
   });
+  // The channel is only for shutdown(); it must not keep this process alive.
+  child.channel?.unref();
   fs.closeSync(out);
   fs.closeSync(err);
   let exited = false;
@@ -186,6 +193,11 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
           hasExited: () => exited,
           kill: () => {
             if (!exited) child.kill('SIGKILL');
+          },
+          shutdown: () => {
+            if (exited) return;
+            if (process.platform === 'win32') child.send({ type: 'shutdown' });
+            else child.kill('SIGTERM');
           },
         };
       }
