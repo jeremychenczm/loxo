@@ -6,7 +6,8 @@ import { RunnerError } from '@swarmdev/shared';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { config } from '../src/config';
 import { db, pool } from '../src/db/client';
-import { agents, changeSnapshots, runEvents, runs, turns, type Run } from '../src/db/schema';
+import { agents, changeSnapshots, runEvents, runs, tasks, turns, type Run } from '../src/db/schema';
+import { submitResult } from '../src/modules/control-plane/tools';
 import { createApp } from '../src/http/app';
 import type { AgentHost, AgentSession, OpenSessionInput, TurnInput, TurnOutcome } from '../src/modules/hosts/host.types';
 import { HostStartupError } from '../src/modules/hosts/acp-host';
@@ -143,6 +144,34 @@ describe('graceful handoff', () => {
     );
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent!.status).toBe('idle');
+  });
+
+  it('settles a run that already submitted its result instead of continuing it', { timeout: T }, async () => {
+    const { agentId, taskId } = await newWork();
+    await db.update(tasks).set({ status: 'in_progress' }).where(eq(tasks.id, taskId));
+    let submitted = false;
+    setTaskHostFactoryForTests(
+      scriptedHost(async (turn) => {
+        const [run] = await db.select().from(runs).where(and(eq(runs.taskId, taskId), eq(runs.status, 'running')));
+        const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+        const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+        await submitResult({ run: run!, epoch: run!.ownerEpoch, agent: agent!, task: task! }, 'All of it, done.');
+        submitted = true;
+        await new Promise<void>((resolve) => turn.signal.addEventListener('abort', () => resolve(), { once: true }));
+        throw new RunnerError('cancelled by the client', 'aborted');
+      })
+    );
+    const { run } = await requestWake(userId, { agentId, taskId, trigger: 'manual' });
+    await until(() => submitted);
+
+    runLeases.drain();
+    await handOffActiveRuns();
+    expect(await runRow(run.id)).toMatchObject({ status: 'succeeded', stopReason: HANDOFF_STOP_REASON, error: null });
+    expect(await childrenOf(run.id)).toHaveLength(0);
+    const notes = await db.select().from(turns).where(and(eq(turns.taskId, taskId), eq(turns.runId, run.id)));
+    expect(notes.map((t) => t.content)).toContain(
+      `Run by Worker ${counter} was stopped when its backend shut down, after it had submitted its result.`
+    );
   });
 
   it('starts nothing while draining; the follow-up restores the session once an instance admits it', { timeout: T }, async () => {

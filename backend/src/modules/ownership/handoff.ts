@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm';
 import { db } from '../../db/client';
 import type { Run } from '../../db/schema';
+import { readRunEffects } from '../runs/run-effects';
 import { createQueuedRun, settleRun, type RunOutcome, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
@@ -7,27 +9,47 @@ import { crashPoint } from './crash-points';
 export const HANDOFF_STOP_REASON = 'handoff';
 
 /**
- * Ends a run whose live owner is shutting down and queues the run that
- * continues it, in one transaction fenced on the owner's epoch: an instance
- * that has lost the run cannot mark it handed off, so a handoff always means
- * the owner stopped the agent and captured its changes itself.
+ * Ends a run whose live owner is shutting down, in one transaction fenced on
+ * the owner's epoch: an instance that has lost the run cannot mark it handed
+ * off, so a handoff always means the owner stopped the agent and captured its
+ * changes itself.
  *
- * Unlike recovery after a crash, nothing about the run is uncertain, so the
- * follow-up starts without a person's decision. It keeps the attempt number
+ * A run that already committed its terminal call (its result or review) has
+ * done its work and settles as succeeded, as recovery treats it. Any other
+ * run ends cancelled and is continued by a follow-up queued in the same
+ * transaction. Nothing about it is uncertain, unlike after a crash, so the
+ * follow-up starts without a person's decision; it keeps the attempt number
  * (a handoff is not a failure) and restores the agent's session when the
- * runtime can. Returns the follow-up, or undefined when the run had moved on
- * or its agent no longer exists.
+ * runtime can. Returns the follow-up, if one was queued.
  */
 export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<Run | undefined> {
   crashPoint('handoff.before_commit');
-  const followUp = await db.transaction(async (tx) => {
+  const { ended, followUp } = await db.transaction(async (tx) => {
+    // Locked first, so a control-plane call still in flight commits before the
+    // effects are read, and any later one is refused by its fence.
+    await tx.execute(sql`SELECT 1 FROM runs WHERE id = ${owner.runId} FOR UPDATE`);
+    const finished = (await readRunEffects(owner.runId, tx)).terminal !== null;
     const ended = await settleRun(
       owner,
-      { ...outcome, status: 'cancelled', stopReason: HANDOFF_STOP_REASON, error: 'Handed off: its backend shut down' },
+      finished
+        ? { ...outcome, status: 'succeeded', stopReason: HANDOFF_STOP_REASON, error: null }
+        : { ...outcome, status: 'cancelled', stopReason: HANDOFF_STOP_REASON, error: 'Handed off: its backend shut down' },
       'idle',
       tx
     );
-    if (!ended?.agentId) return undefined;
+    if (!ended) return { ended: false, followUp: undefined };
+    if (finished || !ended.agentId) {
+      if (ended.taskId) {
+        await addSystemTurn(
+          ended.userId,
+          ended.taskId,
+          `Run by ${ended.agentName} was stopped when its backend shut down${finished ? ', after it had submitted its result' : ''}.`,
+          { runId: ended.id, epoch: owner.epoch },
+          tx
+        );
+      }
+      return { ended: true, followUp: undefined };
+    }
     const next = await createQueuedRun(
       ended.userId,
       {
@@ -50,9 +72,9 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
         tx
       );
     }
-    return next;
+    return { ended: true, followUp: next };
   });
-  if (followUp) crashPoint('handoff.after_commit');
+  if (ended) crashPoint('handoff.after_commit');
   return followUp;
 }
 
