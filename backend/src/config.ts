@@ -25,6 +25,10 @@ export const config = {
   runRetryBackoffMs: Number(process.env.RUN_RETRY_BACKOFF_MS ?? 5_000),
   /** How long an interrupted run waits for a person's decision before it is stopped. */
   retryDecisionTtlMs: Number(process.env.RETRY_DECISION_TTL_MS ?? 24 * 60 * 60_000),
+  /** Budget for a graceful shutdown, run handoffs included; past it the process exits and crash recovery takes over. */
+  shutdownTimeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 25_000),
+  /** After asking an agent to stop so its run can be handed off, how long to wait before killing it. */
+  runHandoffGraceMs: Number(process.env.RUN_HANDOFF_GRACE_MS ?? 5_000),
   corsOrigins: (process.env.CORS_ORIGIN ?? 'http://localhost:3000')
     .split(',')
     .map((origin) => origin.trim())

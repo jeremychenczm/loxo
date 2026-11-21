@@ -30,6 +30,8 @@ export const CRASH_POINTS = [
   'recovery.before_assess',
   'recovery.before_resolve',
   'decision.before_commit',
+  'handoff.before_commit',
+  'handoff.after_commit',
 ] as const;
 
 export type CrashPoint = (typeof CRASH_POINTS)[number];

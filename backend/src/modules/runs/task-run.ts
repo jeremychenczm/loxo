@@ -85,12 +85,18 @@ export interface TaskTurnOutcome {
  * Runs under `lease`. Losing it aborts startup, kills the session's process
  * tree at once (no cancel-and-wait), and skips every later write: events,
  * change capture, and the outcome itself (OwnershipLostError).
+ *
+ * `handoff` stops the turn so the run can be handed off while the lease is
+ * still held: startup is abandoned, or the agent is asked to cancel and is
+ * killed if it has not stopped after the handoff grace. Events and change
+ * capture are still written.
  */
 export async function executeTaskTurn(
   run: Run,
   agent: Agent,
   task: Task,
-  lease: RunLease
+  lease: RunLease,
+  handoff?: AbortSignal
 ): Promise<TaskTurnOutcome> {
   // Agents created before a runtime was retired keep their row but cannot run.
   if (!isAgentRuntime(agent.runtime)) {
@@ -206,7 +212,7 @@ export async function executeTaskTurn(
           runId: run.id,
         }),
         resumeSessionId,
-        signal: lease.signal,
+        signal: handoff ? AbortSignal.any([lease.signal, handoff]) : lease.signal,
       });
     } catch (err) {
       lease.assertHeld();
@@ -220,6 +226,12 @@ export async function executeTaskTurn(
     lease.signal.addEventListener('abort', killOnLoss, { once: true });
     // From here on the session is closed however this turn ends.
     const supervised = withWatchdog(session);
+    let handoffKill: NodeJS.Timeout | undefined;
+    const stopForHandoff = () => {
+      void supervised.cancel().catch(() => {});
+      handoffKill = setTimeout(() => void opened.close(), config.runHandoffGraceMs);
+    };
+    handoff?.addEventListener('abort', stopForHandoff, { once: true });
     try {
       crashPoint('run.after_spawn_before_pid_recorded');
       const started = opened.processIdentity;
@@ -238,6 +250,7 @@ export async function executeTaskTurn(
       }
       const turnPrompt = picksUp && !opened.resumed ? `${CONTEXT_LOST_NOTE}\n\n${prompt}` : prompt;
       lease.assertHeld();
+      if (handoff?.aborted) throw new RunnerError('Handed off before the turn started', 'aborted');
       const outcome = await supervised.prompt({ prompt: turnPrompt, onEvent: (event) => recorder.record(event) });
       lease.assertHeld();
       return {
@@ -253,6 +266,8 @@ export async function executeTaskTurn(
       };
     } finally {
       lease.signal.removeEventListener('abort', killOnLoss);
+      handoff?.removeEventListener('abort', stopForHandoff);
+      clearTimeout(handoffKill);
       await supervised.close();
     }
   } finally {

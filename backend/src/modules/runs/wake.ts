@@ -16,6 +16,7 @@ import {
 } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
 import { fence, FencedError } from '../ownership/fence';
+import { handOffRun } from '../ownership/handoff';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -35,10 +36,30 @@ export interface WakeDecision {
 /** In-flight executions, awaitable by tests. */
 const settling = new Set<Promise<void>>();
 
+/** The runs this instance executes, each with the signal that hands it off. */
+const handoffs = new Map<string, AbortController>();
+
+/** Admissions still waiting on the database; each may yet start a run here. */
+const admitting = new Set<Promise<unknown>>();
+
 /** Test seam: resolves once every started run has settled and promoted. */
 export async function drainRunsForTests(): Promise<void> {
   while (settling.size > 0) {
     await Promise.all([...settling]);
+  }
+}
+
+/**
+ * Hands off every run this instance executes and resolves once each has
+ * ended: a turn already finishing settles as usual, any other is stopped and
+ * continued by a follow-up run another instance (or this one, restarted)
+ * starts (see handOffRun). Call after runLeases.drain(), so nothing new
+ * starts here meanwhile.
+ */
+export async function handOffActiveRuns(): Promise<void> {
+  while (handoffs.size > 0 || admitting.size > 0) {
+    for (const handoff of handoffs.values()) handoff.abort();
+    await Promise.all([...settling, ...[...admitting].map((admission) => admission.catch(() => {}))]);
   }
 }
 
@@ -133,29 +154,44 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
     await failQueuedRun(run.id, 'Agent no longer exists').catch(() => {});
     return undefined;
   }
-  const admitted = await runLeases.admit(run.id);
+  const admission = runLeases.admit(run.id);
+  admitting.add(admission);
+  let admitted: Awaited<typeof admission>;
+  try {
+    admitted = await admission;
+  } finally {
+    admitting.delete(admission);
+  }
   if (!admitted) return undefined;
 
   const { run: started, lease } = admitted;
-  const settled = performRun(started, lease).catch((error) => {
+  const handoff = new AbortController();
+  // Admitted while a shutdown began: hand it on before its agent starts.
+  if (runLeases.draining) handoff.abort();
+  handoffs.set(started.id, handoff);
+  const settled = performRun(started, lease, handoff.signal).catch((error) => {
     console.error(`Run ${started.id} settlement failed:`, error);
   });
   settling.add(settled);
-  void settled.finally(() => settling.delete(settled));
+  void settled.finally(() => {
+    settling.delete(settled);
+    handoffs.delete(started.id);
+  });
   return started;
 }
 
-async function performRun(run: Run, lease: RunOwnership): Promise<void> {
+async function performRun(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
   try {
-    await executeAndSettle(run, lease);
+    await executeAndSettle(run, lease, handoff);
   } finally {
     runLeases.release(run.id);
   }
 }
 
-async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
+async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
   let outcome: RunOutcome;
   let report: { taskId: string; agentId: string; text: string } | undefined;
+  let completed = false;
   try {
     const [agent] = await db
       .select()
@@ -169,7 +205,8 @@ async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
       throw new RunnerError('Agent or task disappeared before the run started', 'cli_failed');
     }
 
-    const result = await executeTaskTurn(run, agent as Agent, task as Task, lease);
+    const result = await executeTaskTurn(run, agent as Agent, task as Task, lease, handoff);
+    completed = result.ok;
     outcome = {
       status: result.ok ? 'succeeded' : 'failed',
       output: result.text,
@@ -197,10 +234,18 @@ async function executeAndSettle(run: Run, lease: RunOwnership): Promise<void> {
   // no settlement, no promotion. Whoever takes the run over does that.
   if (lease.lost) return;
 
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  if (handoff.aborted && !completed) {
+    // A refused or failed handoff leaves the run to crash recovery once the lease lapses.
+    await handOffRun(owner, outcome).catch((error) => {
+      if (!(error instanceof FencedError)) console.error(`Run ${run.id} could not be handed off:`, error);
+    });
+    return;
+  }
+
   // Fallback report: only when the agent said nothing through the control
   // plane during the run. Posted while the run still holds the task, so the
   // next run's prompt sees it. Best-effort — the run result stands regardless.
-  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
   if (report && !(await runHasAgentTurns(run.id))) {
     const { taskId, agentId, text } = report;
     await db

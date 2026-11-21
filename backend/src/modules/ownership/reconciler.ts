@@ -89,20 +89,33 @@ async function promotableRuns(): Promise<Run[]> {
     .orderBy(asc(runs.createdAt));
 }
 
-/** Runs a pass at start-up and then every ttl/2 plus jitter. */
-export function startReconciler(keeper: LeaseKeeper): () => void {
+/**
+ * Runs a pass at start-up and then every ttl/2 plus jitter. The returned
+ * function stops the loop and resolves once a pass in flight has finished.
+ */
+export function startReconciler(keeper: LeaseKeeper): () => Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
-  const loop = async () => {
-    await reconcileOnce(keeper).catch((err) => console.error('Reconciler pass failed:', err));
+  let pass: Promise<void> = Promise.resolve();
+  const loop = () => {
+    pass = reconcileOnce(keeper).then(
+      () => schedule(),
+      (err) => {
+        console.error('Reconciler pass failed:', err);
+        schedule();
+      }
+    );
+  };
+  const schedule = () => {
     if (stopped) return;
     const jitter = Math.random() * keeper.ttlMs * 0.1;
     timer = setTimeout(loop, keeper.ttlMs / 2 + jitter);
     timer.unref();
   };
-  void loop();
-  return () => {
+  loop();
+  return async () => {
     stopped = true;
     clearTimeout(timer);
+    await pass;
   };
 }

@@ -161,6 +161,7 @@ export class LeaseKeeper {
   private client: pg.Client | null = null;
   private interval: NodeJS.Timeout | undefined;
   private renewing: Promise<void> | null = null;
+  private isDraining = false;
 
   constructor(options: LeaseKeeperOptions = {}) {
     this.ttlMs = options.ttlMs ?? config.runLeaseTtlMs;
@@ -172,8 +173,26 @@ export class LeaseKeeper {
     }
   }
 
+  /**
+   * Stops admitting runs on this instance, for a graceful shutdown: queued
+   * runs stay queued for another instance, or for this one after a restart.
+   * Leases already held keep being renewed until stop().
+   */
+  drain(): void {
+    this.isDraining = true;
+  }
+
+  get draining(): boolean {
+    return this.isDraining;
+  }
+
+  undrainForTests(): void {
+    this.isDraining = false;
+  }
+
   /** Starts a queued run under this instance; undefined when it cannot start now. */
   async admit(runId: string): Promise<{ run: Run; lease: RunOwnership } | undefined> {
+    if (this.draining) return undefined;
     const t0Mono = performance.now();
     const t0Wall = Date.now();
     const admission = await admitRun(runId, { ttlMs: this.ttlMs, instance: this.instance });
