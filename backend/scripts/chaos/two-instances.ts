@@ -8,8 +8,8 @@ import {
   createTrialDatabase,
   CYCLE_MS,
   dropTrialDatabase,
+  endLeftovers,
   isAlive,
-  killTree,
   LEASE_TTL_MS,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
@@ -247,10 +247,10 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
     for (const instance of instances) instance.kill();
     await Promise.all(instances.map((instance) => instance.exit));
     const agentPids = fs.readdirSync(witness).map((file) => Number(path.basename(file, '.jsonl')));
-    const until = Date.now() + 5_000;
-    while (agentPids.some(isAlive) && Date.now() < until) await sleep(100);
-    result.leftovers = agentPids.filter(isAlive);
-    for (const pid of result.leftovers) killTree(pid);
+    result.leftovers = await endLeftovers(agentPids, agentScript).catch((err: Error) => {
+      result.error ??= `leftover check failed: ${err.message}`;
+      return agentPids.filter(isAlive);
+    });
     result.fenceRejections = instances.reduce((n, instance) => {
       const text = fs.existsSync(instance.stderrFile) ? fs.readFileSync(instance.stderrFile, 'utf8') : '';
       return n + (text.match(/"event":"fence_rejected"/g)?.length ?? 0);

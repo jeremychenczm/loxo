@@ -9,9 +9,9 @@ import {
   createTrialDatabase,
   CYCLE_MS,
   dropTrialDatabase,
+  endLeftovers,
   initRepository,
   isAlive,
-  killTree,
   LEASE_TTL_MS,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
@@ -386,10 +386,11 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     for (const instance of instances) instance.kill();
     await Promise.all(instances.map((instance) => instance.exit));
     const pids = await trialProcesses(db, paths.witness).catch(() => []);
-    const deadline = Date.now() + 5_000;
-    while (pids.some(isAlive) && Date.now() < deadline) await sleep(100);
-    result.leftovers = pids.filter(isAlive);
-    for (const pid of result.leftovers) killTree(pid);
+    // Launchers and agents all carry the trial's agent script on their command lines.
+    result.leftovers = await endLeftovers(pids, paths.agent).catch((err: Error) => {
+      result.error ??= `leftover check failed: ${err.message}`;
+      return pids.filter(isAlive);
+    });
     result.fenceRejections = countFenceRejections(instances);
     if ((result.error || result.violations.length > 0) && options.failuresDir) {
       await keepEvidence(db, paths, path.join(options.failuresDir, id)).catch(() => {});
