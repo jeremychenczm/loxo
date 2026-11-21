@@ -15,7 +15,7 @@ const ADMIN_URL = 'postgres://postgres:postgres@localhost:5434/postgres';
 const CHAOS_ADMIN_URL = 'postgres://postgres:postgres@localhost:5435/postgres';
 const chaosServerUp = await serverReachable(CHAOS_ADMIN_URL);
 
-const ALL: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9'];
+const ALL: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9', 'INV-10'];
 const LIMITS = { cycleMs: 1_000, maxAttempts: 3 };
 
 // The schema already refuses some breaches outright; these go so a test can build them.
@@ -124,7 +124,7 @@ function witnessed(pid: number, runId: string, epoch: number, start: number, end
   fs.appendFileSync(path.join(witnessDir, `${pid}.jsonl`), `${lines.join('\n')}\n`);
 }
 
-type Extra = Pick<Parameters<typeof checkInvariants>[0], 'wakeRuns' | 'deaths'>;
+type Extra = Pick<Parameters<typeof checkInvariants>[0], 'wakeRuns' | 'deaths' | 'handoffs'>;
 
 async function check(only: InvariantId, extra: Extra = {}): Promise<Violation[]> {
   return checkInvariants({ db, ...LIMITS, witnessDir, ...extra, skip: ALL.filter((id) => id !== only) });
@@ -181,6 +181,15 @@ describe('chaos invariant checker', () => {
     await retryRequest(t5, discarded, 'answered', 'discard');
     await run(t5, a1, { parent_run_id: discarded, attempt: 2 });
 
+    // A graceful shutdown: one run handed off and continued, one that had submitted settled, one that finished.
+    const [t6, t7, t8] = [await task(), await task(), await task()];
+    const handedOff = await run(t6, a2, { status: 'cancelled', stop_reason: 'handoff' });
+    await entry(t6, handedOff, 'Half done');
+    await run(t6, a2, { parent_run_id: handedOff });
+    const submittedFirst = await run(t7, a3, { stop_reason: 'handoff' });
+    await toolCall(submittedFirst, 'submit_result');
+    const finishedFirst = await run(t8, a4);
+
     const t0 = Date.now() - 60_000;
     witnessed(101, lost, 1, t0, t0 + 500);
     witnessed(102, retried, 1, t0 + 4_000, t0 + 4_600);
@@ -189,7 +198,8 @@ describe('chaos invariant checker', () => {
       db,
       ...LIMITS,
       witnessDir,
-      wakeRuns: [done, cut, lost, discarded],
+      wakeRuns: [done, cut, lost, discarded, handedOff, submittedFirst, finishedFirst],
+      handoffs: [[handedOff, submittedFirst, finishedFirst].map((runId) => ({ runId, epoch: 1 }))],
       skip: ['INV-3'],
     });
     expect(violations).toEqual([]);
@@ -273,9 +283,45 @@ describe('chaos invariant checker', () => {
     await run(tf, af, { parent_run_id: forked, attempt: 2 });
     await run(tf, af, { parent_run_id: forked, attempt: 2 });
 
+    // Only a cancelled run its owner handed off may be continued unasked.
+    const th = await task();
+    const ah = await agent();
+    const notHandedOff = await run(th, ah, { status: 'failed', stop_reason: 'handoff' });
+    const unasked = await run(th, ah, { parent_run_id: notHandedOff });
+    const tk = await task();
+    const ak = await agent();
+    const handedOff = await run(tk, ak, { status: 'cancelled', stop_reason: 'handoff' });
+    await run(tk, ak, { parent_run_id: handedOff });
+
     expect(found(await check('INV-6'))).toEqual(
-      [talked, edited, notKnown, submitted, replay, overCap, forked].map((id) => `INV-6 ${id}`).sort()
+      [talked, edited, notKnown, submitted, replay, overCap, forked, unasked].map((id) => `INV-6 ${id}`).sort()
     );
+  });
+
+  it('INV-10: names runs a gracefully stopped instance held that were not handed off cleanly', async () => {
+    const pair = async () => [await task(), await agent()] as const;
+    const [ta, aa] = await pair();
+    // Taken over and already resolved: final, so only its epoch gives it away.
+    const takenOver = await run(ta, aa, { status: 'failed', recovery_class: 'retry', recovery_step: 'resolved', owner_epoch: 2 });
+    const [tb, ab] = await pair();
+    const left = await run(tb, ab, running());
+    const [tc, ac] = await pair();
+    const orphaned = await run(tc, ac, { status: 'cancelled', stop_reason: 'handoff' });
+    const [td, ad] = await pair();
+    const twice = await run(td, ad, { status: 'cancelled', stop_reason: 'handoff' });
+    await run(td, ad, { parent_run_id: twice });
+    await run(td, ad, { parent_run_id: twice });
+    const [te, ae] = await pair();
+    const resubmitting = await run(te, ae, { status: 'cancelled', stop_reason: 'handoff' });
+    await toolCall(resubmitting, 'submit_result');
+    await run(te, ae, { parent_run_id: resubmitting });
+    const [tf, af] = await pair();
+    const fine = await run(tf, af, { status: 'cancelled', stop_reason: 'handoff' });
+    await run(tf, af, { parent_run_id: fine });
+
+    const held = [takenOver, left, orphaned, twice, resubmitting, fine].map((runId) => ({ runId, epoch: 1 }));
+    const violations = await check('INV-10', { handoffs: [held] });
+    expect(found(violations)).toEqual([takenOver, left, orphaned, twice, resubmitting, resubmitting].map((id) => `INV-10 ${id}`).sort());
   });
 
   it('INV-7: names a queued run that could have started a cycle ago', async () => {

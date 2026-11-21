@@ -8,7 +8,17 @@ import type pg from 'pg';
  * of the platform's own recovery code: the queries restate each rule instead
  * of calling the functions under test.
  */
-export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3' | 'INV-4' | 'INV-5' | 'INV-6' | 'INV-7' | 'INV-8' | 'INV-9';
+export type InvariantId =
+  | 'INV-1'
+  | 'INV-2'
+  | 'INV-3'
+  | 'INV-4'
+  | 'INV-5'
+  | 'INV-6'
+  | 'INV-7'
+  | 'INV-8'
+  | 'INV-9'
+  | 'INV-10';
 
 export interface Violation {
   invariant: InvariantId;
@@ -31,6 +41,11 @@ export interface InvariantInput {
   cycleMs: number;
   /** Attempts an automatic retry chain may reach (INV-6). */
   maxAttempts: number;
+  /**
+   * Runs held, as (run, epoch), by each instance when it was asked to shut
+   * down gracefully and finished its handoffs (INV-10).
+   */
+  handoffs?: { runId: string; epoch: number }[][];
   /** INV-3 needs track_commit_timestamp; nothing else may be skipped in a real trial. */
   skip?: InvariantId[];
 }
@@ -169,8 +184,10 @@ const unattendedInterruptions: Check = async ({ db }) => {
 /**
  * INV-6: only runs that committed nothing and left the worktree as it was
  * are retried automatically, within the attempt cap; a run that may have
- * written is never run again without a person's answer. "As it was" reads
- * the recovery snapshot, so trials start from a clean worktree.
+ * written is never run again without a person's answer, unless its live
+ * owner handed it off (stopped it, captured it, and queued the follow-up in
+ * one fenced transaction). "As it was" reads the recovery snapshot, so
+ * trials start from a clean worktree.
  */
 const unsafeRetries: Check = async ({ db, maxAttempts }) => {
   const out: Violation[] = [];
@@ -206,9 +223,17 @@ const unsafeRetries: Check = async ({ db, maxAttempts }) => {
     }
   }
 
-  const children = await rows<{ id: string; parent: string; attempt: number; parent_class: string | null; answer: string | null }>(
+  const children = await rows<{
+    id: string;
+    parent: string;
+    attempt: number;
+    parent_class: string | null;
+    handed_off: boolean;
+    answer: string | null;
+  }>(
     db,
     `SELECT c.id, p.id AS parent, c.attempt, p.recovery_class AS parent_class,
+       (p.status = 'cancelled' AND p.stop_reason = 'handoff') AS handed_off,
        (SELECT h.answer->>'choice' FROM human_requests h
         WHERE h.run_id = p.id AND h.kind = 'retry' AND h.status = 'answered') AS answer
      FROM runs c JOIN runs p ON p.id = c.parent_run_id`
@@ -219,7 +244,7 @@ const unsafeRetries: Check = async ({ db, maxAttempts }) => {
     if (c.parent_class === 'retry' && c.attempt > maxAttempts) {
       out.push({ invariant: 'INV-6', subject: c.id, detail: `automatic retry at attempt ${c.attempt}, over the cap of ${maxAttempts}` });
     }
-    if (c.parent_class !== 'retry' && c.answer !== 'continue' && c.answer !== 'discard') {
+    if (c.parent_class !== 'retry' && !c.handed_off && c.answer !== 'continue' && c.answer !== 'discard') {
       out.push({
         invariant: 'INV-6',
         subject: c.id,
@@ -364,6 +389,43 @@ const doubleExecutions: Check = async ({ db, witnessDir, deaths = [], graceMs = 
   return out;
 };
 
+/**
+ * INV-10: an instance shut down gracefully hands off every run it held: each
+ * one ends under the epoch it held, either settled by the owner or handed
+ * off. A run handed off after submitting its result succeeded with no
+ * follow-up; any other has exactly one. None is taken over, interrupted, or
+ * left running.
+ */
+const lostHandoffs: Check = async ({ db, handoffs = [] }) => {
+  const out: Violation[] = [];
+  for (const { runId, epoch } of handoffs.flat()) {
+    const [run] = await rows<{
+      status: string;
+      owner_epoch: number;
+      stop_reason: string | null;
+      children: number;
+      terminal: boolean;
+    }>(
+      db,
+      `SELECT r.status, r.owner_epoch, r.stop_reason,
+         (SELECT count(*)::int FROM runs c WHERE c.parent_run_id = r.id) AS children,
+         EXISTS (SELECT 1 FROM control_plane_requests q WHERE q.run_id = r.id AND q.tool = ANY($2)) AS terminal
+       FROM runs r WHERE r.id = $1`,
+      [runId, TERMINAL_TOOLS]
+    );
+    const fail = (detail: string) => out.push({ invariant: 'INV-10', subject: runId, detail });
+    if (!run) fail('run is gone');
+    else if (run.owner_epoch !== epoch) fail(`taken over at epoch ${run.owner_epoch} instead of handed off at ${epoch}`);
+    else if (!FINAL_RUN_STATUSES.includes(run.status)) fail(`${run.status} after its owner shut down`);
+    else if (run.stop_reason === 'handoff') {
+      const expected = run.terminal ? 0 : 1;
+      if (run.terminal && run.status !== 'succeeded') fail(`submitted its result but handed off as ${run.status}`);
+      if (run.children !== expected) fail(`handed off with ${run.children} follow-up runs, expected ${expected}`);
+    }
+  }
+  return out;
+};
+
 const CHECKS: [InvariantId, Check][] = [
   ['INV-1', expiredLeases],
   ['INV-2', doubleClaims],
@@ -374,6 +436,7 @@ const CHECKS: [InvariantId, Check][] = [
   ['INV-7', stuckQueue],
   ['INV-8', unsettledWakes],
   ['INV-9', doubleExecutions],
+  ['INV-10', lostHandoffs],
 ];
 
 /** Runs every invariant not skipped; throws when the setup cannot support one. */
