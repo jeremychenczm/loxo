@@ -36,7 +36,7 @@ interface TwoInstanceGroup {
 }
 
 interface GracefulSummary {
-  totals: { trials: number; violations: number };
+  totals: { trials: number; violations: number; errors: number; unreached: number };
   cleanTrials: number;
   sentToPerson: number;
   timingsMs: { shutdown: Spread; handoff: Spread };
@@ -60,6 +60,7 @@ interface Summary {
 }
 
 const seconds = (ms: number | null) => (ms === null ? 'n/a' : `${(ms / 1000).toFixed(1)} s`);
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export function renderBlock(summary: Summary): string {
   const t = summary.totals;
@@ -76,14 +77,14 @@ export function renderBlock(summary: Summary): string {
     `| **Crash matrix** | ${t.trials} trials: ${summary.crashPoints} crash points across ${summary.runKinds} run kinds, ${summary.trialsPerCell} per cell, the backend process killed outright each time. **${t.violations} invariant violations**, ${t.errors} errors, ${t.unreached} unreached |`,
     `| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **${seconds(summary.timingsMs.recovered.p50)}**, p99 **${seconds(summary.timingsMs.recovered.p99)}** (${seconds(summary.settings.leaseTtlMs)} lease) |`,
     `| **Orphaned agents** | Longest an agent kept working after its backend died: **${summary.timingsMs.afterlife.max === null ? 'n/a' : `${summary.timingsMs.afterlife.max} ms`}** with the launcher; up to **${seconds(summary.controls.afterlifeMs.max)}** without it, caught in ${summary.controls.trialsWithViolations} of ${summary.controls.trials} control trials |`,
-    `| **Two instances, one database** | ${raceCount} races of ${wakesPerRace} concurrent wakes, one instance ${faults} mid-run: **${sum((g) => g.violations)} invariant violations** (no run executed twice), ${sum((g) => g.takeovers)} takeovers, ${sum((g) => g.fenceRejections)} stale writes refused by the fence, up to ${Math.max(...races.map((g) => g.peakRunning ?? 0))} runs at once |`,
+    `| **Two instances, one database** | ${raceCount} races of ${wakesPerRace} concurrent wakes, one instance ${faults} mid-run: **${sum((g) => g.violations)} invariant violations** (no run executed twice), ${count(sum((g) => g.takeovers), 'takeover', 'takeovers')}, ${count(sum((g) => g.fenceRejections), 'stale write', 'stale writes')} refused by the fence, up to ${Math.max(...races.map((g) => g.peakRunning ?? 0))} runs at once |`,
   ];
   const g = summary.graceful;
   if (g && g.totals.trials > 0) {
     rows.splice(
       4,
       0,
-      `| **Graceful shutdown** | ${g.totals.trials} trials across ${summary.runKinds} run kinds: the backend asked to stop mid-run, as a deploy does (${g.cleanTrials}), or crashing partway through handing its runs off (${g.totals.trials - g.cleanTrials}). **${g.totals.violations} invariant violations**; after a clean shutdown ${g.sentToPerson} runs waited on a person. The instance exits in p50 **${seconds(g.timingsMs.shutdown.p50)}**, and the work resumes on the next instance p50 **${seconds(g.timingsMs.handoff.p50)}**, p99 **${seconds(g.timingsMs.handoff.p99)}** after the request |`
+      `| **Graceful shutdown** | ${g.totals.trials} trials across ${summary.runKinds} run kinds: the backend asked to stop mid-run, as a deploy does (${g.cleanTrials}), or crashing partway through handing its runs off (${g.totals.trials - g.cleanTrials}). **${g.totals.violations} invariant violations**, ${g.totals.errors} errors, ${g.totals.unreached} unreached; after a clean shutdown ${count(g.sentToPerson, 'run', 'runs')} waited on a person. The instance exits in p50 **${seconds(g.timingsMs.shutdown.p50)}**, and the work resumes on the next instance p50 **${seconds(g.timingsMs.handoff.p50)}**, p99 **${seconds(g.timingsMs.handoff.p99)}** after the request |`
     );
   }
   const commits = summary.commits.map((c) => `\`${c.slice(0, 7)}\``).join(' and ');
