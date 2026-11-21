@@ -9,6 +9,7 @@ import {
   type McpServer,
   type PermissionOption,
   type RequestPermissionResponse,
+  type SessionModeState,
 } from '@agentclientprotocol/sdk/unstable';
 import { killProcessTree } from '@swarmdev/shared';
 import { mapSessionUpdate } from './acp-events';
@@ -30,6 +31,12 @@ export interface AcpLaunchSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * Permission mode the session must stay in so that every tool call the
+   * runtime does not treat as harmless is sent to the platform for a
+   * decision. A runtime that cannot be put in it does not start.
+   */
+  sessionMode?: string;
 }
 
 export interface AcpHostOptions {
@@ -118,7 +125,8 @@ class AcpSession implements AgentSession {
     private readonly child: ChildProcess,
     private readonly input: OpenSessionInput,
     private readonly restoreTimeoutMs: number,
-    readonly processIdentity: ProcessIdentity
+    readonly processIdentity: ProcessIdentity,
+    private readonly sessionMode: string | undefined
   ) {
     this.exit = new Promise((resolve) => {
       child.once('exit', (code) => {
@@ -155,11 +163,13 @@ class AcpSession implements AgentSession {
     liveChildren.add(child);
     child.once('exit', () => liveChildren.delete(child));
     child.once('error', () => liveChildren.delete(child));
-    const session = new AcpSession(child, input, options.restoreTimeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS, {
-      pid: child.pid ?? null,
-      tag,
-      launcher: launcher?.kind ?? null,
-    });
+    const session = new AcpSession(
+      child,
+      input,
+      options.restoreTimeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS,
+      { pid: child.pid ?? null, tag, launcher: launcher?.kind ?? null },
+      launch.sessionMode
+    );
     session.connect();
     const timeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
@@ -199,6 +209,10 @@ class AcpSession implements AgentSession {
   private connect(): void {
     const app = client({ name: 'loxo' })
       .onNotification(methods.client.session.update, ({ params }) => {
+        if (params.sessionId === this.sessionId && params.update.sessionUpdate === 'current_mode_update') {
+          this.keepMode(params.update.currentModeId);
+          return;
+        }
         if (this.loading || params.sessionId !== this.sessionId || !this.active) return;
         const event = mapSessionUpdate(params.update);
         if (!event) return;
@@ -235,21 +249,56 @@ class AcpSession implements AgentSession {
       for (const [rung, offered, attempt] of rungs) {
         if (!offered) continue;
         this.loading = rung === 'load';
+        let restored: { modes?: SessionModeState | null } | null = null;
         try {
-          await withDeadline(attempt(), this.restoreTimeoutMs);
-          this.sessionId = previous;
-          this.resumed = true;
-          this.resumedBy = rung;
-          return;
+          restored = (await withDeadline(attempt(), this.restoreTimeoutMs)) as { modes?: SessionModeState | null };
         } catch {
           // The runtime no longer has that session, or did not answer in time.
         } finally {
           this.loading = false;
         }
+        if (!restored) continue;
+        this.sessionId = previous;
+        this.resumed = true;
+        this.resumedBy = rung;
+        await this.enterMode(restored.modes);
+        return;
       }
     }
     const created = await agent.request(methods.agent.session.new, { cwd: this.input.cwd, mcpServers });
     this.sessionId = created.sessionId;
+    await this.enterMode(created.modes);
+  }
+
+  /**
+   * Puts the session in the required permission mode before any turn. A
+   * runtime that does not offer it, or refuses the switch, fails startup:
+   * a session the platform cannot arbitrate does not run. Restored sessions
+   * come back in whatever mode they last had, so they are checked too.
+   */
+  private async enterMode(state: SessionModeState | null | undefined): Promise<void> {
+    const mode = this.sessionMode;
+    if (!mode || state?.currentModeId === mode) return;
+    if (state && !state.availableModes.some((m) => m.id === mode)) {
+      throw new HostStartupError('error', `The agent does not offer the "${mode}" permission mode the platform requires`);
+    }
+    try {
+      await this.connection.agent.request(methods.agent.session.setMode, { sessionId: this.sessionId, modeId: mode });
+    } catch (err) {
+      throw new HostStartupError(
+        'error',
+        `The agent refused the "${mode}" permission mode the platform requires: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /** A runtime that leaves the required mode mid-session is put back at once; failing that, it is stopped. */
+  private keepMode(current: string): void {
+    const mode = this.sessionMode;
+    if (!mode || current === mode || this.exited) return;
+    void this.connection.agent
+      .request(methods.agent.session.setMode, { sessionId: this.sessionId, modeId: mode })
+      .catch(() => this.close());
   }
 
   private async decidePermission(

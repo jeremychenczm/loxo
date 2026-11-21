@@ -38,6 +38,8 @@ interface SessionState {
   mcp: HttpMcpServer[];
   /** Aborted by `session/cancel` for the turn in flight. */
   turn: AbortController | null;
+  /** Permission mode; in `auto` permission steps approve themselves. */
+  mode: string;
 }
 
 function fail(err: unknown): never {
@@ -201,6 +203,10 @@ async function play(
       });
     } else if ('permission' in step) {
       const ask = step.permission;
+      if (state.mode === 'auto') {
+        if (ask.onAllow) await play(ask.onAllow, sessionId, state, client, signal);
+        continue;
+      }
       const answer = await client.request(methods.client.session.requestPermission, {
         sessionId,
         toolCall: { toolCallId: ask.toolCallId, title: ask.title, kind: ask.kind ?? 'other' },
@@ -217,6 +223,9 @@ async function play(
             ? ask.onAllow
             : ask.onReject;
       if (branch) await play(branch, sessionId, state, client, signal);
+    } else if ('mode' in step) {
+      state.mode = step.mode;
+      await update({ sessionUpdate: 'current_mode_update', currentModeId: step.mode });
     } else if ('contextUsage' in step) {
       const { used, size, costUsd } = step.contextUsage;
       await update({
@@ -294,6 +303,15 @@ async function main(): Promise<void> {
   if (scenario.startup === 'crash') process.exit(3);
   if (scenario.startup === 'garbage') process.stdout.write('this is not json-rpc\n');
 
+  const initialMode = scenario.modes?.initial ?? 'default';
+  const modeState = (mode: string) => ({
+    currentModeId: mode,
+    availableModes: [
+      { id: 'default', name: 'Default' },
+      { id: 'auto', name: 'Auto' },
+    ],
+  });
+
   const app = agent({ name: 'loxo-fake-agent' })
     .onRequest(methods.agent.initialize, async () => {
       if (scenario.startup === 'hang') await new Promise<never>(() => {});
@@ -310,20 +328,25 @@ async function main(): Promise<void> {
     .onRequest(methods.agent.session.new, async ({ params }) => {
       sessionSeq += 1;
       const sessionId = `fake-${process.pid}-${sessionSeq}`;
-      sessions.set(sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null });
-      return { sessionId };
+      sessions.set(sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null, mode: initialMode });
+      return { sessionId, modes: modeState(initialMode) };
     })
     .onRequest(methods.agent.session.load, async ({ params }) => {
       if (!scenario.loadSession) throw new Error('session/load is not supported');
       if (scenario.forgetSessions) throw new Error(`Unknown session ${params.sessionId}`);
-      sessions.set(params.sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null });
-      return {};
+      sessions.set(params.sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null, mode: initialMode });
+      return { modes: modeState(initialMode) };
     })
     .onRequest(methods.agent.session.resume, async ({ params }) => {
       if (!scenario.resumeSession) throw new Error('session/resume is not supported');
       if (scenario.resumeSession === 'hang') await new Promise<never>(() => {});
       if (scenario.resumeSession === 'fail') throw new Error(`Unknown session ${params.sessionId}`);
-      sessions.set(params.sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null });
+      sessions.set(params.sessionId, { cwd: params.cwd, mcp: httpServers(params.mcpServers), turn: null, mode: initialMode });
+      return { modes: modeState(initialMode) };
+    })
+    .onRequest(methods.agent.session.setMode, async ({ params }) => {
+      if (scenario.modes?.refuseSwitch) throw new Error(`Mode ${params.modeId} is not allowed here`);
+      requireSession(params.sessionId).mode = params.modeId;
       return {};
     })
     .onNotification(methods.agent.session.cancel, async ({ params }) => {

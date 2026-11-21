@@ -55,6 +55,8 @@ export type Step =
    * server is reported on the tool call, never thrown.
    */
   | { mcp: { tool: string; args?: Record<string, unknown> } }
+  /** Switches the session's permission mode itself and tells the client, as an agent leaving plan mode does. */
+  | { mode: 'default' | 'auto' }
   | { repeat: { times: number; steps: Step[] } };
 
 export type ToolKind =
@@ -84,6 +86,12 @@ export interface Scenario {
   resumeSession?: 'ok' | 'fail' | 'hang';
   /** The runtime lost its session store: `session/load` refuses every id. */
   forgetSessions?: boolean;
+  /**
+   * Permission modes, as Claude Code offers them: sessions open in `initial`
+   * (default `default`), and in `auto` the agent approves its own permission
+   * steps without asking the client. `refuseSwitch` fails `session/set_mode`.
+   */
+  modes?: { initial?: 'default' | 'auto'; refuseSwitch?: boolean };
   turns: TurnScript[];
 }
 
@@ -149,6 +157,7 @@ const stepSchema: z.ZodType<Step> = z.lazy(() =>
     z
       .object({ mcp: z.object({ tool: z.string().min(1), args: z.record(z.unknown()).optional() }).strict() })
       .strict(),
+    z.object({ mode: z.enum(['default', 'auto']) }).strict(),
     z
       .object({
         repeat: z.object({ times: z.number().int().min(1).max(10_000), steps: z.array(stepSchema) }).strict(),
@@ -163,6 +172,10 @@ const scenarioSchema = z
     loadSession: z.boolean().optional(),
     resumeSession: z.enum(['ok', 'fail', 'hang']).optional(),
     forgetSessions: z.boolean().optional(),
+    modes: z
+      .object({ initial: z.enum(['default', 'auto']).optional(), refuseSwitch: z.boolean().optional() })
+      .strict()
+      .optional(),
     turns: z
       .array(
         z

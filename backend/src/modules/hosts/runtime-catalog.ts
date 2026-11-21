@@ -128,7 +128,9 @@ export function acpLaunchSpec(runtime: CliRuntime, options: LaunchOptions): AcpL
     env.INITIAL_AGENT_MODE = CODEX_MODES[options.permission];
     env.NO_BROWSER = '1';
   }
-  return { ...resolved.launch, env };
+  // Claude Code otherwise opens sessions in its auto mode, which approves tool
+  // calls itself; in default mode they come to the platform's arbiter.
+  return { ...resolved.launch, env, ...(runtime === 'claude-code' ? { sessionMode: 'default' } : {}) };
 }
 
 export interface RuntimeProfile {

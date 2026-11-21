@@ -87,9 +87,15 @@ const allowAll: PermissionArbiter = async () => ({ outcome: 'allow', reason: 'te
 
 async function start(
   scenario: Scenario,
-  options: { arbiter?: PermissionArbiter; resumeSessionId?: string; startupTimeoutMs?: number; restoreTimeoutMs?: number } = {}
+  options: {
+    arbiter?: PermissionArbiter;
+    resumeSessionId?: string;
+    startupTimeoutMs?: number;
+    restoreTimeoutMs?: number;
+    sessionMode?: string;
+  } = {}
 ): Promise<AgentSession> {
-  const host = new AcpHost(fakeAgentCommand(scenario), {
+  const host = new AcpHost({ ...fakeAgentCommand(scenario), sessionMode: options.sessionMode }, {
     startupTimeoutMs: options.startupTimeoutMs,
     restoreTimeoutMs: options.restoreTimeoutMs,
   });
@@ -194,6 +200,49 @@ describe('ACP host', () => {
 
     const allowing = await start(scenario);
     expect((await allowing.prompt({ prompt: 'clean up' })).text).toBe('ran it');
+  });
+
+  it('keeps a session in the permission mode the platform requires', { timeout: T }, async () => {
+    const asked: PermissionRequest[] = [];
+    const arbiter: PermissionArbiter = async (request) => {
+      asked.push(request);
+      return { outcome: 'deny', reason: 'not here' };
+    };
+    const ask = (id: string) => ({
+      permission: { toolCallId: id, title: 'git push', kind: 'execute' as const, onAllow: [{ say: `${id} ran` }], onReject: [{ say: `${id} held` }] },
+    });
+    // Opens in auto, like Claude Code, and later switches itself back to auto mid-turn.
+    const scenario: Scenario = {
+      modes: { initial: 'auto' },
+      turns: [{ steps: [ask('p1'), { mode: 'auto' }, { sleep: 300 }, ask('p2')] }],
+    };
+
+    // Without a required mode, auto approves every step and the platform never hears of them.
+    const unguarded = await start(scenario, { arbiter });
+    expect((await unguarded.prompt({ prompt: 'push' })).text).toBe('p1 ranp2 ran');
+    expect(asked).toEqual([]);
+
+    const guarded = await start(scenario, { arbiter, sessionMode: 'default' });
+    expect((await guarded.prompt({ prompt: 'push' })).text).toBe('p1 heldp2 held');
+    expect(asked.map((r) => r.toolCallId)).toEqual(['p1', 'p2']);
+
+    // A restored session comes back in its last mode and is put right again.
+    const restored = await start(
+      { ...scenario, resumeSession: 'ok', turns: [{ steps: [ask('p3')] }] },
+      { arbiter, sessionMode: 'default', resumeSessionId: guarded.runtimeSessionId! }
+    );
+    expect(restored.resumed).toBe(true);
+    expect((await restored.prompt({ prompt: 'push' })).text).toBe('p3 held');
+    expect(asked.map((r) => r.toolCallId)).toEqual(['p1', 'p2', 'p3']);
+  });
+
+  it('refuses to start an agent that will not enter the required mode', { timeout: T }, async () => {
+    await expect(
+      start({ modes: { initial: 'auto', refuseSwitch: true }, turns: [{ steps: [{ say: 'hi' }] }] }, { sessionMode: 'default' })
+    ).rejects.toThrow(/refused the "default" permission mode/);
+    await expect(start({ turns: [{ steps: [{ say: 'hi' }] }] }, { sessionMode: 'plan' })).rejects.toThrow(
+      /does not offer the "plan" permission mode/
+    );
   });
 
   it('denies when the arbiter itself fails', { timeout: T }, async () => {
