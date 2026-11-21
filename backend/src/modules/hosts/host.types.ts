@@ -36,6 +36,8 @@ export interface PermissionRequest {
   toolCallId: string;
   title: string;
   toolKind: string;
+  /** The runtime's own name for the tool, when it sends one (Claude Code: mcp__<server>__<tool> for MCP tools). */
+  toolName?: string | null;
   paths: string[];
   input: unknown;
 }

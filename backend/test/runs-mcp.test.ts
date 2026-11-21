@@ -4,6 +4,7 @@ import { pool } from '../src/db/client';
 import { createApp } from '../src/http/app';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
+import { CONTROL_PLANE_TOOLS } from '../src/modules/control-plane/names';
 import { mintRunToken } from '../src/modules/control-plane/run-token';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 
@@ -123,6 +124,8 @@ describe('MCP control plane', () => {
       'submit_result',
       'update_task_status',
     ]);
+    // The permission policy lets exactly these through without a person.
+    expect(CONTROL_PLANE_TOOLS).toEqual(expect.arrayContaining(names));
   });
 
   it('reads the task snapshot through get_task', async () => {

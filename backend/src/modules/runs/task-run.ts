@@ -5,6 +5,7 @@ import { runs, type Agent, type Task, type Run } from '../../db/schema';
 import { storage } from '../../storage/layout';
 import { getProviderCredentials } from '../providers/providers.service';
 import { resolveApiModel, type ApiProtocol } from '../runner/api-protocol';
+import { CONTROL_PLANE_SERVER } from '../control-plane/names';
 import { buildControlPlaneToolDefs } from '../control-plane/tools';
 import {
   lowerPermission,
@@ -146,7 +147,7 @@ export async function executeTaskTurn(
 
   const runToken = mintRunToken(run.id, lease.epoch);
   const mcpServers: HostMcpServer[] = [
-    { type: 'http', name: 'swarmdev', url: config.mcpUrl(), headers: { Authorization: `Bearer ${runToken}` } },
+    { type: 'http', name: CONTROL_PLANE_SERVER, url: config.mcpUrl(), headers: { Authorization: `Bearer ${runToken}` } },
   ];
 
   let host: AgentHost;

@@ -86,6 +86,19 @@ describe('permission policy', () => {
     expect(commandOf(req('execute', { title: 'npm run lint' }))).toBe('npm run lint');
   });
 
+  it('lets the platform control-plane tools through, and only those, by the name the runtime gives', () => {
+    const named = (toolName: string, title = toolName) => req('other', { toolName, title });
+    for (const permission of ['read_only', 'edit', 'full'] as const) {
+      const verdict = evaluatePermission(named('mcp__swarmdev__submit_result'), { permission, workspaceRoot: null });
+      expect(verdict).toMatchObject({ outcome: 'allow', rule: 'kind.control-plane' });
+    }
+    const context = { permission: 'full' as const, workspaceRoot: ROOT };
+    // Another server, an unknown tool on ours, or only a title that looks like ours: a person decides.
+    expect(evaluatePermission(named('mcp__other__submit_result'), context).outcome).toBe('ask');
+    expect(evaluatePermission(named('mcp__swarmdev__drop_tables'), context).outcome).toBe('ask');
+    expect(evaluatePermission(req('other', { title: 'mcp__swarmdev__submit_result' }), context).outcome).toBe('ask');
+  });
+
   it('picks the lowest of several permission levels', () => {
     expect(lowestPermission('full', 'edit')).toBe('edit');
     expect(lowestPermission('edit', 'read_only', 'full')).toBe('read_only');

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { AgentPermissionLevel } from '../../db/schema';
+import { CONTROL_PLANE_SERVER, CONTROL_PLANE_TOOLS } from '../control-plane/names';
 import type { PermissionRequest } from './host.types';
 
 /**
@@ -123,8 +124,14 @@ function readOnlyCommand(command: string): { ok: boolean; why: string } {
 
 const verdict = (outcome: PolicyOutcome, rule: string, reason: string): PolicyVerdict => ({ outcome, rule, reason });
 
+const CONTROL_PLANE_TOOL_NAMES = new Set<string>(CONTROL_PLANE_TOOLS.map((tool) => `mcp__${CONTROL_PLANE_SERVER}__${tool}`));
+
 export function evaluatePermission(request: PermissionRequest, context: PolicyContext): PolicyVerdict {
   const { permission, workspaceRoot } = context;
+  // The run token and the control plane decide what these calls may do, under the run's fence.
+  if (request.toolName && CONTROL_PLANE_TOOL_NAMES.has(request.toolName)) {
+    return verdict('allow', 'kind.control-plane', 'A call to the platform control plane');
+  }
 
   for (const p of request.paths) {
     if (!workspaceRoot || !isInside(p, workspaceRoot)) {

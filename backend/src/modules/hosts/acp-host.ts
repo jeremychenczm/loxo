@@ -302,13 +302,21 @@ class AcpSession implements AgentSession {
   }
 
   private async decidePermission(
-    toolCall: { toolCallId: string; title?: string | null; kind?: string | null; locations?: { path: string }[] | null; rawInput?: unknown },
+    toolCall: {
+      toolCallId: string;
+      title?: string | null;
+      kind?: string | null;
+      locations?: { path: string }[] | null;
+      rawInput?: unknown;
+      name?: string | null;
+    },
     options: PermissionOption[]
   ): Promise<RequestPermissionResponse> {
     const request = {
       toolCallId: toolCall.toolCallId,
       title: toolCall.title ?? '',
       toolKind: toolCall.kind ?? 'other',
+      toolName: toolCall.name ?? null,
       paths: (toolCall.locations ?? []).map((l) => l.path),
       input: toolCall.rawInput,
     };
