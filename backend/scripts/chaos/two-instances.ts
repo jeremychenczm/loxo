@@ -11,6 +11,7 @@ import {
   endLeftovers,
   isAlive,
   LEASE_TTL_MS,
+  runsHeldBy,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
   prepareTemplate,
@@ -25,15 +26,17 @@ import { checkInvariants, readExecutions, type Violation } from './invariants';
 /**
  * Two backend instances on one database, racing for the same queue: many
  * tasks are woken through both APIs at once, and partway through one
- * instance is either killed or frozen past its leases. No run may execute on
- * both, and every write a frozen instance attempts after waking must be
- * refused by the fence.
+ * instance is killed, frozen past its leases, or shut down gracefully and
+ * restarted (a rolling restart). No run may execute on both, every write a
+ * frozen instance attempts after waking must be refused by the fence, and a
+ * graceful shutdown must hand off every run it held.
  *
  *   npm run chaos:two -w backend -- --fault kill
  *   npm run chaos:two -w backend -- --fault stall --seed 2
+ *   npm run chaos:two -w backend -- --fault restart
  */
 
-export type TwoInstanceFault = 'kill' | 'stall';
+export type TwoInstanceFault = 'kill' | 'stall' | 'restart';
 
 export interface TwoInstanceOptions {
   fault: TwoInstanceFault;
@@ -177,7 +180,19 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
 
     const deaths: { via: string; at: number }[] = [];
     let faultAt: number;
-    if (options.fault === 'kill') {
+    const handoffs: { runId: string; epoch: number }[][] = [];
+    if (options.fault === 'restart') {
+      const delay = Math.round(SCENARIO_MS + seededRandom(options.seed)() * SCENARIO_MS * 2);
+      await sleep(delay);
+      handoffs.push(await runsHeldBy(db, a));
+      a.shutdown();
+      const exit = await Promise.race([a.exit, sleep(60_000).then(() => null)]);
+      if (!exit) throw new Error('instance a did not exit after a graceful shutdown');
+      if (exit.code !== 0) throw new Error(`instance a exited with code ${exit.code} (${exit.signal}) after a graceful shutdown`);
+      faultAt = exit.at;
+      deaths.push({ via: new URL(a.baseUrl).host, at: faultAt });
+      await launch('a2');
+    } else if (options.fault === 'kill') {
       const delay = Math.round(SCENARIO_MS + seededRandom(options.seed)() * SCENARIO_MS * 2);
       await sleep(delay);
       a.kill();
@@ -220,6 +235,7 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
       wakeRuns: roots.rows.map((r) => r.id),
       witnessDir: witness,
       deaths,
+      handoffs,
       cycleMs: LEASE_TTL_MS,
       maxAttempts: MAX_ATTEMPTS,
     });

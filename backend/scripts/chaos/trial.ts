@@ -12,6 +12,7 @@ import {
   endLeftovers,
   initRepository,
   isAlive,
+  runsHeldBy,
   LEASE_TTL_MS,
   MAX_ATTEMPTS,
   MAX_BACKOFF_MS,
@@ -25,9 +26,10 @@ import { checkInvariants, readExecutions, type Violation } from './invariants';
 import { RUN_KIND_SPECS, type RunKind, type RunKindSpec } from './scenarios';
 
 /**
- * One chaos trial: a backend instance is made to die mid-run, the next one
- * recovers, and at a fixed check time the invariant checker reads the trial's
- * own database and the agents' witness logs.
+ * One chaos trial: a backend instance is made to die mid-run, or is shut down
+ * gracefully, the next one recovers or continues, and at a fixed check time
+ * the invariant checker reads the trial's own database and the agents'
+ * witness logs.
  */
 
 export interface NamedFault {
@@ -37,8 +39,14 @@ export interface NamedFault {
 
 export interface TrialSpec {
   kind: RunKind;
-  /** Where the first instance dies: at a named point, or killed from outside at a random moment of the run. */
-  first: NamedFault | 'random';
+  /**
+   * Where the first instance dies: at a named point, or killed from outside
+   * at a random moment of the run; or "graceful": asked to shut down at a
+   * random moment of the run, as a deploy does.
+   */
+  first: NamedFault | 'random' | 'graceful';
+  /** Ask for the graceful shutdown anyway, so `first` (a handoff point) fires partway through it. */
+  shutdown?: boolean;
   /** Where the instance recovering from the first crash dies too. */
   second?: NamedFault;
   /** Answer the interrupted run's retry request with this once it opens (and again after a crash). */
@@ -62,6 +70,10 @@ export interface TrialResult {
   killDelayMs: number | null;
   /** Last crash until the next instance answered /health. */
   restartMs: number | null;
+  /** Graceful shutdown asked until the instance had exited. */
+  shutdownMs: number | null;
+  /** Graceful shutdown asked until the last handed-off run's follow-up started, on the database clock. */
+  handoffMs: number | null;
   /** Longest an agent kept working after the backend it worked for died. */
   afterlifeMs: number | null;
   /** Last crash until every run the dead instance owned had left running. */
@@ -83,7 +95,10 @@ const POLL_MS = 200;
 const faultValue = (fault: NamedFault) => `${fault.point}@${fault.hit ?? 1}`;
 
 export function faultLabel(spec: TrialSpec): string {
-  const first = spec.first === 'random' ? 'random' : faultValue(spec.first);
+  const first =
+    spec.first === 'random' || spec.first === 'graceful'
+      ? spec.first
+      : `${spec.shutdown ? 'graceful>' : ''}${faultValue(spec.first)}`;
   const second = spec.second ? `+${faultValue(spec.second)}` : '';
   const answer = spec.answer ? `/${spec.answer}` : '';
   return `${first}${second}${answer}`;
@@ -263,6 +278,8 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     crashes: 0,
     killDelayMs: null,
     restartMs: null,
+    shutdownMs: null,
+    handoffMs: null,
     afterlifeMs: null,
     recoveredMs: null,
     settledMs: null,
@@ -291,10 +308,11 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     return instance;
   };
   const exitBudget = kind.durationMs * 2 + LEASE_TTL_MS + 2 * CYCLE_MS + 30_000;
+  const graceful = spec.first === 'graceful' || spec.shutdown === true;
 
   try {
     const setup: Setup = { taskId: null, wakeAccepted: false };
-    const first = await launch('i1', spec.first === 'random' ? undefined : spec.first);
+    const first = await launch('i1', typeof spec.first === 'string' ? undefined : spec.first);
     const api = new Api(first.baseUrl);
     await setUp(api, kind, paths, id, setup).catch(async (err) => {
       // A crash point may fire inside a setup request; anything else is a driver failure.
@@ -302,8 +320,10 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     });
 
     const deaths: { via: string; at: number }[] = [];
+    const handoffs: { runId: string; epoch: number }[][] = [];
+    let shutdownAskedAt: Date | null = null;
     let crashAt: number;
-    if (spec.first === 'random') {
+    if (spec.first === 'random' || graceful) {
       const deadline = Date.now() + 60_000;
       while (!witnessStarted(paths.witness)) {
         if (Date.now() > deadline || first.hasExited()) throw new Error('the agent never started its turn');
@@ -312,15 +332,38 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
       const delay = Math.round(300 + seededRandom(spec.seed)() * (kind.durationMs - 1_000));
       result.killDelayMs = delay;
       await sleep(delay);
+    }
+    if (spec.first === 'random') {
       first.kill();
       crashAt = Date.now();
       await first.exit;
+      result.crashes = 1;
+    } else if (graceful) {
+      const held = await runsHeldBy(db, first);
+      shutdownAskedAt = (await db.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+      const askedAt = Date.now();
+      first.shutdown();
+      if (spec.first === 'graceful') {
+        const exit = await exitWithin(first, 60_000);
+        if (!exit) throw new Error('instance i1 did not exit after a graceful shutdown');
+        if (exit.code !== 0) throw new Error(`instance i1 exited with code ${exit.code} (${exit.signal}) after a graceful shutdown`);
+        crashAt = exit.at;
+        result.shutdownMs = exit.at - askedAt;
+        handoffs.push(held);
+      } else {
+        if (!(await exitWithin(first, exitBudget))) throw new Unreached(`crash point ${spec.first.point} not reached`);
+        crashAt = crashRecord(paths.crashLog, 1, spec.first.point);
+        result.crashes = 1;
+        // Committed before the crash: the handoff itself is done.
+        if (spec.first.point === 'handoff.after_commit') handoffs.push(held);
+      }
     } else {
-      if (!(await exitWithin(first, exitBudget))) throw new Unreached(`crash point ${spec.first.point} not reached`);
-      crashAt = crashRecord(paths.crashLog, 1, spec.first.point);
+      const fault = spec.first as NamedFault;
+      if (!(await exitWithin(first, exitBudget))) throw new Unreached(`crash point ${fault.point} not reached`);
+      crashAt = crashRecord(paths.crashLog, 1, fault.point);
+      result.crashes = 1;
     }
     deaths.push({ via: new URL(first.baseUrl).host, at: crashAt });
-    result.crashes = 1;
     let owned = await runningRuns(db);
 
     let last = await launch('i2', spec.second);
@@ -331,7 +374,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
       if (!(await exitWithin(last, exitBudget))) throw new Unreached(`crash point ${spec.second.point} not reached`);
       crashAt = crashRecord(paths.crashLog, 2, spec.second.point);
       deaths.push({ via: new URL(last.baseUrl).host, at: crashAt });
-      result.crashes = 2;
+      result.crashes += 1;
       owned = await runningRuns(db);
       last = await launch('i3');
       api.baseUrl = last.baseUrl;
@@ -362,6 +405,16 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
         'SELECT status, recovery_class FROM runs ORDER BY created_at, attempt'
       )
     ).rows.map((r) => (r.recovery_class ? `${r.status}/${r.recovery_class}` : r.status));
+    if (shutdownAskedAt) {
+      const { rows } = await db.query<{ ms: string | null }>(
+        `SELECT extract(epoch from max(c.started_at) - $1::timestamptz) * 1000 AS ms
+         FROM runs c JOIN runs p ON p.id = c.parent_run_id
+         WHERE p.status = 'cancelled' AND p.stop_reason = 'handoff'`,
+        [shutdownAskedAt]
+      );
+      const ms = rows[0]?.ms;
+      result.handoffMs = ms === null || ms === undefined ? null : Math.round(Number(ms));
+    }
     const roots = (await db.query<{ id: string; task_id: string }>('SELECT id, task_id FROM runs WHERE parent_run_id IS NULL'))
       .rows;
     result.violations = await checkInvariants({
@@ -371,6 +424,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
       // Generous on purpose: a run promoted a moment before the check is not stuck.
       cycleMs: LEASE_TTL_MS,
       deaths,
+      handoffs,
       maxAttempts: MAX_ATTEMPTS,
     });
     const afterlives = readExecutions(paths.witness).flatMap((e) =>

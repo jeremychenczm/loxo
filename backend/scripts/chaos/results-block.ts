@@ -35,6 +35,13 @@ interface TwoInstanceGroup {
   peakRunning: number | null;
 }
 
+interface GracefulSummary {
+  totals: { trials: number; violations: number };
+  cleanTrials: number;
+  sentToPerson: number;
+  timingsMs: { shutdown: Spread; handoff: Spread };
+}
+
 interface Summary {
   commits: string[];
   dirty: boolean;
@@ -47,14 +54,18 @@ interface Summary {
   totals: { trials: number; passed: number; violations: number; errors: number; unreached: number };
   timingsMs: { recovered: Spread; afterlife: Spread };
   controls: { trials: number; trialsWithViolations: number; afterlifeMs: Spread };
-  twoInstances: { kill: TwoInstanceGroup; stall: TwoInstanceGroup };
+  /** Absent from summaries recorded before graceful shutdown existed. */
+  graceful?: GracefulSummary | null;
+  twoInstances: { kill: TwoInstanceGroup; stall: TwoInstanceGroup; restart?: TwoInstanceGroup };
 }
 
 const seconds = (ms: number | null) => (ms === null ? 'n/a' : `${(ms / 1000).toFixed(1)} s`);
 
 export function renderBlock(summary: Summary): string {
   const t = summary.totals;
-  const races = [summary.twoInstances.kill, summary.twoInstances.stall];
+  const { kill, stall, restart } = summary.twoInstances;
+  const races = restart && restart.runs > 0 ? [kill, stall, restart] : [kill, stall];
+  const faults = races.length === 3 ? 'killed, frozen past its lease, or shut down gracefully' : 'killed or frozen past its lease';
   const sum = (pick: (g: TwoInstanceGroup) => number) => races.reduce((n, g) => n + pick(g), 0);
   const raceCount = sum((g) => g.runs);
   const wakesPerRace = raceCount ? Math.round(sum((g) => g.wokenRuns) / raceCount) : 0;
@@ -65,8 +76,16 @@ export function renderBlock(summary: Summary): string {
     `| **Crash matrix** | ${t.trials} trials: ${summary.crashPoints} crash points across ${summary.runKinds} run kinds, ${summary.trialsPerCell} per cell, the backend process killed outright each time. **${t.violations} invariant violations**, ${t.errors} errors, ${t.unreached} unreached |`,
     `| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **${seconds(summary.timingsMs.recovered.p50)}**, p99 **${seconds(summary.timingsMs.recovered.p99)}** (${seconds(summary.settings.leaseTtlMs)} lease) |`,
     `| **Orphaned agents** | Longest an agent kept working after its backend died: **${summary.timingsMs.afterlife.max === null ? 'n/a' : `${summary.timingsMs.afterlife.max} ms`}** with the launcher; up to **${seconds(summary.controls.afterlifeMs.max)}** without it, caught in ${summary.controls.trialsWithViolations} of ${summary.controls.trials} control trials |`,
-    `| **Two instances, one database** | ${raceCount} races of ${wakesPerRace} concurrent wakes, one instance killed or frozen past its lease mid-run: **${sum((g) => g.violations)} invariant violations** (no run executed twice), ${sum((g) => g.takeovers)} takeovers, ${sum((g) => g.fenceRejections)} stale writes refused by the fence, up to ${Math.max(...races.map((g) => g.peakRunning ?? 0))} runs at once |`,
+    `| **Two instances, one database** | ${raceCount} races of ${wakesPerRace} concurrent wakes, one instance ${faults} mid-run: **${sum((g) => g.violations)} invariant violations** (no run executed twice), ${sum((g) => g.takeovers)} takeovers, ${sum((g) => g.fenceRejections)} stale writes refused by the fence, up to ${Math.max(...races.map((g) => g.peakRunning ?? 0))} runs at once |`,
   ];
+  const g = summary.graceful;
+  if (g && g.totals.trials > 0) {
+    rows.splice(
+      4,
+      0,
+      `| **Graceful shutdown** | ${g.totals.trials} trials across ${summary.runKinds} run kinds: the backend asked to stop mid-run, as a deploy does (${g.cleanTrials}), or crashing partway through handing its runs off (${g.totals.trials - g.cleanTrials}). **${g.totals.violations} invariant violations**; after a clean shutdown ${g.sentToPerson} runs waited on a person. The instance exits in p50 **${seconds(g.timingsMs.shutdown.p50)}**, and the work resumes on the next instance p50 **${seconds(g.timingsMs.handoff.p50)}**, p99 **${seconds(g.timingsMs.handoff.p99)}** after the request |`
+    );
+  }
   const commits = summary.commits.map((c) => `\`${c.slice(0, 7)}\``).join(' and ');
   const source = `${summary.commits.length > 1 ? 'Commits' : 'Commit'} ${commits}${summary.dirty ? ' with uncommitted changes' : ''}, ${platform}, Node ${summary.host.node}, ${summary.finishedAt.slice(0, 10)}.`;
   return `${rows.join('\n')}\n\n${source}\n`;

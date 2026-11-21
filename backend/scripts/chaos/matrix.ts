@@ -8,6 +8,10 @@ import { faultLabel, type TrialResult, type TrialSpec } from './trial';
  * a random moment, a second crash during recovery, and a crash while a
  * person's decision is being carried out. A cell that cannot fire is left
  * out rather than counted as a pass.
+ *
+ * Graceful cells follow: each run kind shut down mid-run as a deploy does,
+ * and the same with a crash partway through the handoff. They are summarized
+ * apart from the crash cells.
  */
 export type CellSpec = Omit<TrialSpec, 'seed'>;
 
@@ -36,6 +40,12 @@ export function chaosMatrix(): CellSpec[] {
       cells.push({ kind, first: { point: 'run.before_settle' }, second: { point: second } });
     }
   }
+  for (const kind of RUN_KINDS) {
+    cells.push({ kind, first: 'graceful' });
+    for (const point of ['handoff.before_commit', 'handoff.after_commit'] as const) {
+      cells.push({ kind, first: { point }, shutdown: true });
+    }
+  }
   cells.push({ kind: 'comment', first: { point: 'control_plane.after_commit' }, answer: 'continue' });
   cells.push({ kind: 'edit-dirty', first: { point: 'run.before_settle' }, answer: 'discard' });
   cells.push({
@@ -49,6 +59,9 @@ export function chaosMatrix(): CellSpec[] {
 
 export const cellLabel = (cell: CellSpec) => `${cell.kind} ${faultLabel({ ...cell, seed: 0 })}`;
 
+/** A cell whose first instance is asked to shut down gracefully. */
+export const isGraceful = (cell: Pick<CellSpec, 'first' | 'shutdown'>) => cell.first === 'graceful' || cell.shutdown === true;
+
 /** Nearest-rank percentile; null for no samples. */
 function percentile(values: number[], p: number): number | null {
   if (values.length === 0) return null;
@@ -56,8 +69,9 @@ function percentile(values: number[], p: number): number | null {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))]!;
 }
 
-function spread(values: (number | null)[]) {
-  const samples = values.filter((v): v is number => v !== null);
+function spread(values: (number | null | undefined)[]) {
+  // Results recorded before a timing existed carry no field for it.
+  const samples = values.filter((v): v is number => typeof v === 'number');
   return {
     samples: samples.length,
     p50: percentile(samples, 50),
@@ -126,6 +140,31 @@ export function summarize(results: (TrialResult & { cell: string })[]): ChaosSum
   };
 }
 
+/**
+ * Graceful cells, apart from the crash cells. After a clean shutdown no run
+ * should need a person and none should go through crash recovery; with a
+ * crash partway through the handoff, recovery takes over as after any crash.
+ */
+export function summarizeGraceful(results: (TrialResult & { cell: string })[]) {
+  const clean = results.filter((r) => r.fault === 'graceful');
+  const { totals, violationsByInvariant, cells } = summarize(results);
+  return {
+    totals,
+    violationsByInvariant,
+    cleanTrials: clean.length,
+    /** Runs a clean shutdown left waiting on a person's decision. */
+    sentToPerson: clean.reduce((n, r) => n + r.runs.filter((run) => run.includes('interrupted')).length, 0),
+    /** Runs a clean shutdown left to crash recovery: they carry a recovery class. */
+    recoveredAfterClean: clean.reduce((n, r) => n + r.runs.filter((run) => run.includes('/')).length, 0),
+    timingsMs: {
+      shutdown: spread(clean.map((r) => r.shutdownMs)),
+      handoff: spread(clean.map((r) => r.handoffMs)),
+      afterlife: spread(results.map((r) => r.afterlifeMs)),
+    },
+    cells,
+  };
+}
+
 /** Control trials run without the launcher; their violations are the point, so they are counted, not failed. */
 export function summarizeControls(results: TrialResult[]) {
   const byInvariant: Record<string, number> = {};
@@ -157,5 +196,5 @@ export function summarizeTwoInstances(results: TwoInstanceResult[]) {
       afterlifeMs: spread(list.map((r) => r.afterlifeMs)),
     };
   };
-  return { kill: group('kill'), stall: group('stall') };
+  return { kill: group('kill'), stall: group('stall'), restart: group('restart') };
 }

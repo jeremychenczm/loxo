@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FAKE_AGENT_ENTRY, type Scenario } from '@swarmdev/fake-agent';
@@ -396,6 +397,18 @@ export async function endLeftovers(pids: number[], marker: string, waitMs = 5_00
   }
   for (const pid of running) killTree(pid);
   return running;
+}
+
+/** Runs `instance` holds now, matched by its owner id (host:pid:random, see ownership/instance.ts). */
+export async function runsHeldBy(
+  db: pg.Pool,
+  instance: Pick<Instance, 'pid'>
+): Promise<{ runId: string; epoch: number }[]> {
+  const { rows } = await db.query<{ id: string; owner_epoch: number }>(
+    "SELECT id, owner_epoch FROM runs WHERE status = 'running' AND owner_instance LIKE $1",
+    [`${os.hostname()}:${instance.pid}:%`]
+  );
+  return rows.map((r) => ({ runId: r.id, epoch: r.owner_epoch }));
 }
 
 /** Deterministic random numbers (mulberry32), so a seed reproduces a trial's kill timing. */

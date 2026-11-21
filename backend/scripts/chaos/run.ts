@@ -23,6 +23,8 @@ import { runTwoInstances, type TwoInstanceFault, type TwoInstanceResult } from '
  * One trial, printed:
  *   npm run chaos -w backend -- --kind edit-dirty --first run.before_settle --second decision.before_commit --answer discard
  *   npm run chaos -w backend -- --kind read --first random --no-launcher
+ *   npm run chaos -w backend -- --kind edit-dirty --first graceful
+ *   npm run chaos -w backend -- --kind comment --first handoff.before_commit --shutdown
  * One two-instance race, printed:
  *   npm run chaos:two -w backend -- --fault stall --seed 2
  */
@@ -78,13 +80,14 @@ async function runOne(values: Values): Promise<number> {
   const kind = values.kind as RunKind;
   if (!RUN_KINDS.includes(kind)) throw new Error(`--kind is one of: ${RUN_KINDS.join(', ')}`);
   const first = str(values, 'first');
-  if (!first) throw new Error('--first is a crash point or "random"');
+  if (!first) throw new Error('--first is a crash point, "random", or "graceful"');
   const answer = values.answer as TrialSpec['answer'] | undefined;
   if (answer && !['continue', 'discard', 'stop'].includes(answer)) throw new Error('--answer is continue, discard, or stop');
   const second = str(values, 'second');
   const spec: TrialSpec = {
     kind,
-    first: first === 'random' ? 'random' : namedFault(first),
+    first: first === 'random' || first === 'graceful' ? first : namedFault(first),
+    ...(values.shutdown ? { shutdown: true } : {}),
     ...(second ? { second: namedFault(second) } : {}),
     ...(answer ? { answer } : {}),
     ...(values['no-launcher'] ? { launcher: false } : {}),
@@ -98,7 +101,7 @@ async function runOne(values: Values): Promise<number> {
 
 async function runTwoOnce(values: Values): Promise<number> {
   const fault = (str(values, 'fault') ?? 'kill') as TwoInstanceFault;
-  if (fault !== 'kill' && fault !== 'stall') throw new Error('--fault is kill or stall');
+  if (fault !== 'kill' && fault !== 'stall' && fault !== 'restart') throw new Error('--fault is kill, stall, or restart');
   await prepareTemplate();
   const result = await runTwoInstances({
     fault,
@@ -132,7 +135,7 @@ async function runMatrix(values: Values): Promise<number> {
   const startedAt = new Date().toISOString();
   await prepareTemplate();
 
-  const total = cells.length * perCell + RUN_KINDS.length * controlsPerKind + 2 * twoPerFault;
+  const total = cells.length * perCell + RUN_KINDS.length * controlsPerKind + 3 * twoPerFault;
   let index = 0;
   const step = () => `[${(index += 1)}/${total}]`;
   const pass = (r: TrialResult) => r.reached && !r.error && r.violations.length === 0 && r.leftovers.length === 0;
@@ -151,6 +154,8 @@ async function runMatrix(values: Values): Promise<number> {
         const timing = [
           result.recoveredMs !== null ? `recovered ${(result.recoveredMs / 1000).toFixed(1)}s` : null,
           result.settledMs !== null ? `settled ${(result.settledMs / 1000).toFixed(1)}s` : null,
+          result.shutdownMs !== null ? `shut down ${(result.shutdownMs / 1000).toFixed(1)}s` : null,
+          result.handoffMs !== null ? `resumed ${(result.handoffMs / 1000).toFixed(1)}s` : null,
         ]
           .filter(Boolean)
           .join(' ');
@@ -169,7 +174,7 @@ async function runMatrix(values: Values): Promise<number> {
     }
 
     for (let round = 0; round < twoPerFault; round += 1) {
-      for (const fault of ['kill', 'stall'] as const) {
+      for (const fault of ['kill', 'stall', 'restart'] as const) {
         const result = await runTwoInstances({
           fault,
           runs: TWO_INSTANCE_RUNS,
@@ -234,6 +239,7 @@ async function main(): Promise<void> {
       answer: { type: 'string' },
       seed: { type: 'string' },
       'no-launcher': { type: 'boolean' },
+      shutdown: { type: 'boolean' },
       failures: { type: 'string' },
       trials: { type: 'string' },
       controls: { type: 'string' },

@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CYCLE_MS, KILL_BUDGET_MS, LEASE_TTL_MS, MAX_ATTEMPTS, RETRY_BACKOFF_MS } from './infra';
-import { cellLabel, chaosMatrix, summarize, summarizeControls, summarizeTwoInstances } from './matrix';
+import {
+  cellLabel,
+  chaosMatrix,
+  isGraceful,
+  summarize,
+  summarizeControls,
+  summarizeGraceful,
+  summarizeTwoInstances,
+} from './matrix';
 import type { TrialResult } from './trial';
 import type { TwoInstanceResult } from './two-instances';
 
@@ -58,12 +66,15 @@ export function appendLine(dir: string, file: string, value: unknown): void {
 export function buildSummary(dir: string) {
   const invocations = readLines<Invocation>(dir, FILES.invocations);
   if (invocations.length === 0) throw new Error(`${dir} has no ${FILES.invocations}`);
-  const trials = readLines<TrialResult & { cell: string }>(dir, FILES.trials);
+  const recorded = readLines<TrialResult & { cell: string }>(dir, FILES.trials);
+  const gracefulLabels = new Set(chaosMatrix().filter(isGraceful).map(cellLabel));
+  const trials = recorded.filter((t) => !gracefulLabels.has(t.cell));
+  const gracefulTrials = recorded.filter((t) => gracefulLabels.has(t.cell));
   const controls = readLines<TrialResult>(dir, FILES.controls);
   const races = readLines<TwoInstanceResult>(dir, FILES.twoInstances);
 
   const labels = new Set(trials.map((t) => t.cell));
-  const cells = chaosMatrix().filter((cell) => labels.has(cellLabel(cell)));
+  const cells = chaosMatrix().filter((cell) => !isGraceful(cell) && labels.has(cellLabel(cell)));
   const perCell = new Map<string, number>();
   for (const t of trials) perCell.set(t.cell, (perCell.get(t.cell) ?? 0) + 1);
   const points = new Set(
@@ -87,6 +98,7 @@ export function buildSummary(dir: string) {
     crashPoints: points.size,
     runKinds: new Set(cells.map((c) => c.kind)).size,
     ...summarize(trials),
+    graceful: gracefulTrials.length > 0 ? summarizeGraceful(gracefulTrials) : null,
     controls: summarizeControls(controls),
     twoInstances: summarizeTwoInstances(races),
     invocations,
