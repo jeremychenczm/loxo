@@ -36,19 +36,20 @@ Agents are concurrent OS processes, so correctness cannot depend on caller disci
 
 ### Crash-safe runs
 
-The backend can die mid-run, or a second one can start against the same database. Runs are owned under database-clock leases with epoch fencing: a takeover invalidates the old owner's writes and MCP tokens, and agents run under a launcher that takes their whole process tree down with the backend. Recovery classifies each lost run by what it committed. A run that did nothing is retried automatically; a run that submitted its result settles; anything else waits, with its workspace quarantined, for a person to continue, discard, or stop. Details are in [docs/durable-runs.md](docs/durable-runs.md).
+The backend can die mid-run, or a second one can start against the same database. Runs are owned under database-clock leases with epoch fencing: a takeover invalidates the old owner's writes and MCP tokens, and agents run under a launcher that takes their whole process tree down with the backend. Recovery classifies each lost run by what it committed. A run that did nothing is retried automatically; a run that submitted its result settles; anything else waits, with its workspace quarantined, for a person to continue, discard, or stop. A backend asked to stop, as a deploy does, hands its runs off instead: each agent is cancelled and its work captured, and a follow-up run on the next instance resumes the same agent session without a person. Details are in [docs/durable-runs.md](docs/durable-runs.md).
 
-Measured by killing real backend processes at named crash points (`npm run chaos -w backend`):
+Measured against real backend processes, killed at named crash points or stopped mid-run (`npm run chaos -w backend`):
 
-<!-- chaos-results:begin source=results/chaos/2026-11-20/summary.json -->
+<!-- chaos-results:begin source=results/chaos/2026-11-21/summary.json -->
 | | Result |
 |---|---|
 | **Crash matrix** | 153 trials: 12 crash points across 5 run kinds, 3 per cell, the backend process killed outright each time. **0 invariant violations**, 0 errors, 0 unreached |
-| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **4.2 s**, p99 **6.8 s** (4.0 s lease) |
-| **Orphaned agents** | Longest an agent kept working after its backend died: **2 ms** with the launcher; up to **5.2 s** without it, caught in 10 of 10 control trials |
-| **Two instances, one database** | 6 races of 50 concurrent wakes, one instance killed or frozen past its lease mid-run: **0 invariant violations** (no run executed twice), 30 takeovers, 8 stale writes refused by the fence, up to 10 runs at once |
+| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **4.3 s**, p99 **7.0 s** (4.0 s lease) |
+| **Graceful shutdown** | 45 trials across 5 run kinds: the backend asked to stop mid-run, as a deploy does (15), or crashing partway through handing its runs off (30). **0 invariant violations**, 0 errors, 1 unreached; after a clean shutdown 0 runs waited on a person. The instance exits in p50 **0.5 s**, and the work resumes on the next instance p50 **2.1 s**, p99 **2.7 s** after the request |
+| **Orphaned agents** | Longest an agent kept working after its backend died: **0 ms** with the launcher; up to **5.0 s** without it, caught in 10 of 10 control trials |
+| **Two instances, one database** | 9 races of 50 concurrent wakes, one instance killed, frozen past its lease, or shut down gracefully mid-run: **0 invariant violations** (no run executed twice), 22 takeovers, 1 stale write refused by the fence, up to 10 runs at once |
 
-Commits `667967e` and `9ae4a25`, Windows, Node v24.22.1, 2026-11-21.
+Commit `0fdfb39`, Windows, Node v24.22.1, 2026-11-21.
 <!-- chaos-results:end -->
 
 ### Human authority at the final boundary
@@ -68,12 +69,19 @@ Both use the same agent model, governance rules, run history, and review flow.
 
 ### Live sessions and platform-decided permissions
 
-Every runtime sits behind one host interface. A CLI agent runs in a long-lived ACP session: tool calls stream into the run's event log as they happen, and every action the agent asks to take is decided by Loxo's policy — inside its own worktree it may proceed, outside it is refused, and commands such as `git push`, `sudo`, or recursive deletes outside the worktree go to a person. Unanswered questions are denied when they expire. A watchdog stops turns that go silent, stop making progress, or repeat themselves.
+Every runtime sits behind one host interface. A CLI agent runs in a long-lived ACP session: tool calls stream into the run's event log as they happen, and every permission request is decided by Loxo's policy — inside its own worktree the agent may proceed, outside it is refused, and commands such as `git push`, `sudo`, or recursive deletes outside the worktree go to a person. Unanswered questions are denied when they expire. A watchdog stops turns that go silent, stop making progress, or repeat themselves.
+
+The two CLIs reach that policy differently:
+
+- **Claude Code** stays in its default permission mode, so every tool call and command asks Loxo first. Loxo switches a session back if it leaves that mode, and refuses to start one it cannot hold there. The commands themselves are not sandboxed.
+- **Codex** runs commands inside its own OS sandbox, which can write only the worktree and temporary directories and has no network access, and asks Loxo only to go beyond it. Loxo does not see commands that stay inside the sandbox, and a refused escalation ends Codex's turn.
+
+For both, the worktree is isolated, its state is pinned before the run, every change is captured, and approvals bind to the captured snapshot. Calls to Loxo's own control-plane tools are allowed without asking, since the run token already decides what each call may do.
 
 | Runtime | Transport | Permissions | Live events |
 |---|---|---|---|
-| Claude Code | ACP through `@agentclientprotocol/claude-agent-acp` | Decided per request by Loxo | Yes |
-| Codex | ACP through `@agentclientprotocol/codex-acp` | Decided per request by Loxo | Yes |
+| Claude Code | ACP through `@agentclientprotocol/claude-agent-acp` | Every tool call decided by Loxo | Yes |
+| Codex | ACP through `@agentclientprotocol/codex-acp` | Codex sandbox; escalations decided by Loxo | Yes |
 | API agents | Provider API tool loop | Read-only worktree tools only | Yes |
 
 `npm run runtimes:install` installs the pinned adapters into Loxo's storage directory. They drive the CLIs you already have installed, with their existing logins. A CLI agent cannot run until its adapter is installed; its run fails with the install command, and `GET /api/providers/runtime-health` reports which runtimes are ready.
@@ -188,7 +196,7 @@ npm run chaos -w backend -- --trials 3 --controls 2 --two 3   # results in resul
 
 ## Status and roadmap
 
-Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end and survives a killed backend, with crews and task members as the base for multi-agent work. Next up:
+Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end and survives a killed or restarted backend, with crews and task members as the base for multi-agent work. Next up:
 
 - **Task engine** — declarative playbooks that take a crew through explore, plan, parallel build, integration, cross-review, and sign-off.
 - **Delivery** — local merge or a GitHub pull request, gated on a person's approval of the signed candidate.

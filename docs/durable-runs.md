@@ -1,8 +1,8 @@
 # Crash-safe runs
 
-A Loxo run is one agent working one task: a CLI agent in its own process, editing a git worktree and calling back into the platform through MCP tools. The backend can die at any point in that run — `kill -9`, an out-of-memory kill, a host reboot, or a second backend process started by mistake against the same database.
+A Loxo run is one agent working one task: a CLI agent in its own process, editing a git worktree and calling back into the platform through MCP tools. The backend can die at any point in that run — `kill -9`, an out-of-memory kill, a host reboot, or a second backend process started by mistake against the same database. It is also stopped on purpose, by every deploy.
 
-This document describes how Loxo keeps that from corrupting state, how it recovers, and how the claims are tested.
+This document describes how Loxo keeps that from corrupting state, how it recovers, how a planned stop hands runs off, and how the claims are tested.
 
 **Guarantees.** When a backend process dies, or two run against one database:
 
@@ -10,6 +10,8 @@ This document describes how Loxo keeps that from corrupting state, how it recove
 - A run that may have changed something is never replayed silently. Only a run that provably did nothing is retried automatically.
 - A process that lost ownership of a run, including the agent processes it started, cannot change platform state, and its agent processes are ended.
 - No task and no agent executes two runs at once.
+
+**When a backend is asked to stop**, its runs continue on the next instance in the same agent session, without a person.
 
 ## Ownership
 
@@ -85,6 +87,22 @@ A request unanswered for 24 hours counts as stop. The task page shows the open r
 
 A follow-up run of the same agent tries to reattach the earlier session (`session/resume`, then `session/load`). If neither works, it starts a new session with a note that the earlier context was lost.
 
+## Graceful shutdown
+
+Without a handoff, a planned stop is a crash: runs wait for their leases to expire, and every run that wrote a file goes to a person. A deploy would do that to every run in flight.
+
+`SIGTERM`, `SIGINT`, or a `{ "type": "shutdown" }` message from the parent process starts the stop. Windows cannot deliver `SIGTERM` to a Node process, so a supervisor there sends the message.
+
+1. **Drain.** The reconciler stops and the instance admits no more runs; new wakes stay queued for another instance or the next start. HTTP stays open, because the instance's agents reach the control plane through it.
+2. **Hand off.** Each run in flight is cancelled. An agent still working after `RUN_HANDOFF_GRACE_MS` (5 s) has its session closed and its process tree ended, and a run still starting never launches its agent. The worktree is captured as usual. One fenced transaction then settles the run as `cancelled` with `stop_reason = handoff` and queues one follow-up run of the same agent, with the same attempt number. A run whose turn had already ended settles normally, and a run that had already submitted its result settles as succeeded with no follow-up.
+3. **Exit.** WebSocket, HTTP, the lease connection, and the database pool close only after the handoffs. `SHUTDOWN_TIMEOUT_MS` (25 s, under the default 30 s Kubernetes grace period) bounds the whole stop. Past it the process exits anyway, and any run not yet handed off is still leased and recovers as after a crash.
+
+Another instance's reconciler promotes the follow-up run, or the restarted instance's first pass does. It reattaches the agent's session like any follow-up run.
+
+The follow-up needs no person because, unlike after a crash, nothing about the run is unknown. The owner was alive throughout: it cancelled the agent, captured the worktree, and committed or rolled back every control-plane write before giving the run up. A person's continue would do the same thing.
+
+A crash during the handoff is covered by two crash points: before the handoff commits, the run falls back to crash recovery; after it commits, the handoff stands.
+
 ## Orphaned agent processes
 
 Killing a backend does not kill what it started. On Windows, a CLI behind a `.cmd` shim leaves descendants that no longer have a live parent, and `taskkill /T` cannot find them. On POSIX, the whole process group survives.
@@ -109,16 +127,17 @@ The chaos invariant checker (`backend/scripts/chaos/invariants.ts`) reads these 
 | INV-3 | No write under epoch *e* commits after the takeover to *e + 1*. Uses commit timestamps of run events, timeline entries, change snapshots, and control-plane requests. |
 | INV-4 | A run's terminal tool takes effect at most once, and no effect lands twice. |
 | INV-5 | An interrupted run has exactly one retry request, still open, and its workspace stays quarantined. |
-| INV-6 | Only runs that committed nothing and left the worktree unchanged are retried automatically, within the attempt cap. Recovery's class agrees with what the run committed. No run is replayed without a person choosing continue or discard. |
+| INV-6 | Only runs that committed nothing and left the worktree unchanged are retried automatically, within the attempt cap. Recovery's class agrees with what the run committed. No run is replayed without a person choosing continue or discard, except the one follow-up of a handoff. |
 | INV-7 | No queued run sits with both gates free for longer than a reconciler cycle. |
 | INV-8 | Every wake ends, through its retries, in a final state or an open request to a person. |
 | INV-9 | No task or agent executes two runs at once, and no agent keeps working more than a second after the backend it worked for died. |
+| INV-10 | A backend stopped gracefully gives up every run it held under the epoch it held: settled by itself or handed off, never taken over, interrupted, or left running. A handed-off run has exactly one follow-up, or none if it had already submitted its result, in which case it succeeded. |
 
 INV-9 comes from the agents themselves. During a prompt, the scripted test agent writes a heartbeat every 50 ms to a file outside the database, tagged with the run and epoch from its token and the control plane it talks to.
 
 ## Chaos testing
 
-**Crash points.** Twelve named points in a run's life — from the wake's commit, through admission, process start, tool calls, capture, and settlement, to each recovery step and a person's decision — can end the process on demand:
+**Crash points.** Fourteen named points in a run's life — from the wake's commit, through admission, process start, tool calls, capture, and settlement, to each recovery step, a person's decision, and a handoff — can end the process on demand:
 
 - `LOXO_CRASH_AT=<point>[@<n>]` logs the hit and sends the process `SIGKILL` on its n-th pass. No `finally` block or exit hook runs, as with an outside `kill -9`.
 - `LOXO_STALL_AT=<point>[@<n>]=<ms>` blocks the event loop instead, like a long GC pause.
@@ -127,13 +146,13 @@ INV-9 comes from the agents themselves. During a prompt, the scripted test agent
 
 1. Clone a fresh database from a migrated template.
 2. Start a backend with a fault armed; drive it through the HTTP API to wake a scripted agent.
-3. Let the backend die at the point, or kill it from outside at a random moment.
+3. Let the backend die at the point, kill it from outside at a random moment, or ask it to stop at a random moment.
 4. Start a fresh instance to recover.
 5. At a fixed check time (crash + lease + two reconciler cycles + longest back-off + one run), run the checker.
 
 Second crashes are supported, both during recovery and while a person's discard is being carried out.
 
-**The matrix** crosses five run kinds with every crash point each one passes, plus random kills, second crashes in each recovery step, and crashes while a person's continue or discard is carried out: 51 cells. The run kinds are:
+**The crash matrix** crosses five run kinds with every crash point each one passes outside a handoff, plus random kills, second crashes in each recovery step, and crashes while a person's continue or discard is carried out: 51 cells over twelve points. The run kinds are:
 
 - read-only;
 - posts a comment;
@@ -141,9 +160,11 @@ Second crashes are supported, both during recovery and while a person's discard 
 - may edit but changes nothing;
 - writes a file.
 
+**Graceful cells** give each run kind a stop requested at a random moment mid-run, and the same stop with the process killed just before or just after its handoff commits: 15 cells.
+
 **Controls** repeat random kills with the launcher turned off, to show what the checker catches when orphans survive.
 
-**Two instances** race on one database: 50 tasks on 10 agents, all woken at once through both instances. Mid-run, one instance is either killed and restarted, or frozen past its leases; a frozen instance's writes after waking must be refused by the fence.
+**Two instances** race on one database: 50 tasks on 10 agents, all woken at once through both instances. Mid-run, one instance is killed and restarted, frozen past its leases, or stopped gracefully as in a rolling restart. A frozen instance's writes after waking must be refused by the fence.
 
 Run it locally:
 
@@ -151,6 +172,7 @@ Run it locally:
 docker compose --profile chaos up -d --wait          # Postgres with commit timestamps, on 5435
 npm run chaos -w backend -- --trials 3 --controls 2 --two 3
 npm run chaos -w backend -- --kind edit-dirty --first run.before_settle --second decision.before_commit --answer discard
+npm run chaos -w backend -- --kind edit-dirty --first graceful
 ```
 
 Results go to `results/chaos/<date>/`, and `--out <dir>` adds a later invocation to an existing directory:
@@ -161,22 +183,26 @@ Results go to `results/chaos/<date>/`, and `--out <dir>` adds a later invocation
 
 ## Results
 
-These numbers are rendered from the summary named in the marker; `npm run chaos:results -w backend -- --check` fails in CI if they drift from it. In this run, the matrix and controls ran on the first commit and the two-instance races on the second; the two differ only in the chaos driver.
+These numbers are rendered from the summary named in the marker; `npm run chaos:results -w backend -- --check` fails in CI if they drift from it. The unreached graceful trial never started: its first backend instance printed nothing and did not answer within 60 seconds, before any stop was requested.
 
-<!-- chaos-results:begin source=results/chaos/2026-11-20/summary.json -->
+<!-- chaos-results:begin source=results/chaos/2026-11-21/summary.json -->
 | | Result |
 |---|---|
 | **Crash matrix** | 153 trials: 12 crash points across 5 run kinds, 3 per cell, the backend process killed outright each time. **0 invariant violations**, 0 errors, 0 unreached |
-| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **4.2 s**, p99 **6.8 s** (4.0 s lease) |
-| **Orphaned agents** | Longest an agent kept working after its backend died: **2 ms** with the launcher; up to **5.2 s** without it, caught in 10 of 10 control trials |
-| **Two instances, one database** | 6 races of 50 concurrent wakes, one instance killed or frozen past its lease mid-run: **0 invariant violations** (no run executed twice), 30 takeovers, 8 stale writes refused by the fence, up to 10 runs at once |
+| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **4.3 s**, p99 **7.0 s** (4.0 s lease) |
+| **Graceful shutdown** | 45 trials across 5 run kinds: the backend asked to stop mid-run, as a deploy does (15), or crashing partway through handing its runs off (30). **0 invariant violations**, 0 errors, 1 unreached; after a clean shutdown 0 runs waited on a person. The instance exits in p50 **0.5 s**, and the work resumes on the next instance p50 **2.1 s**, p99 **2.7 s** after the request |
+| **Orphaned agents** | Longest an agent kept working after its backend died: **0 ms** with the launcher; up to **5.0 s** without it, caught in 10 of 10 control trials |
+| **Two instances, one database** | 9 races of 50 concurrent wakes, one instance killed, frozen past its lease, or shut down gracefully mid-run: **0 invariant violations** (no run executed twice), 22 takeovers, 1 stale write refused by the fence, up to 10 runs at once |
 
-Commits `667967e` and `9ae4a25`, Windows, Node v24.22.1, 2026-11-21.
+Commit `0fdfb39`, Windows, Node v24.22.1, 2026-11-21.
 <!-- chaos-results:end -->
 
 ## Known limitations
 
 - Recovery takes about one lease plus one reconciler cycle; the chaos runs use a 4 s lease to keep trials short, against a 30 s default.
+- A handoff interrupts the agent's current step, as pressing Esc in the CLI would. The follow-up resumes the conversation, not the step: a command cut off midway may have left partial output, and the agent runs it again.
+- Handoffs do not count toward the retry cap, so a backend restarted in a loop hands the same run off every time.
+- On Windows, an outside `SIGTERM` kills a Node process outright; that stop is recovered as a crash. Only the parent process's message or Ctrl+C gives a graceful stop there.
 - The fence stops an honest owner that is out of date, not a malicious agent.
 - File writes by an agent after its owner died are bounded by the launcher, the quarantine, and snapshot-pinned approvals, but not proven to be zero.
 - Recovery steps do not renew their own lease. A git assessment longer than the lease is redone by the next instance; the old recoverer's writes are refused, so it only costs time.
@@ -188,4 +214,4 @@ Commits `667967e` and `9ae4a25`, Windows, Node v24.22.1, 2026-11-21.
 - A run that crashed after its worktree was pinned but before its agent's identity was recorded is indistinguishable from one whose agent did start. It goes to a person instead of being retried.
 - A stale merge lock is recognized by its lease. A holder cut off from the database for longer than the lease may see another instance begin recovery while git is still merging; recovery proves the git state before touching it.
 - The published chaos results come from one Windows machine. CI runs the test suite on Linux, including the launcher and orphan tests, but not the chaos matrix.
-- The chaos agents are scripted, not real CLIs. The witness relies on their cooperation, and their heartbeat bounds timing precision to 50 ms.
+- The chaos agents are scripted, not real CLIs. The witness relies on their cooperation, and their heartbeat bounds timing precision to 50 ms. Claude Code and Codex were each put through one crash and one graceful stop by hand mid-task, and both resumed their session and finished; those drills are not automated.
