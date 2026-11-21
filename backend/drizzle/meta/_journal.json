@@ -302,6 +302,13 @@
       "when": 1795065254357,
       "tag": "0042_run-launcher",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795301183667,
+      "tag": "0043_workshop-dispatches",
+      "breakpoints": true
     }
   ]
 }

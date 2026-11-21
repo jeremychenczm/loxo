@@ -30,6 +30,14 @@ export interface CreateRunInput {
   attempt?: number;
   /** Keeps the run from being promoted for this long, measured on the database clock. */
   delayMs?: number;
+  /** Defaults to task:<taskId>, the per-task gate legacy runs use. */
+  gateKey?: string | null;
+  workspaceId?: string | null;
+  dispatchId?: string | null;
+}
+
+export function taskGateKey(taskId: string): string {
+  return `task:${taskId}`;
 }
 
 export interface RunOutcome {
@@ -78,6 +86,9 @@ export async function createQueuedRun(userId: string, input: CreateRunInput, ex:
       parentRunId: input.parentRunId ?? null,
       attempt: input.attempt ?? 1,
       notBefore: input.delayMs ? sql`clock_timestamp() + ${input.delayMs}::integer * interval '1 millisecond'` : null,
+      gateKey: input.gateKey !== undefined ? input.gateKey : input.taskId ? taskGateKey(input.taskId) : null,
+      workspaceId: input.workspaceId ?? null,
+      dispatchId: input.dispatchId ?? null,
     })
     .returning();
   return run!;

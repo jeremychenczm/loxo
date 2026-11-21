@@ -79,6 +79,13 @@ describe('runs service', () => {
     expect(run.output).toBe('');
     expect(run.startedAt).toBeNull();
     expect(run.agentName).toBe('Run worker');
+    expect(run).toMatchObject({ actor: 'agent', gateKey: `task:${taskId}`, workspaceId: null, dispatchId: null });
+  });
+
+  it('gives a run without a task no gate key', async () => {
+    const run = await queueRun({ taskId: null });
+    await failQueuedRun(run.id, 'cleanup');
+    expect(run.gateKey).toBeNull();
   });
 
   it('admits a queued run exactly once, with a new epoch and a lease on the database clock', async () => {
