@@ -43,6 +43,8 @@ jobs:
       # Commit-timestamp checks of the chaos invariant checker run against this server.
       - run: docker compose --profile chaos up -d --wait postgres-chaos
       - run: npm run typecheck -w backend
+      # The crash-recovery numbers in README.md and docs/durable-runs.md must match the summary they cite.
+      - run: npm run chaos:results -w backend -- --check
       # Fails below 90% line coverage of the run-ownership and recovery modules.
       - run: npm run test:coverage -w backend
 
