@@ -212,7 +212,7 @@ async function runMatrix(values: Values): Promise<number> {
     `
 this invocation: ${trials.length} matrix trials (${trials.filter(pass).length} passed), ${races.length} races (${racesFailed} failed)` +
       `
-directory: matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; controls ${summary.controls.trials}; races ${summary.twoInstances.kill.runs + summary.twoInstances.stall.runs}` +
+directory: matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials, ${summary.graceful?.totals.violations ?? 0} violations; controls ${summary.controls.trials}; races ${Object.values(summary.twoInstances).reduce((n, g) => n + g.runs, 0)}` +
       `
 -> ${path.relative(REPO_DIR, out)}`
   );
@@ -225,7 +225,7 @@ function runSummarize(dir: string): number {
   const summary = writeSummary(out);
   const t = summary.totals;
   console.log(
-    `matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; controls ${summary.controls.trials}; races ${summary.twoInstances.kill.runs + summary.twoInstances.stall.runs} -> ${path.relative(REPO_DIR, out)}`
+    `matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials; controls ${summary.controls.trials}; races ${Object.values(summary.twoInstances).reduce((n, g) => n + g.runs, 0)} -> ${path.relative(REPO_DIR, out)}`
   );
   return 0;
 }
