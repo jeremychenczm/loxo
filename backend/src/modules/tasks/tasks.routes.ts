@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { badRequest } from '../../http/errors';
+import { badRequest, conflict } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
 import { requestWake } from '../runs/wake';
 import {
@@ -17,6 +17,7 @@ import {
   deleteTask,
   getBoard,
   getTask,
+  isWorkshop,
   listTasks,
   MAX_TASK_MEMBERS,
   moveTask,
@@ -155,6 +156,7 @@ tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
       crewId: z.string().uuid().optional(),
       leadAgentId: z.string().uuid().optional(),
       memberAgentIds: memberIds.optional(),
+      playbook: z.enum(['legacy', 'build', 'solo']).optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Task title is required');
@@ -212,6 +214,9 @@ tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid wake request');
 
     const task = await getTask(req.auth!.userId, String(req.params.id));
+    if (isWorkshop(task)) {
+      throw conflict('workshop_task', 'The workshop engine starts runs on this task');
+    }
     if (!task.leadAgentId) {
       throw badRequest('no_lead', 'Choose a lead agent for this task first');
     }

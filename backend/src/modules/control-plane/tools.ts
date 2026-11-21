@@ -13,13 +13,15 @@ import {
   type ApprovalDecision,
   type Run,
 } from '../../db/schema';
-import { badRequest, unauthorized } from '../../http/errors';
+import { config } from '../../config';
+import { badRequest, conflict, unauthorized } from '../../http/errors';
+import { openHumanRequest } from '../human-requests/human-requests.service';
 import {
   countAgentRejections,
   recordAgentVerdict,
   REVIEW_CYCLE_CAP,
 } from '../tasks/approvals.service';
-import { moveTaskWithin } from '../tasks/tasks.service';
+import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
 import { startQueuedRuns } from '../runs/wake';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
@@ -243,6 +245,9 @@ export async function commentOnTask(ctx: RunToolContext, body: string): Promise<
 
 /** Status writes go through the same transition table as every other path. */
 export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus): Promise<StatusResult> {
+  if (isWorkshop(ctx.task)) {
+    throw conflict('workshop_status', "A workshop task's status follows its phases");
+  }
   return controlPlaneWrite(ctx, 'update_task_status', { status }, async (tx, queued) => {
     const moved = await moveTaskWithin(tx, ctx.run.userId, ctx.task.id, { status });
     queued.push(...moved.queued);
@@ -250,19 +255,38 @@ export async function updateTaskStatus(ctx: RunToolContext, status: TaskStatus):
   });
 }
 
-/** Flags the run's task as blocked with the question on the timeline. */
+/**
+ * Puts the question on the timeline. A legacy task is flagged as blocked; on
+ * a workshop task the question becomes an open request for a person, since
+ * only the engine moves its status.
+ */
 export async function askBlocker(ctx: RunToolContext, question: string): Promise<StatusResult> {
   return controlPlaneWrite(ctx, 'ask_blocker', { question }, async (tx, queued) => {
     await postAsAgent(ctx, `[BLOCKER] ${question}`, tx);
+    if (isWorkshop(ctx.task)) {
+      await openHumanRequest(
+        {
+          taskId: ctx.task.id,
+          runId: ctx.run.id,
+          kind: 'input',
+          payload: { question, agentId: ctx.agent.id, agentName: ctx.agent.name },
+          choices: [],
+          ttlMs: config.blockerQuestionTtlMs,
+        },
+        tx
+      );
+      return { status: (await freshTask(ctx, tx)).status };
+    }
     return { status: (await advanceTo(ctx, 'blocked', tx, queued)).status };
   });
 }
 
-/** Posts the result and hands the task to review. */
+/** Posts the result; a legacy task moves to review. */
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
   return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, queued) => {
     await postAsAgent(ctx, summary, tx);
+    if (isWorkshop(ctx.task)) return { status: (await freshTask(ctx, tx)).status };
     return { status: (await advanceTo(ctx, 'in_review', tx, queued)).status };
   });
 }

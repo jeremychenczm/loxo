@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
-import { db } from '../../db/client';
+import { db, type Executor } from '../../db/client';
 import {
   humanRequests,
   tasks,
@@ -32,8 +32,8 @@ export interface OpenRequestInput {
   ttlMs: number;
 }
 
-export async function openHumanRequest(input: OpenRequestInput): Promise<HumanRequest> {
-  const [row] = await db
+export async function openHumanRequest(input: OpenRequestInput, ex: Executor = db): Promise<HumanRequest> {
+  const [row] = await ex
     .insert(humanRequests)
     .values({
       taskId: input.taskId,

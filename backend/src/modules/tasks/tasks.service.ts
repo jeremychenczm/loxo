@@ -5,6 +5,7 @@ import {
   taskMembers,
   tasks,
   users,
+  type Playbook,
   type Run,
   type Task,
   type TaskStatus,
@@ -206,6 +207,12 @@ export interface CreateTaskInput {
   crewId?: string;
   leadAgentId?: string;
   memberAgentIds?: string[];
+  playbook?: Playbook;
+}
+
+/** Workshop tasks are driven by the engine: no status-driven wakes, no manual status moves. */
+export function isWorkshop(task: Pick<Task, 'playbook'>): boolean {
+  return task.playbook !== 'legacy';
 }
 
 export async function createTask(userId: string, input: CreateTaskInput): Promise<Task> {
@@ -241,6 +248,7 @@ export async function createTask(userId: string, input: CreateTaskInput): Promis
         brief: input.brief ?? '',
         leadAgentId,
         boardOrder,
+        playbook: input.playbook ?? 'legacy',
       })
       .returning();
     await writeRoster(tx, task!.id, roster);
@@ -313,6 +321,10 @@ export async function updateTask(
 ): Promise<Task> {
   const existing = await findTask(userId, taskId);
   if (!existing) throw notFound('Task not found');
+  const rosterChange = input.memberAgentIds !== undefined || input.leadAgentId !== undefined;
+  if (rosterChange && isWorkshop(existing) && existing.phase !== null) {
+    throw conflict('workshop_started', 'Members and lead are fixed once a workshop starts');
+  }
 
   const patch: Partial<typeof tasks.$inferInsert> = {
     ...(input.title !== undefined ? { title: input.title } : {}),
@@ -321,7 +333,7 @@ export async function updateTask(
   };
 
   let roster: string[] | null = null;
-  if (input.memberAgentIds !== undefined || input.leadAgentId !== undefined) {
+  if (rosterChange) {
     const current = await activeMemberIds(taskId);
     const requested = input.memberAgentIds ?? current;
     const lead =
@@ -342,7 +354,8 @@ export async function updateTask(
       .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
       .returning();
     if (roster) await writeRoster(tx, taskId, roster);
-    const newLead = row!.leadAgentId !== null && row!.leadAgentId !== existing.leadAgentId;
+    const newLead =
+      !isWorkshop(row!) && row!.leadAgentId !== null && row!.leadAgentId !== existing.leadAgentId;
     const wakes = newLead ? leadWake(row!, `You now lead task #${row!.number}: ${row!.title}`) : [];
     return { updated: row!, queued: await queueWakes(tx, wakes) };
   });
@@ -379,6 +392,9 @@ export async function moveTaskWithin(
   if (!existing) throw notFound('Task not found');
 
   const changingStatus = input.status !== existing.status;
+  if (changingStatus && isWorkshop(existing)) {
+    throw conflict('workshop_status', "A workshop task's status follows its phases");
+  }
   if (changingStatus && !isTransitionAllowed(existing.status, input.status)) {
     throw badRequest(
       'invalid_transition',
