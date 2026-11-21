@@ -1,9 +1,10 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { CliRuntime } from '@swarmdev/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AcpHost } from '../src/modules/hosts/acp-host';
 import type { PermissionRequest } from '../src/modules/hosts/host.types';
-import { acpLaunchSpec, resolveAcpAdapter } from '../src/modules/hosts/runtime-catalog';
+import { ACP_ADAPTERS, acpLaunchSpec, resolveAcpAdapter } from '../src/modules/hosts/runtime-catalog';
 import { describeHostContract } from './conformance/host-contract';
 import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 
@@ -13,6 +14,14 @@ import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo
  * `npm run runtimes:install`, with the CLIs logged in.
  */
 const enabled = process.env.LOXO_REAL_CLI === '1';
+
+// `npm run runtimes:install` puts the adapters under the default storage root;
+// the suite's own storage root is a scratch directory.
+const installRoot = path.resolve('data', 'storage', 'runtimes', 'node_modules');
+for (const adapter of Object.values(ACP_ADAPTERS)) {
+  const entry = path.join(installRoot, ...adapter!.package.split('/'), adapter!.entry);
+  if (enabled && !process.env[adapter!.overrideEnv] && fs.existsSync(entry)) process.env[adapter!.overrideEnv] = entry;
+}
 const RUNTIMES: CliRuntime[] = ['claude-code', 'codex'];
 const T = 240_000;
 

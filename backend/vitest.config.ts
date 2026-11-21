@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -9,6 +11,8 @@ export default defineConfig({
       JWT_SECRET: 'test-jwt-secret',
       SECRETS_KEY: 'oGkxLXhSTGGdzenXWYyLW9leHnJHUzlXY1YyY3ZJdEU=',
       DATABASE_URL: 'postgres://postgres:postgres@localhost:5434/swarmdev_test',
+      // Workspaces and adapters the suite creates stay out of the developer's data/storage.
+      STORAGE_ROOT: process.env.STORAGE_ROOT ?? path.join(os.tmpdir(), 'loxo-test-storage'),
     },
     fileParallelism: false,
     // `npm run test:coverage`: the run-ownership and recovery modules must stay covered.
