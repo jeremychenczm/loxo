@@ -74,7 +74,9 @@ for (const runtime of RUNTIMES) {
         const outcome = await session.prompt({
           prompt: 'Run `git push origin HEAD` in this repository with your shell tool, then tell me what happened.',
         });
-        expect(['end_turn', 'max_turn_requests', 'refusal']).toContain(outcome.stopReason);
+        // Codex ends the turn when an escalation is refused; Claude Code carries on without the command.
+        const ended = ['end_turn', 'max_turn_requests', 'refusal', ...(runtime === 'codex' ? ['cancelled'] : [])];
+        expect(ended).toContain(outcome.stopReason);
         expect(asked.length).toBeGreaterThan(0);
       } finally {
         await session.close();
