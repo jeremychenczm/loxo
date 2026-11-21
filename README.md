@@ -4,7 +4,7 @@
 
 Loxo coordinates continuous work across coding agents and API agents: assign tasks, isolate code changes, observe execution, review system-captured evidence, and keep humans in control of completion. Agent runtimes do the work; Loxo provides ownership, audit trails, review gates, and cost tracking around it.
 
-*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 312 automated tests*
+*TypeScript end to end · Express + Postgres backend · Next.js 14 frontend · 450+ automated tests*
 
 ## Core loop
 
@@ -30,9 +30,26 @@ Agent-authored summaries provide context, but the platform collects the proof.
 
 Agents are concurrent OS processes, so correctness cannot depend on caller discipline.
 
-- **One admission surface** handles assignment, manual wake, and review rejection. It merges duplicate triggers, claims the agent, locks the task, or queues the request FIFO.
-- **Atomic agent claims** use a conditional `UPDATE … RETURNING`, so one agent never executes two runs at once.
-- **Schema-backed task locks** prevent duplicate execution of one task across every trigger path.
+- **One admission surface** handles assignment, manual wake, and review rejection. It merges duplicate triggers into the run already queued, or queues the request FIFO.
+- **Admission is one statement**, guarded by partial unique indexes: one running run per agent and one running or interrupted run per task, so no agent or task ever executes two runs at once, whichever path woke them.
+- **Leased, fenced ownership**: every running run belongs to one backend process under a lease and an epoch, and every platform write checks that epoch in the same transaction (see below).
+
+### Crash-safe runs
+
+The backend can die mid-run, or a second one can start against the same database. Runs are owned under database-clock leases with epoch fencing: a takeover invalidates the old owner's writes and MCP tokens, and agents run under a launcher that takes their whole process tree down with the backend. Recovery classifies each lost run by what it committed. A run that did nothing is retried automatically; a run that submitted its result settles; anything else waits, with its workspace quarantined, for a person to continue, discard, or stop. Details are in [docs/durable-runs.md](docs/durable-runs.md).
+
+Measured by killing real backend processes at named crash points (`npm run chaos -w backend`):
+
+<!-- chaos-results:begin source=results/chaos/2026-11-20/summary.json -->
+| | Result |
+|---|---|
+| **Crash matrix** | 153 trials: 12 crash points across 5 run kinds, 3 per cell, the backend process killed outright each time. **0 invariant violations**, 0 errors, 0 unreached |
+| **Recovery** | From the crash until every run the dead instance owned was resolved: p50 **4.2 s**, p99 **6.8 s** (4.0 s lease) |
+| **Orphaned agents** | Longest an agent kept working after its backend died: **2 ms** with the launcher; up to **5.2 s** without it, caught in 10 of 10 control trials |
+| **Two instances, one database** | 6 races of 50 concurrent wakes, one instance killed or frozen past its lease mid-run: **0 invariant violations** (no run executed twice), 30 takeovers, 8 stale writes refused by the fence, up to 10 runs at once |
+
+Commits `667967e` and `9ae4a25`, Windows, Node v24.22.1, 2026-11-21.
+<!-- chaos-results:end -->
 
 ### Human authority at the final boundary
 
@@ -63,7 +80,7 @@ Every runtime sits behind one host interface. A CLI agent runs in a long-lived A
 
 ### MCP control plane
 
-Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token whose validity is checked against active run state. If an agent posts nothing through these tools, its final reply lands on the timeline instead.
+Woken agents call back through six MCP tools: `get_task`, `comment_on_task`, `update_task_status`, `submit_review`, `ask_blocker`, and `submit_result`. Every run receives a stateless HMAC-signed token bound to the run's owner epoch, so a takeover invalidates it; validity is checked against run state on every call. If an agent posts nothing through these tools, its final reply lands on the timeline instead.
 
 ## Feature tour
 
@@ -91,7 +108,7 @@ flowchart LR
         RUNNER[Agent runner<br/>ACP sessions and API agents]
     end
     subgraph Data
-        PG[(Postgres 16<br/>15 tables and Drizzle ORM)]
+        PG[(Postgres 16<br/>16 tables and Drizzle ORM)]
         FS[Workspace storage<br/>git worktrees and manifests]
     end
     LLM[OpenAI and Anthropic APIs]
@@ -108,7 +125,7 @@ flowchart LR
 - **One backend port** serves REST and WebSocket traffic through HTTP upgrade.
 - **Postgres 16 + Drizzle ORM** provides migration history, normalized relations, execution locks, and review state.
 - **Security posture:** provider keys use AES-256-GCM encryption at rest; startup fails without `JWT_SECRET`; path checks fence workspace access.
-- **Monorepo:** npm workspaces; `backend/` contains 12 domain modules, `frontend/` contains 10 App Router routes, `packages/shared/` holds runtime types and process helpers, and `packages/fake-agent/` is a scripted ACP agent for tests.
+- **Monorepo:** npm workspaces; `backend/` contains 13 domain modules, `frontend/` contains 10 App Router routes, `packages/shared/` holds runtime types and process helpers, and `packages/fake-agent/` is a scripted ACP agent for tests.
 
 ## Getting started
 
@@ -148,8 +165,9 @@ Tasks without a repository run in the agent's own workspace.
 ## Testing
 
 ```bash
-npm test             # 312 backend tests — API, runs, governance, workspaces, and migrations
-npm run typecheck    # backend and frontend
+npm test                          # 450+ backend tests: API, runs, ownership and recovery, governance, workspaces, migrations
+npm run test:coverage -w backend  # the same, failing below 90% line coverage of the run-ownership modules
+npm run typecheck                 # backend and frontend
 ```
 
 Every agent host passes one shared contract (`backend/test/conformance/host-contract.ts`): it completes and streams a turn, runs one turn at a time, cancels promptly, reports failures as outcomes, and closes cleanly. A scripted ACP agent (`packages/fake-agent`) drives the hosts through stalls, crashes, malformed output, and permission requests. To run the same contract against the real Claude Code and Codex CLIs — this spends model tokens — install the adapters and opt in:
@@ -159,13 +177,19 @@ npm run runtimes:install
 LOXO_REAL_CLI=1 npm test -- test/real-cli.test.ts   # PowerShell: $env:LOXO_REAL_CLI=1; npm test -- test/real-cli.test.ts
 ```
 
-The suite covers admission and agent claims, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
+The suite covers admission and agent claims, leases and fencing, recovery and takeover races, workspace capture, permission enforcement, snapshot-bound approval, schema-level invariants, upgrades of populated databases, and real-git proof that managed worktrees never touch your checkout.
+
+Crash recovery is tested against real backend processes on a separate Postgres with commit timestamps enabled:
+
+```bash
+docker compose --profile chaos up -d --wait
+npm run chaos -w backend -- --trials 3 --controls 2 --two 3   # results in results/chaos/<date>/
+```
 
 ## Status and roadmap
 
-Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end, with crews and task members as the base for multi-agent work. Next up:
+Loxo is under active solo development. The single-agent loop — tasks, wakes, runs, reviews, and workspaces — works end to end and survives a killed backend, with crews and task members as the base for multi-agent work. Next up:
 
-- **Crash-safe runs** — leased run ownership with fencing, so a killed backend recovers without lost or silently replayed turns.
 - **Task engine** — declarative playbooks that take a crew through explore, plan, parallel build, integration, cross-review, and sign-off.
 - **Delivery** — local merge or a GitHub pull request, gated on a person's approval of the signed candidate.
 - **Local mode** — one command with embedded Postgres, plus desktop builds.
