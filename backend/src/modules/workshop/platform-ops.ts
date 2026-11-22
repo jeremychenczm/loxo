@@ -3,6 +3,7 @@ import { config } from '../../config';
 import type { Executor, Tx } from '../../db/client';
 import { db } from '../../db/client';
 import fs from 'node:fs';
+import path from 'node:path';
 import { humanRequests, platformOps, tasks, workspaces, type PlatformOp, type Run, type WorkshopPhase } from '../../db/schema';
 import { localGitDriver } from '../code-workspaces/local-git-driver';
 import { getWorkspace } from '../code-workspaces/workspace.service';
@@ -147,7 +148,36 @@ export async function executePlatformRun(run: Run, ctx: Omit<PlatformOpContext, 
       await localGitDriver.clearInterruptedState(workspace.worktreePath, { keepMerge: op.kind === 'begin_resolve' });
     }
   }
-  return handler(op, { ...ctx, run });
+  const witnessed = witness(run, ctx.lease.epoch);
+  try {
+    return await handler(op, { ...ctx, run });
+  } finally {
+    witnessed();
+  }
+}
+
+const WITNESS_BEAT_MS = 50;
+
+/**
+ * With LOXO_PLATFORM_WITNESS_DIR set (chaos trials), records when this
+ * process executes an operation, in the witness format agents use, so the
+ * double-execution check sees platform operations next to agents. Returns
+ * the function that writes the end line.
+ */
+function witness(run: Run, epoch: number): () => void {
+  const dir = process.env.LOXO_PLATFORM_WITNESS_DIR;
+  if (!dir) return () => {};
+  const file = path.join(dir, `platform-${process.pid}.jsonl`);
+  const base = { run: run.id, epoch, via: new URL(config.mcpUrl()).host, pid: process.pid };
+  const write = (mark: 'start' | 'beat' | 'end') =>
+    fs.appendFileSync(file, `${JSON.stringify({ ...base, t: Date.now(), mark })}\n`);
+  write('start');
+  const beat = setInterval(() => write('beat'), WITNESS_BEAT_MS);
+  beat.unref();
+  return () => {
+    clearInterval(beat);
+    write('end');
+  };
 }
 
 /** Whether a follow-up or retry run may carry the operation on: it is still wanted. */

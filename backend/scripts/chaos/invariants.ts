@@ -33,6 +33,8 @@ export interface InvariantInput {
   wakeRuns?: string[];
   /** Fake-agent witness logs (INV-9). */
   witnessDir?: string;
+  /** Platform operation witness logs the backends wrote, in the same format (INV-9). */
+  platformWitnessDir?: string;
   /** Backend instances that died, by the control-plane host:port their agents saw (INV-9). */
   deaths?: { via: string; at: number }[];
   /** How long an agent may outlive the backend it worked for; default 1 s (INV-9). */
@@ -50,10 +52,19 @@ export interface InvariantInput {
   skip?: InvariantId[];
 }
 
-const TERMINAL_TOOLS = ['submit_result', 'submit_review'];
+const TERMINAL_TOOLS = [
+  'submit_result',
+  'submit_review',
+  'submit_exploration',
+  'submit_plan',
+  'submit_plan_review',
+  'submit_verification',
+  'submit_triage',
+  'submit_sign_off',
+];
 const FINAL_RUN_STATUSES = ['succeeded', 'failed', 'cancelled'];
 const LIVE_WORKSPACE_EXCLUDED = ['merged', 'retained', 'abandoned'];
-const EPOCH_TABLES = ['run_events', 'turns', 'change_snapshots', 'control_plane_requests'] as const;
+const EPOCH_TABLES = ['run_events', 'turns', 'change_snapshots', 'control_plane_requests', 'dispatch_reports'] as const;
 
 type Check = (input: InvariantInput) => Promise<Violation[]>;
 
@@ -75,21 +86,21 @@ const expiredLeases: Check = async ({ db }) =>
     detail: r.lease ? `running with a lease that expired at ${r.lease.toISOString()}` : 'running without a lease',
   }));
 
-/** INV-2: one running run per agent; one running or interrupted run per task. */
+/** INV-2: one running run per agent; one running or interrupted run per gate (a worktree, or a legacy task). */
 const doubleClaims: Check = async ({ db }) => {
   const byAgent = await rows<{ subject: string; ids: string[] }>(
     db,
     `SELECT agent_id AS subject, array_agg(id ORDER BY id) AS ids FROM runs
      WHERE status = 'running' AND agent_id IS NOT NULL GROUP BY agent_id HAVING count(*) > 1`
   );
-  const byTask = await rows<{ subject: string; ids: string[] }>(
+  const byGate = await rows<{ subject: string; ids: string[] }>(
     db,
-    `SELECT task_id AS subject, array_agg(id ORDER BY id) AS ids FROM runs
-     WHERE status IN ('running', 'interrupted') AND task_id IS NOT NULL GROUP BY task_id HAVING count(*) > 1`
+    `SELECT gate_key AS subject, array_agg(id ORDER BY id) AS ids FROM runs
+     WHERE status IN ('running', 'interrupted') AND gate_key IS NOT NULL GROUP BY gate_key HAVING count(*) > 1`
   );
   return [
     ...byAgent.map((r) => ({ invariant: 'INV-2' as const, subject: r.subject, detail: `agent runs ${r.ids.join(', ')} at once` })),
-    ...byTask.map((r) => ({ invariant: 'INV-2' as const, subject: r.subject, detail: `task holds runs ${r.ids.join(', ')} at once` })),
+    ...byGate.map((r) => ({ invariant: 'INV-2' as const, subject: r.subject, detail: `gate held by runs ${r.ids.join(', ')} at once` })),
   ];
 };
 
@@ -149,14 +160,15 @@ const repeatedEffects: Check = async ({ db }) => {
   ];
 };
 
-/** INV-5: an interrupted run has exactly one retry request, still open, and its live workspace stays quarantined. */
+/** INV-5: an interrupted run has exactly one retry request, still open, and its live worktree stays quarantined. */
 const unattendedInterruptions: Check = async ({ db }) => {
   const interrupted = await rows<{ id: string; requests: number; open: number; unguarded: string | null }>(
     db,
     `SELECT r.id,
        (SELECT count(*)::int FROM human_requests h WHERE h.run_id = r.id AND h.kind = 'retry') AS requests,
        (SELECT count(*)::int FROM human_requests h WHERE h.run_id = r.id AND h.kind = 'retry' AND h.status = 'open') AS open,
-       (SELECT w.status FROM workspaces w WHERE w.task_id = r.task_id
+       (SELECT w.status FROM workspaces w
+        WHERE (w.id = r.workspace_id OR (r.workspace_id IS NULL AND w.task_id = r.task_id))
           AND w.status <> ALL($1) AND w.status <> 'quarantined' LIMIT 1) AS unguarded
      FROM runs r WHERE r.status = 'interrupted'`,
     [LIVE_WORKSPACE_EXCLUDED]
@@ -230,9 +242,12 @@ const unsafeRetries: Check = async ({ db, maxAttempts }) => {
     parent_class: string | null;
     handed_off: boolean;
     answer: string | null;
+    child_op: string | null;
+    parent_op: string | null;
   }>(
     db,
     `SELECT c.id, p.id AS parent, c.attempt, p.recovery_class AS parent_class,
+       c.op_id AS child_op, p.op_id AS parent_op,
        (p.status = 'cancelled' AND p.stop_reason = 'handoff') AS handed_off,
        (SELECT h.answer->>'choice' FROM human_requests h
         WHERE h.run_id = p.id AND h.kind = 'retry' AND h.status = 'answered') AS answer
@@ -241,6 +256,21 @@ const unsafeRetries: Check = async ({ db, maxAttempts }) => {
   const perParent = new Map<string, number>();
   for (const c of children) {
     perParent.set(c.parent, (perParent.get(c.parent) ?? 0) + 1);
+    // A platform operation is redone from what Git shows, so running it again needs nobody's answer;
+    // it must stay the same operation, within the attempt cap.
+    if (c.parent_op !== null || c.child_op !== null) {
+      if (c.parent_op !== c.child_op) {
+        out.push({
+          invariant: 'INV-6',
+          subject: c.id,
+          detail: `follows ${c.parent} for operation ${c.child_op ?? 'none'}, not ${c.parent_op ?? 'none'}`,
+        });
+      }
+      if (c.attempt > maxAttempts) {
+        out.push({ invariant: 'INV-6', subject: c.id, detail: `operation retried at attempt ${c.attempt}, over the cap of ${maxAttempts}` });
+      }
+      continue;
+    }
     if (c.parent_class === 'retry' && c.attempt > maxAttempts) {
       out.push({ invariant: 'INV-6', subject: c.id, detail: `automatic retry at attempt ${c.attempt}, over the cap of ${maxAttempts}` });
     }
@@ -258,21 +288,29 @@ const unsafeRetries: Check = async ({ db, maxAttempts }) => {
   return out;
 };
 
-/** INV-7: no queued run sits with both gates free for longer than a reconciler cycle. */
+/**
+ * INV-7: no queued run sits free to start for longer than a reconciler cycle:
+ * its agent (when it has one) and its gate (when it has one) free, and its
+ * own worktree not quarantined, unless it is one of the operations that
+ * release a quarantine. Platform runs, which have no agent, count too.
+ */
 const stuckQueue: Check = async ({ db, cycleMs }) =>
   (
     await rows<{ id: string }>(
       db,
       `SELECT q.id FROM runs q
-       WHERE q.status = 'queued' AND q.agent_id IS NOT NULL
+       WHERE q.status = 'queued' AND (q.agent_id IS NOT NULL OR q.actor = 'platform')
          AND q.created_at <= clock_timestamp() - $1 * interval '1 millisecond'
          AND (q.not_before IS NULL OR q.not_before <= clock_timestamp() - $1 * interval '1 millisecond')
-         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND r.agent_id = q.agent_id)
-         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.task_id = q.task_id)
-         AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.task_id = q.task_id AND w.status = 'quarantined')`,
+         AND (q.agent_id IS NULL OR NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND r.agent_id = q.agent_id))
+         AND (q.gate_key IS NULL OR NOT EXISTS (
+           SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.gate_key = q.gate_key))
+         AND (EXISTS (SELECT 1 FROM platform_ops o WHERE o.id = q.op_id AND o.kind IN ('reset_to_before', 'reconcile_worktree'))
+           OR NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.status = 'quarantined'
+             AND (w.id = q.workspace_id OR (q.workspace_id IS NULL AND w.task_id = q.task_id))))`,
       [cycleMs]
     )
-  ).map((r) => ({ invariant: 'INV-7', subject: r.id, detail: `queued with both gates free for over ${cycleMs} ms` }));
+  ).map((r) => ({ invariant: 'INV-7', subject: r.id, detail: `queued and free to start for over ${cycleMs} ms` }));
 
 /** INV-8: every accepted wake ends, through its retries, in a final state or a person's decision. */
 const unsettledWakes: Check = async ({ db, wakeRuns = [] }) => {
@@ -334,27 +372,29 @@ export function readExecutions(dir: string): Execution[] {
 }
 
 /**
- * INV-9: no double execution. Executions on the same task, or by the same
- * agent, never overlap; an orphaned agent still beating next to the next
+ * INV-9: no double execution. Executions on the same gate (a worktree, or a
+ * legacy task), or by the same agent, never overlap; platform operations
+ * are witnessed like agents. An orphaned agent still beating next to the next
  * attempt shows up here, which a per-run check would miss. An agent also
  * stops within the grace period once the backend it worked for dies, so an
  * orphan is caught even when it happens to finish before the next attempt.
  */
-const doubleExecutions: Check = async ({ db, witnessDir, deaths = [], graceMs = 1_000 }) => {
-  if (!witnessDir || !fs.existsSync(witnessDir)) return [];
-  const executions = readExecutions(witnessDir);
+const doubleExecutions: Check = async ({ db, witnessDir, platformWitnessDir, deaths = [], graceMs = 1_000 }) => {
+  const executions = [witnessDir, platformWitnessDir]
+    .filter((dir): dir is string => dir !== undefined && fs.existsSync(dir))
+    .flatMap((dir) => readExecutions(dir));
   if (executions.length === 0) return [];
   const owners = new Map(
     (
-      await rows<{ id: string; task_id: string | null; agent_id: string | null }>(
+      await rows<{ id: string; gate_key: string | null; agent_id: string | null }>(
         db,
-        'SELECT id, task_id, agent_id FROM runs WHERE id = ANY($1::uuid[])',
+        'SELECT id, gate_key, agent_id FROM runs WHERE id = ANY($1::uuid[])',
         [[...new Set(executions.map((e) => e.run))]]
       )
     ).map((r) => [r.id, r])
   );
   const out: Violation[] = [];
-  for (const scope of ['task_id', 'agent_id'] as const) {
+  for (const scope of ['gate_key', 'agent_id'] as const) {
     const groups = new Map<string, Execution[]>();
     for (const e of executions) {
       const owner = owners.get(e.run)?.[scope];
@@ -369,7 +409,7 @@ const doubleExecutions: Check = async ({ db, witnessDir, deaths = [], graceMs = 
           out.push({
             invariant: 'INV-9',
             subject: owner,
-            detail: `${scope === 'task_id' ? 'task' : 'agent'} executed ${earlier.key} and ${list[i]!.key} at once (${list[i]!.start} < ${earlier.end})`,
+            detail: `${scope === 'gate_key' ? 'gate' : 'agent'} executed ${earlier.key} and ${list[i]!.key} at once (${list[i]!.start} < ${earlier.end})`,
           });
         }
       }
@@ -393,8 +433,9 @@ const doubleExecutions: Check = async ({ db, witnessDir, deaths = [], graceMs = 
  * INV-10: an instance shut down gracefully hands off every run it held: each
  * one ends under the epoch it held, either settled by the owner or handed
  * off. A run handed off after submitting its result succeeded with no
- * follow-up; any other has exactly one. None is taken over, interrupted, or
- * left running.
+ * follow-up, as does one whose workshop dispatch was told to stop or whose
+ * platform operation was no longer wanted; any other has exactly one. None
+ * is taken over, interrupted, or left running.
  */
 const lostHandoffs: Check = async ({ db, handoffs = [] }) => {
   const out: Violation[] = [];
@@ -405,11 +446,14 @@ const lostHandoffs: Check = async ({ db, handoffs = [] }) => {
       stop_reason: string | null;
       children: number;
       terminal: boolean;
+      released: boolean;
     }>(
       db,
       `SELECT r.status, r.owner_epoch, r.stop_reason,
          (SELECT count(*)::int FROM runs c WHERE c.parent_run_id = r.id) AS children,
-         EXISTS (SELECT 1 FROM control_plane_requests q WHERE q.run_id = r.id AND q.tool = ANY($2)) AS terminal
+         EXISTS (SELECT 1 FROM control_plane_requests q WHERE q.run_id = r.id AND q.tool = ANY($2)) AS terminal,
+         (EXISTS (SELECT 1 FROM dispatches d WHERE d.id = r.dispatch_id AND d.cancel_requested_at IS NOT NULL)
+           OR EXISTS (SELECT 1 FROM platform_ops o WHERE o.id = r.op_id AND o.status IN ('cancelled', 'failed'))) AS released
        FROM runs r WHERE r.id = $1`,
       [runId, TERMINAL_TOOLS]
     );
@@ -418,7 +462,7 @@ const lostHandoffs: Check = async ({ db, handoffs = [] }) => {
     else if (run.owner_epoch !== epoch) fail(`taken over at epoch ${run.owner_epoch} instead of handed off at ${epoch}`);
     else if (!FINAL_RUN_STATUSES.includes(run.status)) fail(`${run.status} after its owner shut down`);
     else if (run.stop_reason === 'handoff') {
-      const expected = run.terminal ? 0 : 1;
+      const expected = run.terminal || run.released ? 0 : 1;
       if (run.terminal && run.status !== 'succeeded') fail(`submitted its result but handed off as ${run.status}`);
       if (run.children !== expected) fail(`handed off with ${run.children} follow-up runs, expected ${expected}`);
     }
