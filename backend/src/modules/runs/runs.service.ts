@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, getTableColumns, isNull, lte, or, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Executor } from '../../db/client';
-import { agents, runs, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import { agents, dispatches, runs, tasks, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError, recordFenceRejection } from '../ownership/fence';
@@ -130,6 +130,29 @@ const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`cloc
 const notQuarantined = () =>
   sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`;
 
+/**
+ * A workshop run may start only while its dispatch is still wanted: not
+ * ended, not told to stop, and still in the task's current phase, cycle and
+ * round. Runs without a dispatch always pass.
+ */
+const dispatchCurrent = () =>
+  sql`(${runs.dispatchId} IS NULL OR EXISTS (
+    SELECT 1 FROM ${dispatches} d JOIN ${tasks} t ON t.id = d.task_id
+    WHERE d.id = ${runs.dispatchId}
+      AND d.status IN ('pending', 'running')
+      AND d.cancel_requested_at IS NULL
+      AND t.phase = d.phase AND t.cycle = d.cycle AND d.round >= t.round))`;
+
+/** Cancels a queued workshop run whose dispatch is no longer current; it never started, so nothing else changes. */
+export async function cancelStaleRun(runId: string, executor: Executor = db): Promise<boolean> {
+  const rows = await executor
+    .update(runs)
+    .set({ status: 'cancelled', stopReason: 'stale', error: 'Its workshop moved on before it started', finishedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), sql`NOT ${dispatchCurrent()}`))
+    .returning({ id: runs.id });
+  return rows.length > 0;
+}
+
 function isGateConflict(err: unknown): boolean {
   const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
   return pgErr.code === '23505' && GATE_INDEXES.has(pgErr.constraint ?? '');
@@ -163,13 +186,20 @@ export async function admitRun(runId: string, options: AdmitOptions = {}): Promi
           leaseExpiresAt: sql`clock_timestamp() + ${ttlMs}::integer * interval '1 millisecond'`,
           startedAt: sql`clock_timestamp()`,
         })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined()))
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined(), dispatchCurrent()))
         .returning({
           ...getTableColumns(runs),
           leaseRemainingMs: sql<string>`extract(epoch from ${runs.leaseExpiresAt} - clock_timestamp()) * 1000`,
         });
       if (!row) return undefined;
       crashPoint('admission.after_claim');
+      if (row.dispatchId) {
+        // The dispatch's clock starts with its first run; follow-up runs keep it going.
+        await tx
+          .update(dispatches)
+          .set({ status: 'running', startedAt: sql`COALESCE(${dispatches.startedAt}, clock_timestamp())`, updatedAt: new Date() })
+          .where(and(eq(dispatches.id, row.dispatchId), sql`${dispatches.status} IN ('pending', 'running')`, isNull(dispatches.pausedAt)));
+      }
       if (row.agentId) {
         await tx
           .update(agents)

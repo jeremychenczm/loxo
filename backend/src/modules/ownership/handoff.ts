@@ -5,6 +5,7 @@ import { readRunEffects } from '../runs/run-effects';
 import { createQueuedRun, settleRun, type RunOutcome, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
+import { advanceAfterRunEnded, carriedOver, dispatchContinues, noteRunEnded } from '../workshop/dispatch-end';
 
 export const HANDOFF_STOP_REASON = 'handoff';
 
@@ -24,6 +25,7 @@ export const HANDOFF_STOP_REASON = 'handoff';
  */
 export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<Run | undefined> {
   crashPoint('handoff.before_commit');
+  let workshopTask: string | null = null;
   const { ended, followUp } = await db.transaction(async (tx) => {
     // Locked first, so a control-plane call still in flight commits before the
     // effects are read, and any later one is refused by its fence.
@@ -38,7 +40,14 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
       tx
     );
     if (!ended) return { ended: false, followUp: undefined };
-    if (finished || !ended.agentId) {
+    // A workshop dispatch told to stop is not continued.
+    const continues = !finished && ended.agentId !== null && (await dispatchContinues(tx, ended));
+    workshopTask = await noteRunEnded(
+      tx,
+      ended.id,
+      continues ? { kind: 'continued' } : { kind: 'settled', status: ended.status === 'succeeded' ? 'succeeded' : 'cancelled' }
+    );
+    if (!continues) {
       if (ended.taskId) {
         await addSystemTurn(
           ended.userId,
@@ -53,13 +62,14 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
     const next = await createQueuedRun(
       ended.userId,
       {
-        agentId: ended.agentId,
+        agentId: ended.agentId!,
         agentName: ended.agentName,
         taskId: ended.taskId,
         trigger: ended.trigger,
         reason: continuationReason(ended),
         parentRunId: ended.id,
         attempt: ended.attempt,
+        ...carriedOver(ended),
       },
       tx
     );
@@ -75,6 +85,7 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
     return { ended: true, followUp: next };
   });
   if (ended) crashPoint('handoff.after_commit');
+  await advanceAfterRunEnded(workshopTask);
   return followUp;
 }
 

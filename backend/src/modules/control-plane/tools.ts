@@ -4,6 +4,7 @@ import { db, type Executor, type Tx } from '../../db/client';
 import {
   agents,
   controlPlaneRequests,
+  dispatchReports,
   tasks,
   runs,
   TERMINAL_CONTROL_PLANE_TOOLS,
@@ -22,6 +23,8 @@ import {
   REVIEW_CYCLE_CAP,
 } from '../tasks/approvals.service';
 import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
+import { dispatchOf } from '../workshop/dispatch-info';
+import { agentPhase } from '../workshop/phases';
 import { startQueuedRuns } from '../runs/wake';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
@@ -281,11 +284,55 @@ export async function askBlocker(ctx: RunToolContext, question: string): Promise
   });
 }
 
-/** Posts the result; a legacy task moves to review. */
+export interface DispatchReportResult {
+  /** False when the dispatch already had a report; the stored one is returned. */
+  accepted: boolean;
+  report: Record<string, unknown>;
+}
+
+/**
+ * Records the report of the run's workshop dispatch. It only inserts: the
+ * dispatch row and the task are left to the run's settlement, so a report
+ * never waits on the task row. A second report for the same dispatch, from a
+ * retried or handed-off run, returns the first.
+ */
+export async function submitDispatchReport(
+  ctx: RunToolContext,
+  tool: string,
+  report: Record<string, unknown>
+): Promise<DispatchReportResult> {
+  if (!ctx.run.dispatchId) throw badRequest('not_a_workshop_run', 'Only workshop runs submit this report');
+  const dispatch = await dispatchOf(ctx.run.dispatchId);
+  const expected = dispatch ? agentPhase(dispatch.phase)?.reportTool : undefined;
+  if (expected !== tool) {
+    throw badRequest('wrong_report_tool', expected ? `This run reports with ${expected}` : 'This run takes no report');
+  }
+  return controlPlaneWrite(ctx, tool, report, (tx) => insertDispatchReport(tx, ctx, tool, report));
+}
+
+async function insertDispatchReport(
+  tx: Tx,
+  ctx: RunToolContext,
+  tool: string,
+  report: Record<string, unknown>
+): Promise<DispatchReportResult> {
+  const dispatchId = ctx.run.dispatchId!;
+  const [inserted] = await tx
+    .insert(dispatchReports)
+    .values({ dispatchId, runId: ctx.run.id, epoch: ctx.epoch, tool, report })
+    .onConflictDoNothing()
+    .returning();
+  if (inserted) return { accepted: true, report };
+  const [existing] = await tx.select().from(dispatchReports).where(eq(dispatchReports.dispatchId, dispatchId));
+  return { accepted: false, report: existing!.report };
+}
+
+/** Posts the result; a legacy task moves to review, a workshop run records it as its dispatch's report. */
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
   return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, queued) => {
     await postAsAgent(ctx, summary, tx);
+    if (ctx.run.dispatchId) await insertDispatchReport(tx, ctx, 'submit_result', { summary });
     if (isWorkshop(ctx.task)) return { status: (await freshTask(ctx, tx)).status };
     return { status: (await advanceTo(ctx, 'in_review', tx, queued)).status };
   });

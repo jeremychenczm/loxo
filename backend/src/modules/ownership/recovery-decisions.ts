@@ -13,6 +13,7 @@ import { createQueuedRun } from '../runs/runs.service';
 import { startQueuedRuns } from '../runs/wake';
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
+import { advanceAfterRunEnded, carriedOver, dispatchContinues, noteRunEnded } from '../workshop/dispatch-end';
 
 /**
  * A person's answer to an interrupted run's retry request. Git work happens
@@ -53,7 +54,11 @@ export async function decideInterruptedRun(
   }
 
   crashPoint('decision.before_commit');
+  let workshopTask: string | null = null;
   const { answered, queued } = await db.transaction(async (tx) => {
+    // The run row is locked first, then the task (for a workshop run), then the request.
+    const continues = choice !== 'stop' && run.agentId !== null && (await dispatchContinues(tx, run));
+    workshopTask = await noteRunEnded(tx, run.id, continues ? { kind: 'continued' } : { kind: 'abandoned' });
     const [answered] = await tx
       .update(humanRequests)
       .set({
@@ -76,18 +81,19 @@ export async function decideInterruptedRun(
     if (observed && workspace) await leaveQuarantine(tx, workspace.id, observed);
     if (choice === 'stop' && run.taskId) await relabelQuarantine(tx, run.taskId, stoppedLock(run.id));
     const queued: Run[] = [];
-    if (choice !== 'stop' && run.agentId) {
+    if (continues) {
       queued.push(
         await createQueuedRun(
           userId,
           {
-            agentId: run.agentId,
+            agentId: run.agentId!,
             agentName: run.agentName,
             taskId: run.taskId,
             trigger: run.trigger,
-            reason: followUpReason(run, choice),
+            reason: followUpReason(run, choice as 'continue' | 'discard'),
             parentRunId: run.id,
             attempt: run.attempt + 1,
+            ...carriedOver(run),
           },
           tx
         )
@@ -98,6 +104,7 @@ export async function decideInterruptedRun(
     }
     return { answered, queued };
   });
+  await advanceAfterRunEnded(workshopTask);
   await startQueuedRuns(queued);
   return answered;
 }
@@ -161,7 +168,12 @@ export async function stopExpiredDecisions(): Promise<string[]> {
     );
   const stopped: string[] = [];
   for (const row of overdue) {
+    let workshopTask: string | null = null;
     const done = await db.transaction(async (tx) => {
+      // Run row first, then the task, then the request, as everywhere else.
+      const [locked] = await tx.select({ status: runs.status }).from(runs).where(eq(runs.id, row.runId)).for('update');
+      if (locked?.status !== 'interrupted') return false;
+      workshopTask = await noteRunEnded(tx, row.runId, { kind: 'abandoned' });
       await tx
         .update(humanRequests)
         .set({ status: 'expired' })
@@ -179,7 +191,10 @@ export async function stopExpiredDecisions(): Promise<string[]> {
       }
       return decided !== undefined;
     });
-    if (done) stopped.push(row.runId);
+    if (done) {
+      stopped.push(row.runId);
+      await advanceAfterRunEnded(workshopTask);
+    }
   }
   return stopped;
 }

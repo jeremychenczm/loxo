@@ -6,6 +6,7 @@ import { addAgentTurn, runHasAgentTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
+  cancelStaleRun,
   createQueuedRun,
   failQueuedRun,
   nextQueuedRunForAgent,
@@ -18,6 +19,7 @@ import { crashPoint } from '../ownership/crash-points';
 import { fence, FencedError } from '../ownership/fence';
 import { handOffRun } from '../ownership/handoff';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
+import { advanceAfterRunEnded, noteRunEnded } from '../workshop/dispatch-end';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
 
@@ -151,7 +153,13 @@ export async function promoteQueuedRun(run: Run): Promise<boolean> {
  */
 async function tryStartRun(run: Run): Promise<Run | undefined> {
   if (!run.agentId) {
-    await failQueuedRun(run.id, 'Agent no longer exists').catch(() => {});
+    const taskId = await db
+      .transaction(async (tx) => {
+        await failQueuedRun(run.id, 'Agent no longer exists', tx);
+        return noteRunEnded(tx, run.id, { kind: 'settled', status: 'failed' });
+      })
+      .catch(() => null);
+    await advanceAfterRunEnded(taskId);
     return undefined;
   }
   const admission = runLeases.admit(run.id);
@@ -162,7 +170,11 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
   } finally {
     admitting.delete(admission);
   }
-  if (!admitted) return undefined;
+  if (!admitted) {
+    // A queued run whose dispatch the workshop has moved past is cancelled rather than left waiting.
+    if (run.dispatchId) await cancelStaleRun(run.id).catch(() => {});
+    return undefined;
+  }
 
   const { run: started, lease } = admitted;
   const handoff = new AbortController();
@@ -258,14 +270,20 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   // If settling fails the run keeps its lease and the reconciler takes it over;
   // if it is refused, the run was taken over and its new owner settles it.
   crashPoint('run.before_settle');
-  const settled = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch(
-    (error) => {
+  let workshopTask: string | null = null;
+  const settled = await db
+    .transaction(async (tx) => {
+      const row = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error', tx);
+      if (row) workshopTask = await noteRunEnded(tx, row.id, { kind: 'settled', status: outcome.status });
+      return row;
+    })
+    .catch((error) => {
       console.error(`Run ${run.id} could not be settled:`, error);
       return undefined;
-    }
-  );
+    });
   if (!settled) return;
   crashPoint('run.after_settle');
+  await advanceAfterRunEnded(workshopTask);
   await promoteNext(run);
 }
 

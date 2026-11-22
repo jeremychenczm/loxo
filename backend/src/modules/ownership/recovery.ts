@@ -21,6 +21,8 @@ import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
 import { fence } from './fence';
 import { endOrphans, type LauncherIdentity } from './orphans';
+import { dispatchOf, isReadOnlyDispatch } from '../workshop/dispatch-info';
+import { advanceAfterRunEnded, carriedOver, dispatchContinues, noteRunEnded } from '../workshop/dispatch-end';
 
 /**
  * Recovery of a run that lost its owner. The taker owns the run (running,
@@ -110,9 +112,15 @@ export async function recoverRun(run: Run): Promise<Run> {
   return current;
 }
 
+/** couldWriteWorktree, also false for a run serving a read-only workshop phase. */
+async function writerOf(run: Run, agent: AgentTraits | undefined): Promise<boolean> {
+  if (!couldWriteWorktree(run, agent)) return false;
+  return !run.dispatchId || !isReadOnlyDispatch(await dispatchOf(run.dispatchId));
+}
+
 async function assess(run: Run, owner: RunOwner): Promise<Run> {
   const agent = await agentOf(run);
-  const writer = couldWriteWorktree(run, agent);
+  const writer = await writerOf(run, agent);
   const effects = await readRunEffects(run.id);
   const workspace = await workspaceOf(run);
   // End what is left of the agent before looking at its worktree, so nothing
@@ -144,10 +152,29 @@ async function assess(run: Run, owner: RunOwner): Promise<Run> {
 
 async function resolve(run: Run, owner: RunOwner): Promise<Run> {
   const agent = await agentOf(run);
-  const writer = couldWriteWorktree(run, agent);
+  const writer = await writerOf(run, agent);
   const effects = await readRunEffects(run.id);
-  return db.transaction(async (tx) => {
+  let workshopTask: string | null = null;
+  const result = await db.transaction(async (tx) => {
     await fence(tx, owner, 'recovery_resolve');
+    // Decided before anything else is written, so the run row is locked first and the task next.
+    const retrying =
+      run.recoveryClass !== 'known' &&
+      run.recoveryClass !== 'interrupted' &&
+      run.agentId !== null &&
+      run.attempt < retryPolicy.maxAttempts &&
+      (await dispatchContinues(tx, run));
+    workshopTask = await noteRunEnded(
+      tx,
+      run.id,
+      run.recoveryClass === 'known'
+        ? { kind: 'settled', status: 'succeeded' }
+        : run.recoveryClass === 'interrupted'
+          ? { kind: 'interrupted' }
+          : retrying
+            ? { kind: 'continued' }
+            : { kind: 'abandoned' }
+    );
     const finished = { leaseExpiresAt: null, recoveryStep: 'resolved' as const, finishedAt: new Date() };
     let resolved: Run;
     switch (run.recoveryClass) {
@@ -163,7 +190,6 @@ async function resolve(run: Run, owner: RunOwner): Promise<Run> {
         await openRetryDecision(tx, run, owner, effects, agent);
         break;
       default: {
-        const retrying = run.agentId !== null && run.attempt < retryPolicy.maxAttempts;
         const lost = run.error ?? 'Owner lost';
         resolved = await update(tx, run.id, {
           ...finished,
@@ -183,6 +209,8 @@ async function resolve(run: Run, owner: RunOwner): Promise<Run> {
     }
     return resolved;
   });
+  await advanceAfterRunEnded(workshopTask);
+  return result;
 }
 
 let retryPolicy = { maxAttempts: config.runMaxAttempts, backoffMs: config.runRetryBackoffMs };
@@ -212,6 +240,7 @@ async function queueRetry(tx: Tx, run: Run): Promise<void> {
       parentRunId: run.id,
       attempt: run.attempt + 1,
       delayMs: retryPolicy.backoffMs * 2 ** (run.attempt - 1),
+      ...carriedOver(run),
     },
     tx
   );
