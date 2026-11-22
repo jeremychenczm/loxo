@@ -140,7 +140,7 @@ describe('stop requests through the lease', () => {
         }
         const tool = agentPhase(dispatch!.phase)!.reportTool;
         if (tool === 'submit_result') await submitResult(ctx, 'Built.');
-        else await submitDispatchReport(ctx, tool, { ok: true });
+        else await submitDispatchReport(ctx, tool, { summary: 'Looked.' });
         return { text: 'Done.' };
       })(req)
     );

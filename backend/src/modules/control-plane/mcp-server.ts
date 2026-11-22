@@ -3,11 +3,14 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { HttpError } from '../../http/errors';
+import { explorationShape } from '../workshop/reports';
+import { describeTool, toolsForRun } from './names';
 import {
   askBlocker,
   commentOnTask,
   getTaskSnapshot,
   resolveRunContext,
+  submitDispatchReport,
   submitResult,
   submitReviewVerdict,
   updateTaskStatus,
@@ -44,90 +47,71 @@ async function guarded(fn: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
+/** Registers exactly the tools toolsForRun offers the run, in that order. */
 function buildControlPlaneServer(ctx: RunToolContext): McpServer {
   const server = new McpServer({ name: 'swarmdev-control-plane', version: '1.0.0' });
+  const workshop = ctx.run.dispatchId !== null;
 
-  server.registerTool(
-    'get_task',
-    {
-      description: 'Read the task this run was woken for: title, brief, status, and timeline.',
-      inputSchema: {},
-    },
-    async () => guarded(async () => text(await getTaskSnapshot(ctx)))
-  );
-
-  server.registerTool(
-    'comment_on_task',
-    {
-      description: 'Post a progress note to the task timeline as yourself.',
-      inputSchema: { body: z.string().min(1).max(20000) },
-    },
-    async ({ body }) =>
-      guarded(async () => {
-        await commentOnTask(ctx, body);
-        return text('Comment posted');
-      })
-  );
-
-  if (ctx.run.trigger === 'review') {
-    server.registerTool(
-      'submit_review',
-      {
-        description:
-          'Deliver your review verdict. approved records a recommendation (a human closes the task); changes_requested reopens work with your feedback.',
-        inputSchema: {
-          decision: z.enum(['approved', 'changes_requested']),
-          feedback: z.string().min(1).max(20000),
-        },
-      },
-      async ({ decision, feedback }) =>
-        guarded(async () => text(await submitReviewVerdict(ctx, decision, feedback)))
-    );
-    return server;
+  for (const tool of toolsForRun(ctx.run, ctx.phase ?? null)) {
+    const description = describeTool(tool, workshop);
+    switch (tool) {
+      case 'get_task':
+        server.registerTool(tool, { description, inputSchema: {} }, async () =>
+          guarded(async () => text(await getTaskSnapshot(ctx)))
+        );
+        break;
+      case 'comment_on_task':
+        server.registerTool(tool, { description, inputSchema: { body: z.string().min(1).max(20000) } }, async ({ body }) =>
+          guarded(async () => {
+            await commentOnTask(ctx, body);
+            return text('Comment posted');
+          })
+        );
+        break;
+      case 'submit_review':
+        server.registerTool(
+          tool,
+          {
+            description,
+            inputSchema: {
+              decision: z.enum(['approved', 'changes_requested']),
+              feedback: z.string().min(1).max(20000),
+            },
+          },
+          async ({ decision, feedback }) => guarded(async () => text(await submitReviewVerdict(ctx, decision, feedback)))
+        );
+        break;
+      case 'update_task_status':
+        server.registerTool(tool, { description, inputSchema: { status: TASK_STATUS } }, async ({ status }) =>
+          guarded(async () => {
+            const task = await updateTaskStatus(ctx, status);
+            return text({ status: task.status });
+          })
+        );
+        break;
+      case 'ask_blocker':
+        server.registerTool(tool, { description, inputSchema: { question: z.string().min(1).max(4000) } }, async ({ question }) =>
+          guarded(async () => {
+            const task = await askBlocker(ctx, question);
+            return text({ status: task.status });
+          })
+        );
+        break;
+      case 'submit_result':
+        server.registerTool(tool, { description, inputSchema: { summary: z.string().min(1).max(20000) } }, async ({ summary }) =>
+          guarded(async () => {
+            const task = await submitResult(ctx, summary);
+            return text({ status: task.status });
+          })
+        );
+        break;
+      case 'submit_exploration':
+        server.registerTool(tool, { description, inputSchema: explorationShape }, async (args) =>
+          guarded(async () => text(await submitDispatchReport(ctx, tool, args)))
+        );
+        break;
+    }
   }
-
-  server.registerTool(
-    'update_task_status',
-    {
-      description:
-        'Move the task to a new status. Transitions follow the board rules; illegal moves are rejected.',
-      inputSchema: { status: TASK_STATUS },
-    },
-    async ({ status }) =>
-      guarded(async () => {
-        const task = await updateTaskStatus(ctx, status);
-        return text({ status: task.status });
-      })
-  );
-
-  server.registerTool(
-    'ask_blocker',
-    {
-      description:
-        'You are stuck and need a human decision. Posts the question to the timeline and marks the task blocked.',
-      inputSchema: { question: z.string().min(1).max(4000) },
-    },
-    async ({ question }) =>
-      guarded(async () => {
-        const task = await askBlocker(ctx, question);
-        return text({ status: task.status });
-      })
-  );
-
-  server.registerTool(
-    'submit_result',
-    {
-      description:
-        'You finished the work. Posts your result summary to the timeline and hands the task to review.',
-      inputSchema: { summary: z.string().min(1).max(20000) },
-    },
-    async ({ summary }) =>
-      guarded(async () => {
-        const task = await submitResult(ctx, summary);
-        return text({ status: task.status });
-      })
-  );
-
   return server;
 }
 

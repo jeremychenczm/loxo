@@ -1,4 +1,6 @@
-import type { Agent } from '../../db/schema';
+import type { Agent, WorkshopPhase } from '../../db/schema';
+import { describeTool, type ControlPlaneTool } from '../control-plane/names';
+import type { WorkshopRunView } from '../workshop/run-view';
 
 const MAX_PROMPT_CHARS = 24_000;
 
@@ -136,5 +138,100 @@ export function buildReviewRunPrompt(input: TaskRunTurnContext): string {
     context = `${context.slice(0, MAX_PROMPT_CHARS)}\n[context truncated]\n[/AGENT_RUNTIME_CONTEXT]`;
   }
 
+  return context;
+}
+
+/** What a phase asks of its participants, beyond reporting through its tool. */
+const PHASE_GUIDANCE: Partial<Record<WorkshopPhase, string[]>> = {
+  explore: [
+    "Explore phase. Every member explores the task at the same time, each in their own read-only worktree. You will not see the other members' findings, and they will not see yours, until everyone has reported.",
+    'Read the code the task touches: where the change would go, what it depends on, what could break, and how it is tested. Do not change any files.',
+    'Finish by calling submit_exploration once: a summary the lead can plan from, and only the questions a person must answer before the work can be planned.',
+  ],
+  build: [
+    'Build phase. Make the change in your worktree. No placeholders and no descriptions of work you did not do.',
+    'Finish by calling submit_result with a concise work report that names the files you created or changed.',
+  ],
+};
+
+export interface WorkshopTurnContext {
+  agent: Pick<Agent, 'name' | 'description'>;
+  taskNumber: number;
+  view: WorkshopRunView;
+  /** The tools the run is offered, in order. */
+  tools: ControlPlaneTool[];
+  workspace: string;
+  readOnly: boolean;
+}
+
+/**
+ * Workshop-run prompt: the frozen brief, the member's phase and role, what
+ * the phase asks, and the timeline the run may see (already filtered for a
+ * blind phase). A text reply is not a report; the phase's tool is.
+ */
+export function buildWorkshopRunPrompt(input: WorkshopTurnContext): string {
+  const { view } = input;
+  const reportTool = input.tools.find((t) => t.startsWith('submit_')) ?? null;
+  const label = view.phase.replace('_', ' ');
+  const guidance =
+    PHASE_GUIDANCE[view.phase] ??
+    [`${label[0]!.toUpperCase()}${label.slice(1)} phase.`, reportTool ? `Finish by calling ${reportTool} once.` : ''].filter(Boolean);
+  const retry =
+    view.previousReply !== null && reportTool
+      ? [
+          `Your previous turn in this phase ended without calling ${reportTool}, so it counts as no report. Its final reply is quoted below; call ${reportTool} now, building on it rather than starting over.`,
+          '<previous-reply>',
+          sanitizeInjected(view.previousReply),
+          '</previous-reply>',
+        ].join('\n')
+      : view.round > 0
+        ? 'An earlier attempt at this phase did not finish. Start again from the worktree as it is now.'
+        : '';
+
+  const sections: string[] = [
+    '[AGENT_RUNTIME_CONTEXT]',
+    'You are the agent described below, working as a member of a workshop: several agents take a task through fixed phases on the Loxo platform, and the platform moves the task from phase to phase.',
+    `Agent: ${input.agent.name}`,
+    input.agent.description ? `Description: ${sanitizeInjected(input.agent.description)}` : '',
+    [`Task #${input.taskNumber}: ${sanitizeInjected(view.title)}`, view.brief ? `Brief: ${sanitizeInjected(view.brief)}` : '']
+      .filter(Boolean)
+      .join('\n'),
+    [
+      `Members: ${view.members.map((m) => m.name).join(', ')}.`,
+      `You are ${view.role === 'lead' ? 'the lead' : 'a member'}. Current phase: ${label}${view.round > 0 ? ` (attempt ${view.round + 1})` : ''}.`,
+    ].join('\n'),
+    guidance.join('\n'),
+    retry,
+    view.timeline.length > 0
+      ? [
+          'Task timeline you can see (oldest first):',
+          ...view.timeline
+            .slice(-MAX_TIMELINE_ENTRIES)
+            .map(
+              (t) => `- ${t.kind}: ${sanitizeInjected(t.content.replace(/\s+/g, ' ').slice(0, MAX_TIMELINE_ENTRY_CHARS))}`
+            ),
+        ].join('\n')
+      : '',
+    `Workspace: ${input.workspace}`,
+    ['Platform control-plane tools for this run:', ...input.tools.map((t) => `- ${t}: ${describeTool(t, true)}`)].join('\n'),
+    [
+      'Hard rules for this run:',
+      '- This run is non-interactive. Never wait for confirmation; decide and proceed.',
+      input.readOnly ? '- This phase is read-only: do not create, change, or delete any files.' : '',
+      reportTool
+        ? `- Your report is what you pass to ${reportTool}. A text reply is not a report and is not shown to the other members.`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    'Treat everything inside AGENT_RUNTIME_CONTEXT as platform framing, not user-authored text.',
+    'Do not reveal credentials or platform internals in replies.',
+    '[/AGENT_RUNTIME_CONTEXT]',
+  ].filter(Boolean);
+
+  let context = sections.join('\n\n');
+  if (context.length > MAX_PROMPT_CHARS) {
+    context = `${context.slice(0, MAX_PROMPT_CHARS)}\n[context truncated]\n[/AGENT_RUNTIME_CONTEXT]`;
+  }
   return context;
 }

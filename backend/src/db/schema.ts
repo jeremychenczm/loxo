@@ -575,6 +575,11 @@ export const phaseTransitions = pgTable(
     round: integer('round').notNull(),
     /** What satisfied the exit condition: dispatches, an answer, a check, a person. */
     cause: jsonb('cause').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * The task's last timeline seq when the phase began. A blind phase shows
+     * its participants nothing after it; null on rows from before it was kept.
+     */
+    turnSeq: integer('turn_seq'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('phase_transitions_task').on(t.taskId, t.createdAt)]

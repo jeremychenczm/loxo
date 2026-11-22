@@ -37,7 +37,7 @@ beforeAll(async () => {
       const ctx = { run: run!, epoch: run!.ownerEpoch, agent: agent as Agent, task: task! };
       const tool = agentPhase(dispatch!.phase)!.reportTool;
       if (tool === 'submit_result') await submitResult(ctx, 'Built it.');
-      else await submitDispatchReport(ctx, tool, { note: `${agent!.name} in ${dispatch!.phase}` });
+      else await submitDispatchReport(ctx, tool, { summary: `${agent!.name} in ${dispatch!.phase}` });
       return { text: 'Done.' };
     })(req)
   );

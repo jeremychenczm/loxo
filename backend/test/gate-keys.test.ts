@@ -160,7 +160,7 @@ describe('gate keys', () => {
         const [dispatch] = await db.select().from(dispatches).where(eq(dispatches.id, run!.dispatchId!));
         const [task] = await db.select().from(tasks).where(eq(tasks.id, run!.taskId!));
         if (dispatch!.phase === 'explore') {
-          await submitDispatchReport({ run: run!, epoch: run!.ownerEpoch, agent: agent!, task: task! }, 'submit_exploration', { ok: true });
+          await submitDispatchReport({ run: run!, epoch: run!.ownerEpoch, agent: agent!, task: task! }, 'submit_exploration', { summary: 'Looked.' });
         }
         return { text: 'Looked.' };
       })(req)

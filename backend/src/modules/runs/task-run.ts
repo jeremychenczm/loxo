@@ -22,7 +22,9 @@ import {
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
 import { addSystemTurn, listTurns } from '../tasks/turns.service';
-import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
+import { buildTaskRunPrompt, buildReviewRunPrompt, buildWorkshopRunPrompt } from '../runner/turn-context';
+import { toolsForRun } from '../control-plane/names';
+import { workshopRunView } from '../workshop/run-view';
 import { isAgentRuntime, type CliRuntime } from '../agents/runtimes';
 import { config } from '../../config';
 import { mintRunToken } from '../control-plane/run-token';
@@ -112,11 +114,6 @@ export async function executeTaskTurn(
     ? await getProviderCredentials(run.userId, agent.providerId)
     : null;
 
-  const timeline = (await listTurns(run.userId, task.id)).map((t) => ({
-    author: t.kind,
-    body: t.content,
-  }));
-
   // A repository binding switches the run into the task's isolated worktree;
   // without one the agent works in its own workspace.
   const codeWorkspace = await resolveCodeWorkspace(run, agent, task);
@@ -124,9 +121,9 @@ export async function executeTaskTurn(
   const agentWorkspace = storage.agentPaths(run.userId, agent.id).workspace;
   const workspace = codeWorkspace ? codeWorkspace.workspace.worktreePath : agentWorkspace;
 
+  const dispatch = run.dispatchId ? await dispatchOf(run.dispatchId) : undefined;
   // The agent level is a ceiling: review turns and read-only workshop phases are forced to read-only.
-  const readOnly =
-    run.trigger === 'review' || (run.dispatchId !== null && isReadOnlyDispatch(await dispatchOf(run.dispatchId)));
+  const readOnly = run.trigger === 'review' || (run.dispatchId !== null && isReadOnlyDispatch(dispatch));
   const permission: TurnPermission = readOnly
     ? lowerPermission(agent.permissionLevel, 'read_only')
     : agent.permissionLevel;
@@ -136,17 +133,28 @@ export async function executeTaskTurn(
       ? null
       : acpLaunchSpec(agent.runtime as CliRuntime, { credentials, model: agent.model, permission });
 
+  // A workshop run sees only what its phase allows; see workshopRunView.
+  const view = run.dispatchId ? await workshopRunView(run) : null;
   const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildTaskRunPrompt;
-  const prompt = buildPrompt({
-    agent,
-    taskNumber: task.number,
-    title: task.title,
-    brief: task.brief,
-    status: task.status,
-    reason: run.reason,
-    timeline,
-    workspace,
-  });
+  const prompt = view
+    ? buildWorkshopRunPrompt({
+        agent,
+        taskNumber: task.number,
+        view,
+        tools: toolsForRun(run, view.phase),
+        workspace,
+        readOnly,
+      })
+    : buildPrompt({
+        agent,
+        taskNumber: task.number,
+        title: task.title,
+        brief: task.brief,
+        status: task.status,
+        reason: run.reason,
+        timeline: (await listTurns(run.userId, task.id)).map((t) => ({ author: t.kind, body: t.content })),
+        workspace,
+      });
 
   const runToken = mintRunToken(run.id, lease.epoch);
   const mcpServers: HostMcpServer[] = [
@@ -175,7 +183,7 @@ export async function executeTaskTurn(
       system: agent.manifest.api?.systemPrompt ?? `You are ${agent.name}. ${agent.description}`.trim(),
       turnTimeoutMs: TASK_RUN_TIMEOUT_MS,
       repo: { baseCommit: taskWorkspace?.baseCommit ?? null },
-      extraTools: buildControlPlaneToolDefs({ run, epoch: lease.epoch, agent, task }),
+      extraTools: buildControlPlaneToolDefs({ run, epoch: lease.epoch, agent, task, phase: dispatch?.phase ?? null }),
     });
   } else {
     if (!launch) {

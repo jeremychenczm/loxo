@@ -13,6 +13,7 @@ import {
   type TaskStatus,
   type ApprovalDecision,
   type Run,
+  type WorkshopPhase,
 } from '../../db/schema';
 import { config } from '../../config';
 import { badRequest, conflict, unauthorized } from '../../http/errors';
@@ -25,6 +26,9 @@ import {
 import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
 import { dispatchOf } from '../workshop/dispatch-info';
 import { agentPhase } from '../workshop/phases';
+import { MAX_EXPLORATION_QUESTIONS, parseReport } from '../workshop/reports';
+import { workshopRunView } from '../workshop/run-view';
+import { describeTool, toolsForRun, type ControlPlaneTool } from './names';
 import { startQueuedRuns } from '../runs/wake';
 import { isTransitionAllowed } from '../tasks/task-transitions';
 import { addAgentTurn, listTurns } from '../tasks/turns.service';
@@ -46,6 +50,8 @@ export interface RunToolContext {
   epoch: number;
   agent: Agent;
   task: Task;
+  /** Phase of the run's workshop dispatch; null or absent for a legacy run. */
+  phase?: WorkshopPhase | null;
 }
 
 /**
@@ -99,8 +105,9 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
     .where(and(eq(tasks.id, run.taskId), eq(tasks.userId, run.userId)))
     .limit(1);
   if (!agent || !task) throw unauthorized('Run scope no longer exists');
+  const dispatch = run.dispatchId ? await dispatchOf(run.dispatchId) : undefined;
 
-  return { run, epoch: claims.epoch, agent, task };
+  return { run, epoch: claims.epoch, agent, task, phase: dispatch?.phase ?? null };
 }
 
 function canonicalJson(value: unknown): string {
@@ -216,8 +223,43 @@ export interface TaskSnapshot {
   timeline: Array<{ seq: number; kind: string; content: string; createdAt: string }>;
 }
 
-export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot> {
+export interface WorkshopTaskSnapshot extends TaskSnapshot {
+  workshop: {
+    phase: WorkshopPhase;
+    round: number;
+    role: 'lead' | 'member';
+    members: string[];
+    /** The tool this run reports with; null when its phase takes no report from it yet. */
+    reportTool: string | null;
+  };
+}
+
+/** A workshop run reads the frozen brief and only the timeline its phase lets it see. */
+export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot | WorkshopTaskSnapshot> {
   const task = await freshTask(ctx);
+  const view = await workshopRunView(ctx.run);
+  if (view) {
+    const offered = toolsForRun(ctx.run, view.phase);
+    return {
+      taskNumber: task.number,
+      title: view.title,
+      brief: view.brief,
+      status: task.status,
+      workshop: {
+        phase: view.phase,
+        round: view.round,
+        role: view.role,
+        members: view.members.map((m) => m.name),
+        reportTool: offered.find((t) => t.startsWith('submit_')) ?? null,
+      },
+      timeline: view.timeline.map((t) => ({
+        seq: t.seq,
+        kind: t.kind,
+        content: t.content,
+        createdAt: t.createdAt.toISOString(),
+      })),
+    };
+  }
   const timeline = await listTurns(ctx.run.userId, task.id);
   return {
     taskNumber: task.number,
@@ -302,12 +344,18 @@ export async function submitDispatchReport(
   report: Record<string, unknown>
 ): Promise<DispatchReportResult> {
   if (!ctx.run.dispatchId) throw badRequest('not_a_workshop_run', 'Only workshop runs submit this report');
-  const dispatch = await dispatchOf(ctx.run.dispatchId);
+  await assertReportTool(ctx.run.dispatchId, tool);
+  const parsed = parseReport(tool, report);
+  return controlPlaneWrite(ctx, tool, parsed, (tx) => insertDispatchReport(tx, ctx, tool, parsed));
+}
+
+/** A workshop run reports only through its dispatch's phase tool. */
+async function assertReportTool(dispatchId: string, tool: string): Promise<void> {
+  const dispatch = await dispatchOf(dispatchId);
   const expected = dispatch ? agentPhase(dispatch.phase)?.reportTool : undefined;
   if (expected !== tool) {
     throw badRequest('wrong_report_tool', expected ? `This run reports with ${expected}` : 'This run takes no report');
   }
-  return controlPlaneWrite(ctx, tool, report, (tx) => insertDispatchReport(tx, ctx, tool, report));
 }
 
 async function insertDispatchReport(
@@ -330,6 +378,7 @@ async function insertDispatchReport(
 /** Posts the result; a legacy task moves to review, a workshop run records it as its dispatch's report. */
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
+  if (ctx.run.dispatchId) await assertReportTool(ctx.run.dispatchId, 'submit_result');
   return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, queued) => {
     await postAsAgent(ctx, summary, tx);
     if (ctx.run.dispatchId) await insertDispatchReport(tx, ctx, 'submit_result', { summary });
@@ -419,117 +468,98 @@ export interface ControlPlaneToolDef {
  * In-process flavor of the control-plane tools for the api lane; same
  * implementations the MCP endpoint wraps, minus the token round-trip since
  * the executor already holds the run context. Each call passes the same
- * epoch check as an MCP call. Review runs get the reviewer set (read,
- * comment, verdict); worker runs get the worker set.
+ * epoch check as an MCP call, and the run is offered the same tools
+ * (toolsForRun).
  */
 export function buildControlPlaneToolDefs(ctx: RunToolContext): ControlPlaneToolDef[] {
-  return toolDefsFor(ctx).map((def) => ({
-    ...def,
-    execute: async (args) => {
-      await assertRunActive(db, ctx.run.id, ctx.epoch);
-      return def.execute(args);
-    },
-  }));
+  const workshop = ctx.run.dispatchId !== null;
+  return toolsForRun(ctx.run, ctx.phase ?? null).map((name) => {
+    const def = TOOL_DEFS[name];
+    return {
+      name,
+      description: describeTool(name, workshop),
+      parameters: def.parameters,
+      execute: async (args) => {
+        await assertRunActive(db, ctx.run.id, ctx.epoch);
+        return def.execute(ctx, args);
+      },
+    };
+  });
 }
 
-function toolDefsFor(ctx: RunToolContext): ControlPlaneToolDef[] {
-  const shared: ControlPlaneToolDef[] = [
-    {
-      name: 'get_task',
-      description:
-        'Read the task this run was woken for: title, brief, status, and timeline.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      execute: async () => JSON.stringify(await getTaskSnapshot(ctx)),
-    },
-    {
-      name: 'comment_on_task',
-      description: 'Post a progress note to the task timeline as yourself.',
-      parameters: {
-        type: 'object',
-        properties: { body: { type: 'string' } },
-        required: ['body'],
-      },
-      execute: async (args) => {
-        await commentOnTask(ctx, requireString(args, 'body'));
-        return 'Comment posted';
-      },
-    },
-  ];
+const NO_ARGS = { type: 'object', properties: {}, additionalProperties: false };
 
-  if (ctx.run.trigger === 'review') {
-    return [
-      ...shared,
-      {
-        name: 'submit_review',
-        description:
-          'Deliver your review verdict. approved records a recommendation (a human closes the task); changes_requested reopens work with your feedback.',
-        parameters: {
-          type: 'object',
-          properties: {
-            decision: { type: 'string', enum: ['approved', 'changes_requested'] },
-            feedback: { type: 'string' },
-          },
-          required: ['decision', 'feedback'],
-        },
-        execute: async (args) => {
-          const decision = requireString(args, 'decision') as ApprovalDecision;
-          if (decision !== 'approved' && decision !== 'changes_requested') {
-            throw badRequest('invalid_input', `Unknown decision "${decision}"`);
-          }
-          const outcome = await submitReviewVerdict(ctx, decision, requireString(args, 'feedback'));
-          return JSON.stringify(outcome);
-        },
-      },
-    ];
-  }
-
-  return [
-    ...shared,
-    {
-      name: 'update_task_status',
-      description:
-        'Move the task to a new status. Transitions follow the board rules; illegal moves are rejected.',
-      parameters: {
-        type: 'object',
-        properties: { status: { type: 'string', enum: STATUS_VALUES } },
-        required: ['status'],
-      },
-      execute: async (args) => {
-        const status = requireString(args, 'status') as TaskStatus;
-        if (!STATUS_VALUES.includes(status)) {
-          throw badRequest('invalid_input', `Unknown status "${status}"`);
-        }
-        const task = await updateTaskStatus(ctx, status);
-        return JSON.stringify({ status: task.status });
-      },
+const TOOL_DEFS: Record<
+  ControlPlaneTool,
+  { parameters: Record<string, unknown>; execute: (ctx: RunToolContext, args: Record<string, unknown>) => Promise<string> }
+> = {
+  get_task: {
+    parameters: NO_ARGS,
+    execute: async (ctx) => JSON.stringify(await getTaskSnapshot(ctx)),
+  },
+  comment_on_task: {
+    parameters: { type: 'object', properties: { body: { type: 'string' } }, required: ['body'] },
+    execute: async (ctx, args) => {
+      await commentOnTask(ctx, requireString(args, 'body'));
+      return 'Comment posted';
     },
-    {
-      name: 'ask_blocker',
-      description:
-        'You are stuck and need a human decision. Posts the question to the timeline and marks the task blocked.',
-      parameters: {
-        type: 'object',
-        properties: { question: { type: 'string' } },
-        required: ['question'],
-      },
-      execute: async (args) => {
-        const task = await askBlocker(ctx, requireString(args, 'question'));
-        return JSON.stringify({ status: task.status });
-      },
+  },
+  update_task_status: {
+    parameters: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: STATUS_VALUES } },
+      required: ['status'],
     },
-    {
-      name: 'submit_result',
-      description:
-        'You finished the work. Posts your result summary to the timeline and hands the task to review.',
-      parameters: {
-        type: 'object',
-        properties: { summary: { type: 'string' } },
-        required: ['summary'],
-      },
-      execute: async (args) => {
-        const task = await submitResult(ctx, requireString(args, 'summary'));
-        return JSON.stringify({ status: task.status });
-      },
+    execute: async (ctx, args) => {
+      const status = requireString(args, 'status') as TaskStatus;
+      if (!STATUS_VALUES.includes(status)) {
+        throw badRequest('invalid_input', `Unknown status "${status}"`);
+      }
+      const task = await updateTaskStatus(ctx, status);
+      return JSON.stringify({ status: task.status });
     },
-  ];
-}
+  },
+  submit_review: {
+    parameters: {
+      type: 'object',
+      properties: {
+        decision: { type: 'string', enum: ['approved', 'changes_requested'] },
+        feedback: { type: 'string' },
+      },
+      required: ['decision', 'feedback'],
+    },
+    execute: async (ctx, args) => {
+      const decision = requireString(args, 'decision') as ApprovalDecision;
+      if (decision !== 'approved' && decision !== 'changes_requested') {
+        throw badRequest('invalid_input', `Unknown decision "${decision}"`);
+      }
+      return JSON.stringify(await submitReviewVerdict(ctx, decision, requireString(args, 'feedback')));
+    },
+  },
+  ask_blocker: {
+    parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+    execute: async (ctx, args) => {
+      const task = await askBlocker(ctx, requireString(args, 'question'));
+      return JSON.stringify({ status: task.status });
+    },
+  },
+  submit_result: {
+    parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] },
+    execute: async (ctx, args) => {
+      const task = await submitResult(ctx, requireString(args, 'summary'));
+      return JSON.stringify({ status: task.status });
+    },
+  },
+  submit_exploration: {
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        questions: { type: 'array', items: { type: 'string' }, maxItems: MAX_EXPLORATION_QUESTIONS },
+      },
+      required: ['summary'],
+      additionalProperties: false,
+    },
+    execute: async (ctx, args) => JSON.stringify(await submitDispatchReport(ctx, 'submit_exploration', args)),
+  },
+};

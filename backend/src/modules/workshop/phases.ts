@@ -8,6 +8,11 @@ export interface AgentPhaseSpec {
   purpose: DispatchPurpose;
   participants: Participants;
   readOnly: boolean;
+  /**
+   * Participants work without seeing each other: no comments, no blocker posts,
+   * and nothing a peer wrote in this phase reaches their prompt or get_task.
+   */
+  blind: boolean;
   /** The terminal control-plane tool that carries the phase's report. */
   reportTool: string;
 }
@@ -21,22 +26,23 @@ export type PhaseSpec = AgentPhaseSpec | PlatformPhaseSpec;
 
 export const PHASES: Record<WorkshopPhase, PhaseSpec> = {
   brief: { kind: 'platform' },
-  explore: { kind: 'agent', purpose: 'explore', participants: 'all', readOnly: true, reportTool: 'submit_exploration' },
-  plan: { kind: 'agent', purpose: 'plan', participants: 'lead', readOnly: true, reportTool: 'submit_plan' },
+  explore: { kind: 'agent', purpose: 'explore', participants: 'all', readOnly: true, blind: true, reportTool: 'submit_exploration' },
+  plan: { kind: 'agent', purpose: 'plan', participants: 'lead', readOnly: true, blind: false, reportTool: 'submit_plan' },
   plan_review: {
     kind: 'agent',
     purpose: 'plan_review',
     participants: 'others',
     readOnly: true,
+    blind: true,
     reportTool: 'submit_plan_review',
   },
-  build: { kind: 'agent', purpose: 'build', participants: 'lead', readOnly: false, reportTool: 'submit_result' },
+  build: { kind: 'agent', purpose: 'build', participants: 'lead', readOnly: false, blind: false, reportTool: 'submit_result' },
   integrate: { kind: 'platform' },
   check: { kind: 'platform' },
-  verify: { kind: 'agent', purpose: 'verify', participants: 'others', readOnly: true, reportTool: 'submit_verification' },
-  triage: { kind: 'agent', purpose: 'triage', participants: 'lead', readOnly: true, reportTool: 'submit_triage' },
-  fix: { kind: 'agent', purpose: 'fix', participants: 'lead', readOnly: false, reportTool: 'submit_result' },
-  sign_off: { kind: 'agent', purpose: 'sign_off', participants: 'signers', readOnly: true, reportTool: 'submit_sign_off' },
+  verify: { kind: 'agent', purpose: 'verify', participants: 'others', readOnly: true, blind: true, reportTool: 'submit_verification' },
+  triage: { kind: 'agent', purpose: 'triage', participants: 'lead', readOnly: true, blind: false, reportTool: 'submit_triage' },
+  fix: { kind: 'agent', purpose: 'fix', participants: 'lead', readOnly: false, blind: false, reportTool: 'submit_result' },
+  sign_off: { kind: 'agent', purpose: 'sign_off', participants: 'signers', readOnly: true, blind: true, reportTool: 'submit_sign_off' },
   approval: { kind: 'platform' },
   merge: { kind: 'platform' },
   done: { kind: 'platform' },

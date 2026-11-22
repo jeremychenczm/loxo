@@ -135,7 +135,7 @@ describe('a dispatch run settled by its owner', () => {
           await submitDispatchReport(
             { run: run!, epoch: run!.ownerEpoch, agent: agent as Agent, task: task! },
             'submit_exploration',
-            { approach: 'TOTP via otplib' }
+            { summary: 'TOTP via otplib' }
           );
           return { text: 'Reported.' };
         }
@@ -202,14 +202,14 @@ describe('reports', () => {
     await expect(submitDispatchReport(ctx, 'submit_plan', { plan: 'x' })).rejects.toMatchObject({
       code: 'wrong_report_tool',
     });
-    const first = await submitDispatchReport(ctx, 'submit_exploration', { approach: 'first' });
-    expect(first).toEqual({ accepted: true, report: { approach: 'first' } });
+    const first = await submitDispatchReport(ctx, 'submit_exploration', { summary: 'first' });
+    expect(first).toEqual({ accepted: true, report: { summary: 'first', questions: [] } });
 
     // A follow-up run of the same dispatch reports again: the first report stands.
     const followUp = await handOffRun(ownerOf(ctx.run), { status: 'cancelled' });
     expect(followUp).toBeUndefined(); // it had already reported, so it settled instead
     const rows = await db.select().from(dispatchReports).where(eq(dispatchReports.dispatchId, ctx.run.dispatchId!));
-    expect(rows.map((r) => r.report)).toEqual([{ approach: 'first' }]);
+    expect(rows.map((r) => r.report)).toEqual([{ summary: 'first', questions: [] }]);
     expect((await dispatchFor(task.id, lead!)).status).toBe('reported');
   });
 
@@ -306,7 +306,7 @@ describe('recovery after the owner died', () => {
   it('keeps a report the run committed before its owner died', async () => {
     const { task, agents: [lead] } = await startedWorkshop(['Known A', 'Known B']);
     const ctx = await admitted(task.id, lead!, 'dead');
-    await submitDispatchReport(ctx, 'submit_exploration', { approach: 'kept' });
+    await submitDispatchReport(ctx, 'submit_exploration', { summary: 'kept' });
     const resolved = await crashAndRecover(ctx.run);
     expect(resolved).toMatchObject({ status: 'succeeded', recoveryClass: 'known' });
     expect((await dispatchFor(task.id, lead!)).status).toBe('reported');

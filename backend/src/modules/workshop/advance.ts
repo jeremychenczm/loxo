@@ -432,7 +432,16 @@ export async function moveToPhase(
       ...(finished ? { closedAt: new Date() } : {}),
     })
     .where(eq(tasks.id, task.id));
-  await tx.insert(phaseTransitions).values({ taskId: task.id, fromPhase: from, toPhase: to, cycle, round, cause });
+  // Read after the update above, under the task row lock that every timeline append also takes.
+  await tx.insert(phaseTransitions).values({
+    taskId: task.id,
+    fromPhase: from,
+    toPhase: to,
+    cycle,
+    round,
+    cause,
+    turnSeq: sql`(SELECT ${tasks.turnCounter} FROM ${tasks} WHERE ${tasks.id} = ${task.id})`,
+  });
 }
 
 /** Workshops the reconciler should advance: flagged ones, and running ones whose clocks may have run out. */

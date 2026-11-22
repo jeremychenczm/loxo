@@ -20,6 +20,7 @@ import { fence, FencedError } from '../ownership/fence';
 import { handOffRun } from '../ownership/handoff';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 import { advanceAfterRunEnded, noteRunEnded } from '../workshop/dispatch-end';
+import { postsFallbackReport } from '../workshop/dispatch-info';
 import { executePlatformRun, notePlatformRunEnded, type PlatformRunEnding } from '../workshop/platform-ops';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
@@ -275,7 +276,7 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   // Fallback report: only when the agent said nothing through the control
   // plane during the run. Posted while the run still holds the task, so the
   // next run's prompt sees it. Best-effort — the run result stands regardless.
-  if (report && !(await runHasAgentTurns(run.id))) {
+  if (report && !(await runHasAgentTurns(run.id)) && (await postsFallbackReport(run))) {
     const { taskId, agentId, text } = report;
     await db
       .transaction(async (tx) => {

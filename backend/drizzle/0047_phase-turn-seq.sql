@@ -1,0 +1,1 @@
+ALTER TABLE "phase_transitions" ADD COLUMN "turn_seq" integer;
