@@ -174,9 +174,11 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   fs.closeSync(out);
   fs.closeSync(err);
   let exited = false;
+  let exitCode: number | null = null;
   const exit = new Promise<InstanceExit>((resolve) => {
     child.once('exit', (code, signal) => {
       exited = true;
+      exitCode = code;
       resolve({ code, signal, at: Date.now() });
     });
   });
@@ -212,7 +214,9 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   }
   child.kill('SIGKILL');
   const tail = fs.readFileSync(stderrFile, 'utf8').slice(-2_000);
-  throw new Error(`Instance ${spec.label} did not become ready${exited ? ' (it exited)' : ''}: ${tail}`);
+  // Windows reports resource exhaustion at process start only through the exit code, e.g. 0xC0000142.
+  const how = exited ? ` (it exited with code ${exitCode === null ? 'null' : `0x${(exitCode >>> 0).toString(16).toUpperCase()}`})` : '';
+  throw new Error(`Instance ${spec.label} did not become ready${how}: ${tail}`);
 }
 
 export class ApiError extends Error {
