@@ -10,7 +10,7 @@ import {
   createQueuedRun,
   failQueuedRun,
   nextQueuedRunForAgent,
-  nextQueuedRunForTask,
+  nextQueuedRunForGate,
   queuedRunFor,
   settleRun,
   type RunOutcome,
@@ -302,15 +302,15 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
 }
 
 /**
- * After a run settles, try the oldest queued run waiting on the same task,
- * then the oldest waiting on the same agent. Gate failures leave candidates
- * queued for the next settlement.
+ * After a run settles, try the oldest queued run waiting on the gate it
+ * freed, then the oldest waiting on the same agent. Gate failures leave
+ * candidates queued for the next settlement.
  */
 async function promoteNext(finished: Run): Promise<void> {
   const candidates: Run[] = [];
-  if (finished.taskId) {
-    const byTask = await nextQueuedRunForTask(finished.taskId);
-    if (byTask) candidates.push(byTask);
+  if (finished.gateKey) {
+    const byGate = await nextQueuedRunForGate(finished.gateKey);
+    if (byGate) candidates.push(byGate);
   }
   if (finished.agentId) {
     const byAgent = await nextQueuedRunForAgent(finished.agentId);

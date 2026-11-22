@@ -15,7 +15,7 @@ import {
   type WorkshopPhase,
 } from '../../db/schema';
 import { crashPoint } from '../ownership/crash-points';
-import { createQueuedRun } from '../runs/runs.service';
+import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 import { decide, type Action, type EngineSettings } from './engine';
 import { FINISHED_PHASES } from './phases';
 import { liveRoster, loadWorkshopState, snapshotOf, type WorkshopSnapshot } from './state';
@@ -232,6 +232,9 @@ async function applyAction(tx: Tx, task: Task, action: Action, queued: Run[]): P
           trigger: 'dispatch',
           reason: `Workshop on task #${task.number} (${snapshot?.title ?? task.title}): ${phaseLabel(action.phase)}`,
           dispatchId: row.id,
+          // Members on different worktrees, or without one, run at the same time.
+          workspaceId: row.workspaceId,
+          gateKey: worktreeGateKey(row.workspaceId),
         },
         tx
       );

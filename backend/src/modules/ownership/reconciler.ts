@@ -27,8 +27,8 @@ export interface ReconcileResult {
  *    drive it through recovery (see recovery.ts). A run whose recoverer died
  *    expires again and is resumed here.
  * 2. Stop interrupted runs whose retry request expired unanswered.
- * 3. Promote queued runs whose agent and task are free, oldest first,
- *    skipping tasks whose workspace is quarantined.
+ * 3. Promote queued runs whose agent and gate are free, oldest first,
+ *    skipping runs whose worktree is quarantined.
  * 4. Advance workshops: any left flagged by a crash between a settlement and
  *    its advance, and any with a running dispatch, so time budgets are enforced.
  */
@@ -81,8 +81,7 @@ export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResul
 
 /**
  * Queued runs that could start now: back-off elapsed, both gates free (see
- * AGENT_GATE_STATUSES and TASK_GATE_STATUSES), and no quarantined workspace
- * on their task.
+ * AGENT_GATE_STATUSES and GATE_STATUSES), and their worktree not quarantined.
  */
 async function promotableRuns(): Promise<Run[]> {
   return db
@@ -93,7 +92,7 @@ async function promotableRuns(): Promise<Run[]> {
         eq(runs.status, 'queued'),
         or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`)),
         sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND r.agent_id = ${runs.agentId})`,
-        sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.task_id = ${runs.taskId})`,
+        sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.gate_key = ${runs.gateKey})`,
         notQuarantined()
       )
     )

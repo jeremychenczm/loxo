@@ -23,7 +23,7 @@ import { config } from '../../config';
 import { crashPoint } from '../ownership/crash-points';
 import { fence } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
-import { recordBeforeState, TASK_GATE_STATUSES, type RunOwner } from '../runs/runs.service';
+import { GATE_STATUSES, recordBeforeState, type RunOwner } from '../runs/runs.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { runBeforeRef, workspaceBranchName, workspaceLeaf } from './branch-name';
@@ -145,7 +145,7 @@ async function assertNoRunningRun(taskId: string): Promise<void> {
   const [active] = await db
     .select({ status: runs.status })
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), inArray(runs.status, [...TASK_GATE_STATUSES])))
+    .where(and(eq(runs.taskId, taskId), inArray(runs.status, [...GATE_STATUSES])))
     .limit(1);
   if (active?.status === 'interrupted') {
     throw conflict('run_interrupted', 'An interrupted run is waiting for a decision; answer its retry request first');

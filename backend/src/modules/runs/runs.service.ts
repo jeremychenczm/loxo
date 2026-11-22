@@ -8,15 +8,20 @@ import { FencedError, recordFenceRejection } from '../ownership/fence';
 import { instanceId } from '../ownership/instance';
 
 /**
- * Statuses that hold the agent claim and the task lock. The partial unique
- * indexes runs_one_running_per_agent/_task enforce them; keep both in step.
- * An interrupted run keeps its task (a person decides what happens to its
- * work) but frees its agent for other tasks.
+ * Statuses that hold the agent claim and the execution gate. The partial
+ * unique indexes runs_one_running_per_agent/_gate enforce them; keep both in
+ * step. An interrupted run keeps its gate (a person decides what happens to
+ * its work) but frees its agent for other tasks.
  */
 export const AGENT_GATE_STATUSES = ['running'] as const satisfies readonly RunStatus[];
-export const TASK_GATE_STATUSES = ['running', 'interrupted'] as const satisfies readonly RunStatus[];
+export const GATE_STATUSES = ['running', 'interrupted'] as const satisfies readonly RunStatus[];
 
-const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_task']);
+const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_gate']);
+
+/** The gate a workshop run on a worktree holds; runs without a worktree hold none. */
+export function worktreeGateKey(workspaceId: string | null): string | null {
+  return workspaceId ? `ws:${workspaceId}` : null;
+}
 
 export interface CreateRunInput {
   agentId: string;
@@ -378,12 +383,12 @@ export async function queuedRunFor(agentId: string, taskId: string, ex: Executor
   return run;
 }
 
-/** Oldest promotable queued run waiting on a task; promotion order is FIFO. */
-export async function nextQueuedRunForTask(taskId: string): Promise<Run | undefined> {
+/** Oldest promotable queued run waiting on a gate; promotion order is FIFO. */
+export async function nextQueuedRunForGate(gateKey: string): Promise<Run | undefined> {
   const [run] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued'), promotable()))
+    .where(and(eq(runs.gateKey, gateKey), eq(runs.status, 'queued'), promotable()))
     .orderBy(asc(runs.createdAt))
     .limit(1);
   return run;

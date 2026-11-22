@@ -408,14 +408,16 @@ export const runs = pgTable(
     /** Reconciler scan for expired leases. */
     index('runs_running_lease').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
     /**
-     * The agent claim and the task execution lock: at most one running run
-     * per agent, and one running or interrupted run per task. Admission flips
-     * a run to running and a held gate surfaces as a unique violation. Keep
-     * the predicates in step with AGENT_GATE_STATUSES and TASK_GATE_STATUSES.
+     * The agent claim and the execution gate: at most one running run per
+     * agent, and one running or interrupted run per gate key (a worktree, or
+     * a whole task for legacy runs; runs without a gate key share nothing).
+     * Admission flips a run to running and a held gate surfaces as a unique
+     * violation. Keep the predicates in step with AGENT_GATE_STATUSES and
+     * GATE_STATUSES.
      */
     uniqueIndex('runs_one_running_per_agent').on(t.agentId).where(sql`${t.status} = 'running'`),
-    uniqueIndex('runs_one_running_per_task')
-      .on(t.taskId)
+    uniqueIndex('runs_one_running_per_gate')
+      .on(t.gateKey)
       .where(sql`${t.status} IN ('running', 'interrupted')`),
     check(
       'runs_running_has_lease',

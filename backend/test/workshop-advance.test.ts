@@ -149,7 +149,8 @@ describe('starting a workshop', () => {
     const queued = await db.select().from(runs).where(eq(runs.taskId, id));
     expect(queued).toHaveLength(3);
     for (const run of queued) {
-      expect(run).toMatchObject({ trigger: 'dispatch', status: 'queued', gateKey: `task:${id}` });
+      // No repository, no worktrees: members share no gate and explore at the same time.
+      expect(run).toMatchObject({ trigger: 'dispatch', status: 'queued', gateKey: null });
       expect(rows.map((d) => d.id)).toContain(run.dispatchId);
     }
     expect(started.map((r) => r.id).sort()).toEqual(queued.map((r) => r.id).sort());

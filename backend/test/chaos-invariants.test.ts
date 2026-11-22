@@ -21,7 +21,7 @@ const LIMITS = { cycleMs: 1_000, maxAttempts: 3 };
 // The schema already refuses some breaches outright; these go so a test can build them.
 const LOOSEN = [
   'DROP INDEX runs_one_running_per_agent',
-  'DROP INDEX runs_one_running_per_task',
+  'DROP INDEX runs_one_running_per_gate',
   'DROP INDEX human_requests_one_retry_per_run',
   'DROP INDEX control_plane_requests_terminal',
   'ALTER TABLE runs DROP CONSTRAINT runs_running_has_lease',
