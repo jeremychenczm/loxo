@@ -98,6 +98,16 @@ describe('migration to workshops', () => {
     ]);
   });
 
+  it('starts every existing worktree with its branch checked out', async () => {
+    const rows = await q<{ id: string; branch_name: string; current_branch: string }>(
+      `SELECT id, branch_name, current_branch FROM workspaces ORDER BY id`
+    );
+    expect(rows).toEqual([
+      { id: ids.oldWorkspace, branch_name: 'loxo/t1-old', current_branch: 'loxo/t1-old' },
+      { id: ids.workspace, branch_name: 'loxo/t1', current_branch: 'loxo/t1' },
+    ]);
+  });
+
   it('treats the workshop report tools as terminal: once per run', async () => {
     const insert = (seq: number) =>
       q(

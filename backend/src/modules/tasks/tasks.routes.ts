@@ -10,6 +10,7 @@ import {
   getTaskWorkspace,
   prepareTaskWorkspace,
   reconcileTaskWorkspace,
+  reconcileWorkspace,
 } from '../code-workspaces/workspace.service';
 import { listApprovals, recordApproval } from './approvals.service';
 import {
@@ -64,6 +65,16 @@ tasksRouter.get('/:id/changes', async (req: AuthedRequest, res, next) => {
   try {
     await getTask(req.auth!.userId, String(req.params.id)); // ownership
     res.json(await getTaskChanges(req.auth!.userId, String(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/workspaces/:workspaceId/reconcile', async (req: AuthedRequest, res, next) => {
+  try {
+    res.json({
+      workspace: await reconcileWorkspace(req.auth!.userId, String(req.params.id), String(req.params.workspaceId)),
+    });
   } catch (error) {
     next(error);
   }

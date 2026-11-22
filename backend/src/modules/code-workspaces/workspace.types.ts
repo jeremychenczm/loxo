@@ -77,12 +77,13 @@ export interface PrepareWorkspaceResult extends WorkspaceObservation {
 export interface ReconcileWorkspaceInput {
   repositoryRoot: string;
   worktreePath: string;
-  branchName: string;
+  /** Null for a detached worktree, which has no branch to recover from. */
+  branchName: string | null;
   baseCommit: string;
 }
 
 export interface ReconcileWorkspaceResult extends WorkspaceObservation {
-  branchName: string;
+  branchName: string | null;
   /** The worktree was re-attached from its surviving branch after a crash or out-of-band deletion. */
   recovered: boolean;
 }

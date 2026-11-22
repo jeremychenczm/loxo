@@ -309,6 +309,13 @@
       "when": 1795301183667,
       "tag": "0043_workshop-dispatches",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795315184723,
+      "tag": "0044_worktree-branches",
+      "breakpoints": true
     }
   ]
 }

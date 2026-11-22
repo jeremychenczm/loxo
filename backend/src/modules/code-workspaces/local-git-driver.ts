@@ -589,7 +589,7 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
   }
 
   async reconcileWorkspace(input: ReconcileWorkspaceInput): Promise<ReconcileWorkspaceResult> {
-    const branchName = assertSafeRefName(input.branchName);
+    const branchName = input.branchName === null ? null : assertSafeRefName(input.branchName);
     const baseCommit = assertCommitId(input.baseCommit);
     const { repositoryRoot, worktreePath } = input;
     let recovered = false;
@@ -634,7 +634,10 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       }
     }
 
-    if (!registered) {
+    if (!registered && branchName === null) {
+      return fail('Detached worktree is gone', 'missing');
+    }
+    if (!registered && branchName !== null) {
       const branchHead = await branchCommit(repositoryRoot, branchName);
       if (branchHead === null) {
         return fail('Worktree and branch are both gone', 'missing');
@@ -648,7 +651,7 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
 
     if (registered && registered.branch !== branchName) {
       return fail(
-        `Worktree has branch "${registered.branch ?? '(detached)'}" checked out, expected "${branchName}"`,
+        `Worktree has branch "${registered.branch ?? '(detached)'}" checked out, expected "${branchName ?? '(detached)'}"`,
         'error'
       );
     }

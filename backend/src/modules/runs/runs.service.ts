@@ -123,12 +123,38 @@ export async function listRuns(
 const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`));
 
 /**
- * The run's task has no quarantined workspace. Checked inside admission so
- * every path (wake, promotion, reconciler) waits instead of starting a run
- * that would collide with a writer that lost its owner.
+ * The run's worktree is not quarantined: the worktree recorded on the run,
+ * or, for a run that has not recorded one yet, any worktree of its task.
+ * Checked inside admission so every path (wake, promotion, reconciler) waits
+ * instead of starting a run that would collide with a writer that lost its
+ * owner. Shared with the reconciler's promotion query.
  */
-const notQuarantined = () =>
-  sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`;
+export const notQuarantined = () =>
+  sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.status = 'quarantined' AND (
+    w.id = ${runs.workspaceId} OR (${runs.workspaceId} IS NULL AND w.task_id = ${runs.taskId})))`;
+
+/**
+ * Records the worktree a run works in once it has one, guarded by ownership
+ * like recordBeforeState. Throws FencedError when the run moved on.
+ */
+export async function recordRunWorkspace(owner: RunOwner, workspaceId: string, executor: Executor = db): Promise<void> {
+  const [row] = await executor
+    .update(runs)
+    .set({ workspaceId })
+    .where(
+      and(
+        eq(runs.id, owner.runId),
+        eq(runs.status, 'running'),
+        eq(runs.ownerEpoch, owner.epoch),
+        eq(runs.ownerInstance, owner.instance)
+      )
+    )
+    .returning({ id: runs.id });
+  if (!row) {
+    recordFenceRejection('run_workspace', owner.runId, owner.epoch);
+    throw new FencedError(owner.runId, owner.epoch, 'run_workspace');
+  }
+}
 
 /**
  * A workshop run may start only while its dispatch is still wanted: not

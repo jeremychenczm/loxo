@@ -14,7 +14,7 @@ import {
   type WorkspaceStatus,
 } from '../../db/schema';
 import { runBeforeRef } from '../code-workspaces/branch-name';
-import { getTaskWorkspace, inspectWorktreeForRecovery } from '../code-workspaces/workspace.service';
+import { inspectWorktreeForRecovery, runWorkspace, runWorktreeScope } from '../code-workspaces/workspace.service';
 import { hasCommittedEffects, readRunEffects, type RunEffects } from '../runs/run-effects';
 import { createQueuedRun, ownerOf, type RunOwner } from '../runs/runs.service';
 import { addSystemTurn } from '../tasks/turns.service';
@@ -94,7 +94,7 @@ function launcherOf(run: Run): LauncherIdentity | null {
 }
 
 async function workspaceOf(run: Run): Promise<Workspace | null> {
-  return run.taskId ? getTaskWorkspace(run.userId, run.taskId) : null;
+  return runWorkspace(run);
 }
 
 /** Drives a taken-over run to its resolved state, starting from the step it reached. */
@@ -251,12 +251,12 @@ async function update(tx: Tx, runId: string, patch: Partial<typeof runs.$inferIn
   return row!;
 }
 
+/** Locks only the run's own worktree; other members' worktrees on the task keep working. */
 async function quarantine(tx: Tx, run: Run, reason: string): Promise<void> {
-  if (!run.taskId) return;
   await tx
     .update(workspaces)
     .set({ status: 'quarantined', lastError: reason, updatedAt: new Date() })
-    .where(and(eq(workspaces.taskId, run.taskId), inArray(workspaces.status, LIVE_WORKSPACE)));
+    .where(and(runWorktreeScope(run), inArray(workspaces.status, LIVE_WORKSPACE)));
 }
 
 /** Exactly one retry request per interrupted run; a resumed resolve finds it already there. */

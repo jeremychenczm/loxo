@@ -3,9 +3,9 @@ import { db, type Tx } from '../../db/client';
 import { humanRequests, runs, type HumanRequest, type Run } from '../../db/schema';
 import { badRequest, conflict } from '../../http/errors';
 import {
-  getTaskWorkspace,
   leaveQuarantine,
   relabelQuarantine,
+  runWorkspace,
   settleWorkspaceForDecision,
   type ObservedWorkspace,
 } from '../code-workspaces/workspace.service';
@@ -44,7 +44,7 @@ export async function decideInterruptedRun(
   if (!run || run.status !== 'interrupted') throw closed();
 
   const choice = input.choice as 'continue' | 'discard' | 'stop';
-  const workspace = run.taskId ? await getTaskWorkspace(userId, run.taskId) : null;
+  const workspace = await runWorkspace(run);
   let observed: ObservedWorkspace | null = null;
   if (choice !== 'stop' && workspace) {
     const discardTo =
@@ -79,7 +79,7 @@ export async function decideInterruptedRun(
     if (!decided) throw closed();
 
     if (observed && workspace) await leaveQuarantine(tx, workspace.id, observed);
-    if (choice === 'stop' && run.taskId) await relabelQuarantine(tx, run.taskId, stoppedLock(run.id));
+    if (choice === 'stop') await relabelQuarantine(tx, run, stoppedLock(run.id));
     const queued: Run[] = [];
     if (continues) {
       queued.push(
@@ -153,7 +153,14 @@ async function closeInterruptedRun(
  */
 export async function stopExpiredDecisions(): Promise<string[]> {
   const overdue = await db
-    .select({ requestId: humanRequests.id, runId: runs.id, userId: runs.userId, taskId: runs.taskId, agentName: runs.agentName })
+    .select({
+      requestId: humanRequests.id,
+      runId: runs.id,
+      userId: runs.userId,
+      taskId: runs.taskId,
+      workspaceId: runs.workspaceId,
+      agentName: runs.agentName,
+    })
     .from(humanRequests)
     .innerJoin(runs, eq(runs.id, humanRequests.runId))
     .where(
@@ -180,7 +187,7 @@ export async function stopExpiredDecisions(): Promise<string[]> {
         .where(and(eq(humanRequests.id, row.requestId), inArray(humanRequests.status, ['open', 'expired'])));
       const decided = await closeInterruptedRun(tx, row.runId, 'cancelled', 'Interrupted; stopped when its retry request expired');
       if (decided && row.taskId) {
-        await relabelQuarantine(tx, row.taskId, stoppedLock(row.runId));
+        await relabelQuarantine(tx, row, stoppedLock(row.runId));
         await addSystemTurn(
           row.userId,
           row.taskId,

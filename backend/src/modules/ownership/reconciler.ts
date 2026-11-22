@@ -1,7 +1,8 @@
 import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { runs, workspaces, type Run } from '../../db/schema';
+import { runs, type Run } from '../../db/schema';
 import { promoteQueuedRun } from '../runs/wake';
+import { notQuarantined } from '../runs/runs.service';
 import type { LeaseKeeper } from './lease';
 import { recoverRun } from './recovery';
 import { stopExpiredDecisions } from './recovery-decisions';
@@ -93,7 +94,7 @@ async function promotableRuns(): Promise<Run[]> {
         or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`)),
         sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status = 'running' AND r.agent_id = ${runs.agentId})`,
         sql`NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('running', 'interrupted') AND r.task_id = ${runs.taskId})`,
-        sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`
+        notQuarantined()
       )
     )
     .orderBy(asc(runs.createdAt));

@@ -15,8 +15,9 @@ import {
 import {
   captureRunChanges,
   findRepository,
-  getTaskWorkspace,
+  getWorkspace,
   resolveWorkspace,
+  runWorkspace,
   snapshotBeforeRun,
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
@@ -32,7 +33,7 @@ import { createPermissionArbiter } from '../hosts/permission-arbiter';
 import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
-import { recordSessionStart } from './runs.service';
+import { recordRunWorkspace, recordSessionStart } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError } from '../ownership/fence';
 import { runLeases, type RunLease } from '../ownership/lease';
@@ -163,8 +164,8 @@ export async function executeTaskTurn(
         'api_failed'
       );
     }
-    // A reviewer reads the task's worktree when there is one, never its own scratch space.
-    const taskWorkspace = await getTaskWorkspace(run.userId, task.id);
+    // A reviewer reads the run's worktree (or its task's) when there is one, never its own scratch space.
+    const taskWorkspace = await runWorkspace(run);
     if (taskWorkspace) readRoot = taskWorkspace.worktreePath;
     host = new ApiHost({
       protocol: credentials.vendor as ApiProtocol,
@@ -324,8 +325,26 @@ async function resolveCodeWorkspace(
     return null;
   }
 
+  // A workshop dispatch works in the worktree the engine chose for it; legacy runs prepare their task's.
+  if (run.dispatchId && run.workspaceId) {
+    const workspace = await getWorkspace(run.workspaceId);
+    if (!workspace || (workspace.status !== 'ready' && workspace.status !== 'dirty')) {
+      throw new RunnerError(
+        workspace?.lastError ?? `The run's worktree is ${workspace?.status ?? 'gone'}; reconcile it before running`,
+        'cli_failed'
+      );
+    }
+    return { workspace, repository };
+  }
   try {
-    return await resolveWorkspace(run.userId, task);
+    const resolved = await resolveWorkspace(run.userId, task);
+    if (resolved) {
+      await recordRunWorkspace(
+        { runId: run.id, epoch: run.ownerEpoch, instance: runLeases.instance },
+        resolved.workspace.id
+      );
+    }
+    return resolved;
   } catch (err) {
     if (err instanceof HttpError && err.code === 'workspace_unavailable') {
       throw new RunnerError(err.message, 'cli_failed');
@@ -355,7 +374,7 @@ async function settleRunCapture(
       const note = policyViolation
         ? `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
         : snapshot.changedFiles > 0
-          ? `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`
+          ? `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.currentBranch ?? 'a detached worktree'}.`
           : null;
       if (note) await addSystemTurn(run.userId, task.id, note, { runId: run.id, epoch }, tx);
     },
