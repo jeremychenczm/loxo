@@ -472,6 +472,7 @@ export const dispatches = pgTable(
     status: text('status').$type<DispatchStatus>().notNull().default('pending'),
     /** Time budget counted from the first run start, excluding paused spans. */
     timeoutMs: integer('timeout_ms').notNull(),
+    /** Start of the current running span; cleared on pause, reset on resume. */
     startedAt: timestamp('started_at', { withTimezone: true }),
     /** Set while the dispatch waits on a person; the clock stops. */
     pausedAt: timestamp('paused_at', { withTimezone: true }),
