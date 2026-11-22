@@ -35,6 +35,9 @@ export interface WakeDecision {
   admitted: WakeAdmission;
 }
 
+/** Abort reason when the database asked this instance to stop a run, as opposed to a shutdown handoff. */
+const STOP_REQUESTED = 'stop_requested';
+
 /** In-flight executions, awaitable by tests. */
 const settling = new Set<Promise<void>>();
 
@@ -180,6 +183,8 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
   const handoff = new AbortController();
   // Admitted while a shutdown began: hand it on before its agent starts.
   if (runLeases.draining) handoff.abort();
+  // A stop the database asks for (a workshop dispatch out of time, a stopped workshop) uses the same signal.
+  lease.stopSignal.addEventListener('abort', () => handoff.abort(STOP_REQUESTED), { once: true });
   handoffs.set(started.id, handoff);
   const settled = performRun(started, lease, handoff.signal).catch((error) => {
     console.error(`Run ${started.id} settlement failed:`, error);
@@ -247,7 +252,16 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   if (lease.lost) return;
 
   const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
-  if (handoff.aborted && !completed) {
+  const stopRequested = handoff.aborted && handoff.reason === STOP_REQUESTED;
+  if (stopRequested && !completed) {
+    outcome = {
+      ...outcome,
+      status: 'cancelled',
+      stopReason: 'cancel_requested',
+      error: 'Stopped: its workshop dispatch ran out of time or the workshop was stopped',
+    };
+  }
+  if (handoff.aborted && !completed && !stopRequested) {
     // A refused or failed handoff leaves the run to crash recovery once the lease lapses.
     await handOffRun(owner, outcome).catch((error) => {
       if (!(error instanceof FencedError)) console.error(`Run ${run.id} could not be handed off:`, error);

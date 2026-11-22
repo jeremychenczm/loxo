@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { TurnPermission } from '@swarmdev/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -24,12 +24,12 @@ const auth = () => ({ Authorization: `Bearer ${token}` });
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setTaskHostFactoryForTests(
+  setTaskHostFactoryForTests((req) =>
     scriptedHost(async (turn) => {
       const [run] = await db
         .select()
         .from(runs)
-        .where(and(eq(runs.status, 'running'), sql`${turn.prompt} LIKE '%' || ${runs.agentName} || '%'`));
+        .where(and(eq(runs.status, 'running'), eq(runs.agentId, req.agent.id)));
       const [dispatch] = await db.select().from(dispatches).where(eq(dispatches.id, run!.dispatchId!));
       const [agent] = await db.select().from(agents).where(eq(agents.id, run!.agentId!));
       const [task] = await db.select().from(tasks).where(eq(tasks.id, run!.taskId!));
@@ -39,7 +39,7 @@ beforeAll(async () => {
       if (tool === 'submit_result') await submitResult(ctx, 'Built it.');
       else await submitDispatchReport(ctx, tool, { note: `${agent!.name} in ${dispatch!.phase}` });
       return { text: 'Done.' };
-    })
+    })(req)
   );
   const reg = await request(app).post('/auth/register').send({
     email: 'workshop-runs@example.com',

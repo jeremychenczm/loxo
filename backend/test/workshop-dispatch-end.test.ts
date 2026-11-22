@@ -123,13 +123,13 @@ afterAll(async () => {
 
 describe('a dispatch run settled by its owner', () => {
   it('reports, re-asks after a missing report, and asks a person after a failure', async () => {
-    setTaskHostFactoryForTests(
-      scriptedHost(async (turn) => {
+    setTaskHostFactoryForTests((req) =>
+      scriptedHost(async () => {
         const [run] = await db
           .select()
           .from(runs)
-          .where(and(eq(runs.status, 'running'), sql`${turn.prompt} LIKE '%' || ${runs.agentName} || '%'`));
-        if (turn.prompt.includes('Reporter')) {
+          .where(and(eq(runs.status, 'running'), eq(runs.agentId, req.agent.id)));
+        if (req.agent.name === 'Reporter') {
           const [agent] = await db.select().from(agents).where(eq(agents.id, run!.agentId!));
           const [task] = await db.select().from(tasks).where(eq(tasks.id, run!.taskId!));
           await submitDispatchReport(
@@ -139,9 +139,9 @@ describe('a dispatch run settled by its owner', () => {
           );
           return { text: 'Reported.' };
         }
-        if (turn.prompt.includes('Crasher')) throw new RunnerError('agent crashed', 'cli_failed');
+        if (req.agent.name === 'Crasher') throw new RunnerError('agent crashed', 'cli_failed');
         return { text: 'I looked but forgot to report.' };
-      })
+      })(req)
     );
     const { task, agents: [reporter, silent, crasher] } = await startedWorkshop(['Reporter', 'Silent', 'Crasher']);
     setWorkshopRunStarterForTests(null);
