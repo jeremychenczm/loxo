@@ -55,7 +55,7 @@ async function toolContext(task: Task, agentId: string): Promise<RunToolContext>
 }
 
 async function finish(ctx: RunToolContext): Promise<void> {
-  await settleRun(ownerOf(ctx.run), { status: 'succeeded' });
+  await settleRun(ownerOf(ctx.run), { status: 'succeeded' }, 'idle');
 }
 
 beforeAll(async () => {
