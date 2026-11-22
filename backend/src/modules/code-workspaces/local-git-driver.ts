@@ -26,6 +26,8 @@ import {
   type CapturedChanges,
   type CheckpointInput,
   type CheckpointResult,
+  type CommitAsInput,
+  type InterruptedStateCleared,
   type WorkspaceDriver,
   type InspectRepositoryInput,
   type MergeOutcome,
@@ -496,6 +498,53 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
    * it. Uses the repository's configured identity; a missing identity blocks
    * finalization instead of inventing or leaking host identity.
    */
+  /**
+   * Commits everything in the worktree under explicit identities, never the
+   * repository's own git config. Returns a null commit when there is nothing
+   * to commit.
+   */
+  async commitAs(input: CommitAsInput): Promise<CheckpointResult> {
+    await runGit(input.worktreePath, ['add', '-A', '--', '.']);
+    const staged = await tryGit(input.worktreePath, ['diff', '--cached', '--quiet']);
+    if (staged !== null) return { commit: null };
+    const committer = input.committer ?? input.author;
+    await runGit(input.worktreePath, ['-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', input.message], {
+      env: {
+        GIT_AUTHOR_NAME: input.author.name,
+        GIT_AUTHOR_EMAIL: input.author.email,
+        GIT_COMMITTER_NAME: committer.name,
+        GIT_COMMITTER_EMAIL: committer.email,
+      },
+    });
+    return { commit: line(await runGit(input.worktreePath, ['rev-parse', 'HEAD'])) };
+  }
+
+  /**
+   * Clears what a git process killed part-way can leave in a worktree: a stale
+   * index lock, which fails every later command, and an unfinished merge,
+   * unless the caller is keeping one on purpose. Only safe once the process
+   * that left them is known to be gone.
+   */
+  async clearInterruptedState(worktreePath: string, options: { keepMerge?: boolean } = {}): Promise<InterruptedStateCleared> {
+    const gitDir = path.resolve(worktreePath, line(await runGit(worktreePath, ['rev-parse', '--git-dir'])));
+    const lock = path.join(gitDir, 'index.lock');
+    const removedLock = fs.existsSync(lock);
+    if (removedLock) fs.rmSync(lock, { force: true });
+    let abortedMerge = false;
+    if (!options.keepMerge && fs.existsSync(path.join(gitDir, 'MERGE_HEAD'))) {
+      await runGit(worktreePath, ['merge', '--abort']);
+      abortedMerge = true;
+    }
+    return { removedLock, abortedMerge };
+  }
+
+  /** The installed git version, or null when git cannot be run. */
+  async gitVersion(): Promise<[number, number, number] | null> {
+    const out = await tryGit(process.cwd(), ['--version']);
+    const match = out ? /(\d+)\.(\d+)\.(\d+)/.exec(text(out)) : null;
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  }
+
   async commitCheckpoint(input: CheckpointInput): Promise<CheckpointResult> {
     const name = await tryGit(input.worktreePath, ['config', 'user.name']);
     const email = await tryGit(input.worktreePath, ['config', 'user.email']);

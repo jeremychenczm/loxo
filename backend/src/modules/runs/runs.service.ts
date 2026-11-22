@@ -148,11 +148,14 @@ const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`cloc
  * or, for a run that has not recorded one yet, any worktree of its task.
  * Checked inside admission so every path (wake, promotion, reconciler) waits
  * instead of starting a run that would collide with a writer that lost its
- * owner. Shared with the reconciler's promotion query.
+ * owner. The two operations that exist to release a quarantined worktree
+ * (reset_to_before, reconcile_worktree) are exempt. Shared with the
+ * reconciler's promotion query.
  */
 export const notQuarantined = () =>
-  sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.status = 'quarantined' AND (
-    w.id = ${runs.workspaceId} OR (${runs.workspaceId} IS NULL AND w.task_id = ${runs.taskId})))`;
+  sql`(EXISTS (SELECT 1 FROM ${platformOps} o WHERE o.id = ${runs.opId} AND o.kind IN ('reset_to_before', 'reconcile_worktree'))
+    OR NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.status = 'quarantined' AND (
+      w.id = ${runs.workspaceId} OR (${runs.workspaceId} IS NULL AND w.task_id = ${runs.taskId}))))`;
 
 /**
  * Records the worktree a run works in once it has one, guarded by ownership

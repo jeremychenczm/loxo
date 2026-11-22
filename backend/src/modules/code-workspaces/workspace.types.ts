@@ -183,6 +183,24 @@ export interface CheckpointInput {
   message: string;
 }
 
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
+export interface CommitAsInput {
+  worktreePath: string;
+  message: string;
+  author: GitIdentity;
+  /** Defaults to the author. */
+  committer?: GitIdentity;
+}
+
+export interface InterruptedStateCleared {
+  removedLock: boolean;
+  abortedMerge: boolean;
+}
+
 export interface CheckpointResult {
   /** Null when the tree was already fully committed. */
   commit: string | null;

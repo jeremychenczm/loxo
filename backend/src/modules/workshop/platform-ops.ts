@@ -2,7 +2,11 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { config } from '../../config';
 import type { Executor, Tx } from '../../db/client';
 import { db } from '../../db/client';
-import { humanRequests, platformOps, tasks, type PlatformOp, type Run, type WorkshopPhase } from '../../db/schema';
+import fs from 'node:fs';
+import { humanRequests, platformOps, tasks, workspaces, type PlatformOp, type Run, type WorkshopPhase } from '../../db/schema';
+import { localGitDriver } from '../code-workspaces/local-git-driver';
+import { getWorkspace } from '../code-workspaces/workspace.service';
+import { BUILT_IN_PLATFORM_OPS, type WorktreeObservation } from './platform-op-kinds';
 import type { RunLease } from '../ownership/lease';
 import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 
@@ -15,6 +19,22 @@ import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
  */
 
 export const PLATFORM_AGENT_NAME = 'Loxo platform';
+
+/** Commits the platform makes itself carry this identity, never the repository's git config. */
+export const PLATFORM_IDENTITY = { name: 'Loxo', email: 'platform@loxo.local' } as const;
+
+/** Integration relies on `git merge-tree --write-tree`, added in git 2.38. */
+const MIN_GIT: [number, number] = [2, 38];
+let gitReady: Promise<boolean> | null = null;
+
+/** Whether the installed git can run workshops on a repository; checked once per process. */
+export function workshopGitReady(): Promise<boolean> {
+  gitReady ??= localGitDriver.gitVersion().then(
+    (v) => v !== null && (v[0] > MIN_GIT[0] || (v[0] === MIN_GIT[0] && v[1] >= MIN_GIT[1])),
+    () => false
+  );
+  return gitReady;
+}
 
 export interface PlatformOpContext {
   run: Run;
@@ -110,13 +130,23 @@ export async function platformOpOf(opId: string, ex: Executor = db): Promise<Pla
   return row;
 }
 
-/** Runs the operation's handler; throws when the kind has none or the handler fails. */
+/**
+ * Runs the operation's handler; throws when the kind has none or the handler
+ * fails. A retry or follow-up first clears what the run before it may have
+ * left half done in the worktree (that run has ended by then).
+ */
 export async function executePlatformRun(run: Run, ctx: Omit<PlatformOpContext, 'run'>): Promise<Record<string, unknown>> {
   const op = run.opId ? await platformOpOf(run.opId) : undefined;
   if (!op) throw new Error(`Platform run ${run.id} has no operation`);
-  const handler = handlers.get(op.kind);
+  const handler = handlers.get(op.kind) ?? BUILT_IN_PLATFORM_OPS[op.kind];
   if (!handler) throw new Error(`No handler for platform operation ${op.kind}`);
   ctx.lease.assertHeld();
+  if (run.parentRunId && op.workspaceId) {
+    const workspace = await getWorkspace(op.workspaceId);
+    if (workspace && fs.existsSync(workspace.worktreePath)) {
+      await localGitDriver.clearInterruptedState(workspace.worktreePath, { keepMerge: op.kind === 'begin_resolve' });
+    }
+  }
   return handler(op, { ...ctx, run });
 }
 
@@ -164,6 +194,8 @@ export async function notePlatformRunEnded(
       .update(platformOps)
       .set({ status: 'done', result: ending.result, attempts: run.attempt, error: null, updatedAt: new Date() })
       .where(eq(platformOps.id, op.id));
+    const observed = ending.result.worktree as WorktreeObservation | undefined;
+    if (observed) await applyWorktreeObservation(tx, observed);
     return { taskId: op.taskId, retry: null };
   }
   if (run.attempt < config.runMaxAttempts) {
@@ -183,13 +215,38 @@ export async function notePlatformRunEnded(
   return { taskId: op.taskId, retry: null };
 }
 
+/**
+ * Writes what an operation saw of its worktree, under the settling run's
+ * fence. For the recovery operations this is also what lifts a quarantine.
+ */
+async function applyWorktreeObservation(tx: Tx, observed: WorktreeObservation): Promise<void> {
+  await tx
+    .update(workspaces)
+    .set({
+      status: observed.status,
+      headCommit: observed.headCommit,
+      lastError: observed.lastError,
+      ...(observed.worktreePath ? { worktreePath: observed.worktreePath } : {}),
+      ...(observed.status === 'abandoned' ? { abandonedAt: new Date() } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, observed.id));
+}
+
+const OP_REQUEST_PREFIX = 'platform_op:';
+
+/** The operation a request about a failed operation is for, or null for any other request. */
+export function platformOpOfRequestKey(dedupeKey: string | null): string | null {
+  return dedupeKey?.startsWith(OP_REQUEST_PREFIX) ? dedupeKey.slice(OP_REQUEST_PREFIX.length) : null;
+}
+
 /** Gives up on an operation and asks a person, once per operation. */
 export async function failPlatformOp(tx: Tx, op: PlatformOp, attempts: number, error: string): Promise<void> {
   await tx
     .update(platformOps)
     .set({ status: 'failed', attempts, error, updatedAt: new Date() })
     .where(eq(platformOps.id, op.id));
-  const dedupeKey = `platform_op:${op.id}`;
+  const dedupeKey = `${OP_REQUEST_PREFIX}${op.id}`;
   const [open] = await tx
     .select({ id: humanRequests.id })
     .from(humanRequests)

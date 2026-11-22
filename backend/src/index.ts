@@ -4,6 +4,7 @@ import { closeDb } from './db/client';
 import { describeArmedFaults } from './modules/ownership/crash-points';
 import { runLeases } from './modules/ownership/lease';
 import { startReconciler } from './modules/ownership/reconciler';
+import { workshopGitReady } from './modules/workshop/platform-ops';
 import { handOffActiveRuns } from './modules/runs/wake';
 import { configureEgressProxy } from './http/egress-proxy';
 import { createApp } from './http/app';
@@ -21,6 +22,9 @@ const gateway = attachWsGateway(server);
 
 server.listen(config.port, () => {
   console.log(`Loxo backend listening on http://localhost:${config.port}`);
+  void workshopGitReady().then((ready) => {
+    if (!ready) console.warn('git 2.38 or later is required for workshops on a repository; they will be refused');
+  });
 });
 
 // Takes over runs whose owner died (this process included) and promotes waiting runs.

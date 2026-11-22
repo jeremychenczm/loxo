@@ -7,6 +7,7 @@ import {
   type HumanRequest,
   type HumanRequestKind,
   type HumanRequestStatus,
+  type Run,
 } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../http/errors';
 
@@ -86,8 +87,9 @@ export async function answerHumanRequest(
   // same commit; the task row is locked before the request row.
   const workshop = request.dedupeKey ? await import('../workshop/workshop.service') : null;
   // The status guard makes answering and expiring race-safe: exactly one wins.
+  let queued: Run[] = [];
   const row = await db.transaction(async (tx) => {
-    if (workshop) await workshop.noteEngineRequestAnswered(tx, request, input.choice);
+    if (workshop) queued = await workshop.noteEngineRequestAnswered(tx, request, input.choice);
     const [updated] = await tx
       .update(humanRequests)
       .set({
@@ -114,6 +116,10 @@ export async function answerHumanRequest(
   if (workshop) {
     const { advanceTask } = await import('../workshop/advance');
     await advanceTask(row.taskId);
+    if (queued.length > 0) {
+      const { startQueuedRuns } = await import('../runs/wake');
+      await startQueuedRuns(queued);
+    }
   }
   return row;
 }
