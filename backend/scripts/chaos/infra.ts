@@ -107,6 +107,8 @@ export interface InstanceSpec {
   launcher?: boolean;
   /** Database pool size; more concurrent runs need more. */
   poolMax?: number;
+  /** Where the instance records the platform operations it executes (LOXO_PLATFORM_WITNESS_DIR). */
+  platformWitnessDir?: string;
 }
 
 export interface InstanceExit {
@@ -138,7 +140,7 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   const stdoutFile = path.join(spec.logDir, `${spec.label}.out.log`);
   const stderrFile = path.join(spec.logDir, `${spec.label}.err.log`);
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of ['LOXO_CRASH_AT', 'LOXO_STALL_AT', 'LOXO_AGENT_LAUNCHER', 'MCP_PUBLIC_URL', 'REPOSITORY_ROOTS']) {
+  for (const key of ['LOXO_CRASH_AT', 'LOXO_STALL_AT', 'LOXO_AGENT_LAUNCHER', 'LOXO_PLATFORM_WITNESS_DIR', 'MCP_PUBLIC_URL', 'REPOSITORY_ROOTS']) {
     delete env[key];
   }
   Object.assign(env, {
@@ -157,6 +159,7 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
     ...(spec.crashAt ? { LOXO_CRASH_AT: spec.crashAt } : {}),
     ...(spec.stallAt ? { LOXO_STALL_AT: spec.stallAt } : {}),
     ...(spec.launcher === false ? { LOXO_AGENT_LAUNCHER: 'off' } : {}),
+    ...(spec.platformWitnessDir ? { LOXO_PLATFORM_WITNESS_DIR: spec.platformWitnessDir } : {}),
   });
   const out = fs.openSync(stdoutFile, 'a');
   const err = fs.openSync(stderrFile, 'a');

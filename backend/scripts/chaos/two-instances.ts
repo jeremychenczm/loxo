@@ -9,6 +9,7 @@ import {
   CYCLE_MS,
   dropTrialDatabase,
   endLeftovers,
+  initRepository,
   isAlive,
   LEASE_TTL_MS,
   runsHeldBy,
@@ -31,6 +32,9 @@ import { checkInvariants, readExecutions, type Violation } from './invariants';
  * frozen instance attempts after waking must be refused by the fence, and a
  * graceful shutdown must hand off every run it held.
  *
+ * The workshop variant starts workshops on one shared repository instead:
+ * each task then runs several members at once, under gates of its own.
+ *
  *   npm run chaos:two -w backend -- --fault kill
  *   npm run chaos:two -w backend -- --fault stall --seed 2
  *   npm run chaos:two -w backend -- --fault restart
@@ -42,6 +46,8 @@ export interface TwoInstanceOptions {
   fault: TwoInstanceFault;
   runs: number;
   agents: number;
+  /** Start `runs` two-member workshops on one repository instead of waking `runs` tasks. */
+  workshop?: boolean;
   seed: number;
   /** Where a failed run leaves its logs and witness files; the temp directory by default. */
   failuresDir?: string;
@@ -64,8 +70,14 @@ const SCENARIO_MS = 4_000;
 // Long enough for every lease the frozen instance holds to expire and be taken over.
 const STALL_MS = LEASE_TTL_MS * 3;
 
+const WORKSHOP_MEMBERS = 2;
+// A member ending its turn without a report is asked once more.
+const DISPATCHES_PER_MEMBER = 2;
+
 export interface TwoInstanceResult {
   fault: TwoInstanceFault;
+  /** Set on workshop races; absent from races recorded before the variant existed. */
+  workshop?: boolean;
   runs: number;
   agents: number;
   seed: number;
@@ -92,14 +104,17 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `loxo-chaos2-${id}-`));
   const storage = path.join(dir, 'storage');
   const witness = path.join(dir, 'witness');
+  const platformWitness = path.join(dir, 'platform-witness');
   const logs = path.join(dir, 'logs');
-  for (const sub of [storage, witness, logs]) fs.mkdirSync(sub, { recursive: true });
+  for (const sub of [storage, witness, platformWitness, logs]) fs.mkdirSync(sub, { recursive: true });
   const agentScript = path.join(dir, 'agent.mjs');
   writeAgentScript(agentScript, SCENARIO, witness, { shim: false });
   const crashLog = path.join(dir, 'faults.jsonl');
 
+  const workshop = options.workshop === true;
   const result: TwoInstanceResult = {
     fault: options.fault,
+    ...(workshop ? { workshop } : {}),
     runs: options.runs,
     agents: options.agents,
     seed: options.seed,
@@ -129,6 +144,7 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
       crashLog,
       stallAt,
       poolMax: 20,
+      platformWitnessDir: platformWitness,
     });
     instances.push(instance);
     return instance;
@@ -157,17 +173,26 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
       });
       agentIds.push(agent.id);
     }
+    let repositoryId: string | undefined;
+    if (workshop) {
+      const repo = path.join(dir, 'repo');
+      initRepository(repo);
+      const { repository } = await apiA.call<{ repository: { id: string } }>('POST', '/api/repositories', { rootPath: repo });
+      repositoryId = repository.id;
+    }
     const taskIds: string[] = [];
     for (let i = 0; i < options.runs; i += 1) {
       const api = i % 2 === 0 ? apiA : apiB;
+      const members = Array.from({ length: workshop ? WORKSHOP_MEMBERS : 1 }, (_, k) => agentIds[(i + k) % options.agents]!);
       const { task } = await api.call<{ task: { id: string } }>('POST', '/api/tasks', {
         title: `Chaos task ${i + 1}`,
-        leadAgentId: agentIds[i % options.agents],
+        leadAgentId: members[0],
+        ...(workshop ? { playbook: 'build', memberAgentIds: members, repositoryId } : {}),
       });
       taskIds.push(task.id);
     }
 
-    // Every wake at once, half through each instance: entering todo wakes the lead.
+    // Every wake or start at once, half through each instance: entering todo wakes the lead.
     const wokenAt = Date.now();
     sampler = setInterval(() => {
       db.query<{ n: number }>("SELECT count(*)::int AS n FROM runs WHERE status = 'running'")
@@ -175,7 +200,12 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
         .catch(() => {});
     }, 250);
     await Promise.all(
-      taskIds.map((taskId, i) => (i % 2 === 0 ? apiA : apiB).call('POST', `/api/tasks/${taskId}/move`, { status: 'todo' }))
+      taskIds.map((taskId, i) => {
+        const api = i % 2 === 0 ? apiA : apiB;
+        return workshop
+          ? api.call('POST', `/api/tasks/${taskId}/start`)
+          : api.call('POST', `/api/tasks/${taskId}/move`, { status: 'todo' });
+      })
     );
 
     const deaths: { via: string; at: number }[] = [];
@@ -211,7 +241,9 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
     result.faultAtMs = faultAt - wokenAt;
 
     // The check runs at a fixed bound after the fault; until then settling is only timed.
-    const rounds = Math.ceil(options.runs / options.agents);
+    // One running run per agent: each agent works through its share one at a time.
+    const perAgent = workshop ? WORKSHOP_MEMBERS * DISPATCHES_PER_MEMBER : 1;
+    const rounds = Math.ceil((options.runs * perAgent) / options.agents);
     const deadline =
       faultAt + STALL_MS + LEASE_TTL_MS + 2 * CYCLE_MS + MAX_BACKOFF_MS + (rounds + MAX_ATTEMPTS) * (SCENARIO_MS + 4_000);
     while (Date.now() < deadline) {
@@ -234,6 +266,7 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
       db,
       wakeRuns: roots.rows.map((r) => r.id),
       witnessDir: witness,
+      platformWitnessDir: platformWitness,
       deaths,
       handoffs,
       cycleMs: LEASE_TTL_MS,
@@ -275,6 +308,7 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
       const keep = path.join(options.failuresDir ?? os.tmpdir(), `two-instances-${id}`);
       fs.cpSync(logs, path.join(keep, 'logs'), { recursive: true });
       fs.cpSync(witness, path.join(keep, 'witness'), { recursive: true });
+      fs.cpSync(platformWitness, path.join(keep, 'platform-witness'), { recursive: true });
       console.error(`Evidence kept in ${keep}`);
     }
     await db.end();

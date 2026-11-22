@@ -7,11 +7,21 @@ import type { Scenario } from '@swarmdev/fake-agent';
  * double-execution check needs to see.
  */
 export const RUN_KINDS = ['read', 'comment', 'submit', 'edit-clean', 'edit-dirty'] as const;
-export type RunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * A workshop on a repository: platform runs prepare its worktrees, then its
+ * members explore at once, each under its own worktree's gate. Kept out of
+ * RUN_KINDS so the run-kind cells and controls stay as they were.
+ */
+export const WORKSHOP_KIND = 'workshop';
+export type RunKind = (typeof RUN_KINDS)[number] | typeof WORKSHOP_KIND;
+export const ALL_KINDS: readonly RunKind[] = [...RUN_KINDS, WORKSHOP_KIND];
 
 export interface RunKindSpec {
   /** Bind the task to a repository, so the run gets a worktree it may edit. */
   repository: boolean;
+  /** Start a workshop with this many members instead of waking a single agent. */
+  members?: number;
   /** About how long one run plays, for the trial's check time. */
   durationMs: number;
   /** `tag` keeps timeline entries unique per trial. */
@@ -64,6 +74,21 @@ export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
     repository: true,
     durationMs: DURATION_MS,
     scenario: () => turn([{ sleep: 3_000 }, { say: 'Looked around; nothing to edit.' }, { sleep: 3_000 }]),
+  },
+  // Members end their turns without a report, so each is asked once more and then marked failed:
+  // two explore rounds back to back, after the platform runs.
+  // TODO(chaos): report through the phase tools once the control plane offers them to agents.
+  workshop: {
+    repository: true,
+    members: 2,
+    durationMs: 2 * DURATION_MS + 2_000,
+    scenario: () =>
+      turn([
+        { say: 'Looking around the repository. ' },
+        { sleep: 3_000 },
+        { say: 'Nothing to report yet.' },
+        { sleep: 3_000 },
+      ]),
   },
   'edit-dirty': {
     repository: true,

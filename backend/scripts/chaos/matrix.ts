@@ -1,5 +1,5 @@
 import type { CrashPoint } from '../../src/modules/ownership/crash-points';
-import { RUN_KIND_SPECS, RUN_KINDS, type RunKind } from './scenarios';
+import { RUN_KIND_SPECS, RUN_KINDS, WORKSHOP_KIND, type RunKind } from './scenarios';
 import type { TwoInstanceResult } from './two-instances';
 import { faultLabel, type TrialResult, type TrialSpec } from './trial';
 
@@ -12,6 +12,9 @@ import { faultLabel, type TrialResult, type TrialSpec } from './trial';
  * Graceful cells follow: each run kind shut down mid-run as a deploy does,
  * and the same with a crash partway through the handoff. They are summarized
  * apart from the crash cells.
+ *
+ * Workshop cells come last: one task holding several gates at once, its
+ * platform runs first and then its members side by side.
  */
 export type CellSpec = Omit<TrialSpec, 'seed'>;
 
@@ -25,6 +28,23 @@ const EVERY_RUN: CrashPoint[] = [
 const WITH_WORKTREE: CrashPoint[] = ['run.after_before_ref', 'run.before_capture'];
 const WITH_TOOL_CALLS: CrashPoint[] = ['control_plane.before_record', 'control_plane.after_commit'];
 const TOOL_KINDS: RunKind[] = ['comment', 'submit'];
+
+// A two-member workshop admits and settles three platform runs (its integration
+// and member worktrees) before any member runs, so hit 4 is a member's run.
+const FIRST_MEMBER_RUN = 4;
+const WORKSHOP_CELLS: Omit<CellSpec, 'kind'>[] = [
+  { first: { point: 'wake.before_start' } },
+  { first: { point: 'admission.after_claim' } },
+  { first: { point: 'run.before_settle' } },
+  { first: { point: 'workshop.after_advance' } },
+  { first: { point: 'admission.after_claim', hit: FIRST_MEMBER_RUN } },
+  { first: { point: 'run.before_settle', hit: FIRST_MEMBER_RUN } },
+  { first: { point: 'run.after_settle', hit: FIRST_MEMBER_RUN } },
+  { first: 'random' },
+  { first: { point: 'run.before_settle', hit: FIRST_MEMBER_RUN }, second: { point: 'recovery.before_resolve' } },
+  { first: 'graceful' },
+  { first: { point: 'handoff.before_commit' }, shutdown: true },
+];
 
 export function chaosMatrix(): CellSpec[] {
   const cells: CellSpec[] = [];
@@ -54,6 +74,7 @@ export function chaosMatrix(): CellSpec[] {
     second: { point: 'decision.before_commit' },
     answer: 'discard',
   });
+  for (const cell of WORKSHOP_CELLS) cells.push({ kind: WORKSHOP_KIND, ...cell });
   return cells;
 }
 
@@ -180,7 +201,10 @@ export function summarizeControls(results: TrialResult[]) {
   };
 }
 
-export function summarizeTwoInstances(results: TwoInstanceResult[]) {
+/** Races between two instances, by fault; workshop races are taken when `workshops` is set. */
+export function summarizeTwoInstances(all: TwoInstanceResult[], workshops = false) {
+  // Races recorded before the workshop variant existed carry no flag.
+  const results = all.filter((r) => (r.workshop === true) === workshops);
   const group = (fault: TwoInstanceResult['fault']) => {
     const list = results.filter((r) => r.fault === fault);
     return {
