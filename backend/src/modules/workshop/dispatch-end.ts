@@ -62,9 +62,15 @@ export async function dispatchContinues(tx: Tx, run: Pick<Run, 'dispatchId'>): P
   return dispatch !== undefined && dispatch.cancelRequestedAt === null && ['pending', 'running'].includes(dispatch.status);
 }
 
-/** What a follow-up run copies from the run it continues, so it keeps the dispatch, gate and worktree. */
-export function carriedOver(run: Pick<Run, 'dispatchId' | 'gateKey' | 'workspaceId'>) {
-  return { dispatchId: run.dispatchId, gateKey: run.gateKey, workspaceId: run.workspaceId };
+/** What a follow-up run copies from the run it continues, so it keeps the dispatch or operation, gate and worktree. */
+export function carriedOver(run: Pick<Run, 'dispatchId' | 'gateKey' | 'workspaceId' | 'opId' | 'actor'>) {
+  return {
+    dispatchId: run.dispatchId,
+    gateKey: run.gateKey,
+    workspaceId: run.workspaceId,
+    opId: run.opId,
+    actor: run.actor,
+  };
 }
 
 /** Advances a workshop after the transaction that ended one of its runs has committed. */

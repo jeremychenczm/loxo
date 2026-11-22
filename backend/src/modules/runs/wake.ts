@@ -20,6 +20,7 @@ import { fence, FencedError } from '../ownership/fence';
 import { handOffRun } from '../ownership/handoff';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
 import { advanceAfterRunEnded, noteRunEnded } from '../workshop/dispatch-end';
+import { executePlatformRun, notePlatformRunEnded, type PlatformRunEnding } from '../workshop/platform-ops';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
 
@@ -155,7 +156,8 @@ export async function promoteQueuedRun(run: Run): Promise<boolean> {
  * failure part-way leaves no claim or lock behind.
  */
 async function tryStartRun(run: Run): Promise<Run | undefined> {
-  if (!run.agentId) {
+  // A platform run has no agent by design; an agent run without one lost it to a deletion.
+  if (run.actor === 'agent' && !run.agentId) {
     const taskId = await db
       .transaction(async (tx) => {
         await failQueuedRun(run.id, 'Agent no longer exists', tx);
@@ -174,8 +176,8 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
     admitting.delete(admission);
   }
   if (!admitted) {
-    // A queued run whose dispatch the workshop has moved past is cancelled rather than left waiting.
-    if (run.dispatchId) await cancelStaleRun(run.id).catch(() => {});
+    // A queued run whose dispatch or operation is no longer wanted is cancelled rather than left waiting.
+    if (run.dispatchId || run.opId) await cancelStaleRun(run.id).catch(() => {});
     return undefined;
   }
 
@@ -199,7 +201,8 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
 
 async function performRun(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
   try {
-    await executeAndSettle(run, lease, handoff);
+    if (run.actor === 'platform') await executeAndSettlePlatform(run, lease, handoff);
+    else await executeAndSettle(run, lease, handoff);
   } finally {
     runLeases.release(run.id);
   }
@@ -298,6 +301,53 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   if (!settled) return;
   crashPoint('run.after_settle');
   await advanceAfterRunEnded(workshopTask);
+  await promoteNext(run);
+}
+
+/**
+ * Executes a platform operation and settles its run. No agent, no timeline
+ * entries: the operation's own row records the result. A failure is retried
+ * as a new run of the same operation (see notePlatformRunEnded); a shutdown
+ * that interrupts the handler hands the operation to a follow-up run.
+ */
+async function executeAndSettlePlatform(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
+  let outcome: RunOutcome;
+  let ending: PlatformRunEnding;
+  try {
+    if (handoff.aborted) throw new RunnerError('Handed off before the operation started', 'aborted');
+    const result = await executePlatformRun(run, { lease, signal: handoff });
+    outcome = { status: 'succeeded' };
+    ending = { kind: 'done', result };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    outcome = { status: 'failed', error: detail };
+    ending = { kind: 'failed', error: detail };
+  }
+  if (lease.lost) return;
+
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  if (handoff.aborted && ending.kind !== 'done' && handoff.reason !== STOP_REQUESTED) {
+    await handOffRun(owner, outcome).catch((error) => {
+      if (!(error instanceof FencedError)) console.error(`Run ${run.id} could not be handed off:`, error);
+    });
+    return;
+  }
+  crashPoint('run.before_settle');
+  let noted: { taskId: string | null; retry: Run | null } = { taskId: null, retry: null };
+  const settled = await db
+    .transaction(async (tx) => {
+      const row = await settleRun(owner, outcome, 'idle', tx);
+      if (row) noted = await notePlatformRunEnded(tx, row, ending);
+      return row;
+    })
+    .catch((error) => {
+      console.error(`Run ${run.id} could not be settled:`, error);
+      return undefined;
+    });
+  if (!settled) return;
+  crashPoint('run.after_settle');
+  await advanceAfterRunEnded(noted.taskId);
+  if (noted.retry) await startQueuedRuns([noted.retry]);
   await promoteNext(run);
 }
 

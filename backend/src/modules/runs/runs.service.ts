@@ -1,7 +1,18 @@
 import { and, asc, desc, eq, getTableColumns, isNull, lte, or, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Executor } from '../../db/client';
-import { agents, dispatches, runs, tasks, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import {
+  agents,
+  dispatches,
+  platformOps,
+  runs,
+  tasks,
+  workspaces,
+  type Run,
+  type RunActor,
+  type RunStatus,
+  type RunTrigger,
+} from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError, recordFenceRejection } from '../ownership/fence';
@@ -24,7 +35,8 @@ export function worktreeGateKey(workspaceId: string | null): string | null {
 }
 
 export interface CreateRunInput {
-  agentId: string;
+  /** Null for platform runs, which have no agent. */
+  agentId: string | null;
   agentName: string;
   taskId?: string | null;
   trigger: RunTrigger;
@@ -39,6 +51,8 @@ export interface CreateRunInput {
   gateKey?: string | null;
   workspaceId?: string | null;
   dispatchId?: string | null;
+  actor?: RunActor;
+  opId?: string | null;
 }
 
 export function taskGateKey(taskId: string): string {
@@ -94,6 +108,8 @@ export async function createQueuedRun(userId: string, input: CreateRunInput, ex:
       gateKey: input.gateKey !== undefined ? input.gateKey : input.taskId ? taskGateKey(input.taskId) : null,
       workspaceId: input.workspaceId ?? null,
       dispatchId: input.dispatchId ?? null,
+      actor: input.actor ?? 'agent',
+      opId: input.opId ?? null,
     })
     .returning();
   return run!;
@@ -174,12 +190,25 @@ const dispatchCurrent = () =>
       AND d.cancel_requested_at IS NULL
       AND t.phase = d.phase AND t.cycle = d.cycle AND d.round >= t.round))`;
 
-/** Cancels a queued workshop run whose dispatch is no longer current; it never started, so nothing else changes. */
+/**
+ * A platform run may start only while its operation is still wanted, its
+ * task's workshop is not finished, and, for an operation tied to a phase,
+ * the workshop is still in that phase and cycle. Runs without one pass.
+ */
+const opCurrent = () =>
+  sql`(${runs.opId} IS NULL OR EXISTS (
+    SELECT 1 FROM ${platformOps} o JOIN ${tasks} t ON t.id = o.task_id
+    WHERE o.id = ${runs.opId}
+      AND o.status IN ('wanted', 'running')
+      AND (t.phase IS NULL OR t.phase NOT IN ('done', 'stopped'))
+      AND (o.phase IS NULL OR (o.phase = t.phase AND o.cycle IS NOT DISTINCT FROM t.cycle))))`;
+
+/** Cancels a queued workshop or platform run whose dispatch or operation is no longer current; it never started, so nothing else changes. */
 export async function cancelStaleRun(runId: string, executor: Executor = db): Promise<boolean> {
   const rows = await executor
     .update(runs)
     .set({ status: 'cancelled', stopReason: 'stale', error: 'Its workshop moved on before it started', finishedAt: new Date() })
-    .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), sql`NOT ${dispatchCurrent()}`))
+    .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), sql`NOT (${dispatchCurrent()} AND ${opCurrent()})`))
     .returning({ id: runs.id });
   return rows.length > 0;
 }
@@ -217,13 +246,19 @@ export async function admitRun(runId: string, options: AdmitOptions = {}): Promi
           leaseExpiresAt: sql`clock_timestamp() + ${ttlMs}::integer * interval '1 millisecond'`,
           startedAt: sql`clock_timestamp()`,
         })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined(), dispatchCurrent()))
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined(), dispatchCurrent(), opCurrent()))
         .returning({
           ...getTableColumns(runs),
           leaseRemainingMs: sql<string>`extract(epoch from ${runs.leaseExpiresAt} - clock_timestamp()) * 1000`,
         });
       if (!row) return undefined;
       crashPoint('admission.after_claim');
+      if (row.opId) {
+        await tx
+          .update(platformOps)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(and(eq(platformOps.id, row.opId), sql`${platformOps.status} IN ('wanted', 'running')`));
+      }
       if (row.dispatchId) {
         // The dispatch's clock starts with its first run; follow-up runs keep it going.
         await tx

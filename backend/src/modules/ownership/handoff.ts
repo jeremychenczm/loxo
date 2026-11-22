@@ -6,6 +6,7 @@ import { createQueuedRun, settleRun, type RunOutcome, type RunOwner } from '../r
 import { addSystemTurn } from '../tasks/turns.service';
 import { crashPoint } from './crash-points';
 import { advanceAfterRunEnded, carriedOver, dispatchContinues, noteRunEnded } from '../workshop/dispatch-end';
+import { opContinues } from '../workshop/platform-ops';
 
 export const HANDOFF_STOP_REASON = 'handoff';
 
@@ -40,15 +41,20 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
       tx
     );
     if (!ended) return { ended: false, followUp: undefined };
-    // A workshop dispatch told to stop is not continued.
-    const continues = !finished && ended.agentId !== null && (await dispatchContinues(tx, ended));
+    // A workshop dispatch told to stop, or an operation no longer wanted, is not continued.
+    const continues =
+      !finished &&
+      (ended.actor === 'platform'
+        ? await opContinues(tx, ended)
+        : ended.agentId !== null && (await dispatchContinues(tx, ended)));
     workshopTask = await noteRunEnded(
       tx,
       ended.id,
       continues ? { kind: 'continued' } : { kind: 'settled', status: ended.status === 'succeeded' ? 'succeeded' : 'cancelled' }
     );
     if (!continues) {
-      if (ended.taskId) {
+      // Platform runs leave no timeline entries; their operation records what happened.
+      if (ended.taskId && ended.actor === 'agent') {
         await addSystemTurn(
           ended.userId,
           ended.taskId,
@@ -62,7 +68,7 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
     const next = await createQueuedRun(
       ended.userId,
       {
-        agentId: ended.agentId!,
+        agentId: ended.agentId,
         agentName: ended.agentName,
         taskId: ended.taskId,
         trigger: ended.trigger,
@@ -73,7 +79,7 @@ export async function handOffRun(owner: RunOwner, outcome: RunOutcome): Promise<
       },
       tx
     );
-    if (ended.taskId) {
+    if (ended.taskId && ended.actor === 'agent') {
       await addSystemTurn(
         ended.userId,
         ended.taskId,

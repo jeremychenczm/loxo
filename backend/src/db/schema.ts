@@ -307,8 +307,11 @@ export const taskMembers = pgTable(
 export type TaskMember = typeof taskMembers.$inferSelect;
 
 
-/** dispatch: created by the workshop engine; what the run may do comes from its dispatch. */
-export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review' | 'dispatch';
+/**
+ * dispatch: created by the workshop engine; what the run may do comes from its dispatch.
+ * platform: one execution of a platform operation; no agent.
+ */
+export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review' | 'dispatch' | 'platform';
 
 /** platform: a git or check operation the platform runs itself; no agent. */
 export type RunActor = 'agent' | 'platform';
@@ -396,6 +399,8 @@ export const runs = pgTable(
     gateKey: text('gate_key'),
     /** The engine's request this run serves; follow-up runs copy it. */
     dispatchId: uuid('dispatch_id').references((): AnyPgColumn => dispatches.id, { onDelete: 'set null' }),
+    /** The platform operation a platform run executes; retries and follow-ups copy it. */
+    opId: uuid('op_id').references((): AnyPgColumn => platformOps.id, { onDelete: 'set null' }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -494,6 +499,43 @@ export const dispatches = pgTable(
 );
 
 export type Dispatch = typeof dispatches.$inferSelect;
+
+export type PlatformOpStatus = 'wanted' | 'running' | 'done' | 'failed' | 'cancelled';
+
+/**
+ * A git or check operation the platform carries out for a task. Each
+ * execution is a platform run under the gate of the worktree it touches, so
+ * it never overlaps an agent writing there; a retry is a new run of the same
+ * operation. op_key makes asking for the same operation twice harmless.
+ */
+export const platformOps = pgTable(
+  'platform_ops',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    opKey: text('op_key').notNull(),
+    kind: text('kind').notNull(),
+    args: jsonb('args').$type<Record<string, unknown>>().notNull().default({}),
+    workspaceId: uuid('workspace_id').references((): AnyPgColumn => workspaces.id, { onDelete: 'set null' }),
+    status: text('status').$type<PlatformOpStatus>().notNull().default('wanted'),
+    attempts: integer('attempts').notNull().default(0),
+    /** The workshop phase and cycle the operation belongs to; a later phase makes it stale. */
+    phase: text('phase').$type<WorkshopPhase>(),
+    cycle: integer('cycle'),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('platform_ops_key').on(t.taskId, t.opKey),
+    index('platform_ops_task_status').on(t.taskId, t.status),
+  ]
+);
+
+export type PlatformOp = typeof platformOps.$inferSelect;
 
 /**
  * The single report a dispatch accepts. Terminal tools only insert here, so

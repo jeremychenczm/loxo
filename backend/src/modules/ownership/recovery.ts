@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Tx } from '../../db/client';
 import {
@@ -6,6 +6,7 @@ import {
   changeSnapshots,
   humanRequests,
   runs,
+  tasks,
   workspaces,
   type Agent,
   type RecoveryClass,
@@ -23,6 +24,7 @@ import { fence } from './fence';
 import { endOrphans, type LauncherIdentity } from './orphans';
 import { dispatchOf, isReadOnlyDispatch } from '../workshop/dispatch-info';
 import { advanceAfterRunEnded, carriedOver, dispatchContinues, noteRunEnded } from '../workshop/dispatch-end';
+import { failPlatformOp, notePlatformRunEnded, opContinues, platformOpOf } from '../workshop/platform-ops';
 
 /**
  * Recovery of a run that lost its owner. The taker owns the run (running,
@@ -119,6 +121,7 @@ async function writerOf(run: Run, agent: AgentTraits | undefined): Promise<boole
 }
 
 async function assess(run: Run, owner: RunOwner): Promise<Run> {
+  if (run.actor === 'platform') return assessPlatformRun(run, owner);
   const agent = await agentOf(run);
   const writer = await writerOf(run, agent);
   const effects = await readRunEffects(run.id);
@@ -150,7 +153,67 @@ async function assess(run: Run, owner: RunOwner): Promise<Run> {
   });
 }
 
+/**
+ * A platform operation is redone from the state Git shows, so its worktree
+ * is not inspected and no recovery snapshot is written. What matters is its
+ * processes: if they cannot be confirmed gone, a retry could race them.
+ */
+async function assessPlatformRun(run: Run, owner: RunOwner): Promise<Run> {
+  const launcher = launcherOf(run);
+  const orphans = await endOrphans(launcher);
+  const recoveryClass: RecoveryClass = launcher && orphans !== 'cleared' ? 'interrupted' : 'retry';
+  return db.transaction(async (tx) => {
+    await fence(tx, owner, 'recovery_assess');
+    const [assessed] = await tx
+      .update(runs)
+      .set({ recoveryClass, recoveryStep: 'assessed' })
+      .where(eq(runs.id, run.id))
+      .returning();
+    return assessed!;
+  });
+}
+
+/**
+ * Retries a platform run in a new run of the same operation while attempts
+ * remain; otherwise, or when its processes may still be running, the
+ * operation fails and a person is asked. A platform run is never left
+ * interrupted: there is nothing for a person to continue or discard.
+ */
+async function resolvePlatformRun(run: Run, owner: RunOwner): Promise<Run> {
+  return db.transaction(async (tx) => {
+    await fence(tx, owner, 'recovery_resolve');
+    await tx.execute(sql`SELECT 1 FROM runs WHERE id = ${run.id} FOR UPDATE`);
+    const orphanRisk = run.recoveryClass === 'interrupted';
+    const retrying = !orphanRisk && run.attempt < retryPolicy.maxAttempts && (await opContinues(tx, run));
+    const lost = run.error ?? 'Owner lost';
+    const error = orphanRisk
+      ? `${lost}; its processes could not be confirmed gone`
+      : retrying
+        ? `${lost}; retrying as attempt ${run.attempt + 1}`
+        : `${lost}; gave up after ${run.attempt} attempt(s)`;
+    const resolved = await update(tx, run.id, {
+      leaseExpiresAt: null,
+      recoveryStep: 'resolved',
+      finishedAt: new Date(),
+      status: 'failed',
+      error,
+    });
+    if (retrying) {
+      await queueRetry(tx, run);
+      await notePlatformRunEnded(tx, run, { kind: 'continued' });
+    } else {
+      const op = run.opId ? await platformOpOf(run.opId, tx) : undefined;
+      if (op && (op.status === 'wanted' || op.status === 'running')) {
+        await failPlatformOp(tx, op, run.attempt, error);
+        await tx.update(tasks).set({ advancePending: true }).where(eq(tasks.id, op.taskId));
+      }
+    }
+    return resolved;
+  });
+}
+
 async function resolve(run: Run, owner: RunOwner): Promise<Run> {
+  if (run.actor === 'platform') return resolvePlatformRun(run, owner);
   const agent = await agentOf(run);
   const writer = await writerOf(run, agent);
   const effects = await readRunEffects(run.id);
@@ -231,7 +294,7 @@ async function queueRetry(tx: Tx, run: Run): Promise<void> {
   await createQueuedRun(
     run.userId,
     {
-      agentId: run.agentId!,
+      agentId: run.agentId,
       agentName: run.agentName,
       taskId: run.taskId,
       trigger: run.trigger,
