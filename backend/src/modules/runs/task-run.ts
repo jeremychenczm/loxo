@@ -37,6 +37,7 @@ import { crashPoint } from '../ownership/crash-points';
 import { FencedError } from '../ownership/fence';
 import { runLeases, type RunLease } from '../ownership/lease';
 import { HttpError } from '../../http/errors';
+import { dispatchOf, isReadOnlyDispatch } from '../workshop/dispatch-info';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
@@ -122,11 +123,12 @@ export async function executeTaskTurn(
   const agentWorkspace = storage.agentPaths(run.userId, agent.id).workspace;
   const workspace = codeWorkspace ? codeWorkspace.workspace.worktreePath : agentWorkspace;
 
-  // The agent level is a ceiling: review turns are always forced to read-only.
-  const permission: TurnPermission =
-    run.trigger === 'review'
-      ? lowerPermission(agent.permissionLevel, 'read_only')
-      : agent.permissionLevel;
+  // The agent level is a ceiling: review turns and read-only workshop phases are forced to read-only.
+  const readOnly =
+    run.trigger === 'review' || (run.dispatchId !== null && isReadOnlyDispatch(await dispatchOf(run.dispatchId)));
+  const permission: TurnPermission = readOnly
+    ? lowerPermission(agent.permissionLevel, 'read_only')
+    : agent.permissionLevel;
 
   const launch =
     agent.runtime === 'api' || hostFactoryForTests

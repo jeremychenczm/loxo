@@ -26,6 +26,7 @@ import {
   updateTask,
 } from './tasks.service';
 import { addHumanTurn, listTurns } from './turns.service';
+import { startWorkshop } from '../workshop/workshop.service';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
@@ -202,6 +203,15 @@ tasksRouter.post('/:id/move', async (req: AuthedRequest, res, next) => {
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid move');
     const task = await moveTask(req.auth!.userId, String(req.params.id), parsed.data);
     res.json({ task: await toTaskView(task) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/start', async (req: AuthedRequest, res, next) => {
+  try {
+    const task = await startWorkshop(req.auth!.userId, String(req.params.id));
+    res.status(202).json({ task: await toTaskView(task) });
   } catch (error) {
     next(error);
   }

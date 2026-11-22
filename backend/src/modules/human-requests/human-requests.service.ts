@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, sql, TransactionRollbackError } from 'drizzle-orm';
 import { db, type Executor } from '../../db/client';
 import {
   humanRequests,
@@ -82,27 +82,39 @@ export async function answerHumanRequest(
   if (request.choices.length > 0 && !request.choices.includes(input.choice)) {
     throw badRequest('invalid_choice', `Choose one of: ${request.choices.join(', ')}`);
   }
+  // Requests the workshop engine opened flag their task to advance in the
+  // same commit; the task row is locked before the request row.
+  const workshop = request.dedupeKey ? await import('../workshop/workshop.service') : null;
   // The status guard makes answering and expiring race-safe: exactly one wins.
-  const [row] = await db
-    .update(humanRequests)
-    .set({
-      status: 'answered',
-      answer: { choice: input.choice, ...(input.note ? { note: input.note } : {}) },
-      answeredAt: new Date(),
-    })
-    .where(
-      and(
-        eq(humanRequests.id, requestId),
-        eq(humanRequests.status, 'open'),
-        sql`(${humanRequests.expiresAt} IS NULL OR ${humanRequests.expiresAt} > now())`
+  const row = await db.transaction(async (tx) => {
+    if (workshop) await workshop.noteEngineRequestAnswered(tx, request, input.choice);
+    const [updated] = await tx
+      .update(humanRequests)
+      .set({
+        status: 'answered',
+        answer: { choice: input.choice, ...(input.note ? { note: input.note } : {}) },
+        answeredAt: new Date(),
+      })
+      .where(
+        and(
+          eq(humanRequests.id, requestId),
+          eq(humanRequests.status, 'open'),
+          sql`(${humanRequests.expiresAt} IS NULL OR ${humanRequests.expiresAt} > now())`
+        )
       )
-    )
-    .returning();
-  if (!row) {
+      .returning();
+    if (!updated) tx.rollback();
+    return updated!;
+  }).catch(async (error) => {
+    if (!(error instanceof TransactionRollbackError)) throw error;
     await expireOverdueRequests();
     throw conflict('request_closed', 'This request is no longer open');
-  }
+  });
   answered.emit(row.id);
+  if (workshop) {
+    const { advanceTask } = await import('../workshop/advance');
+    await advanceTask(row.taskId);
+  }
   return row;
 }
 

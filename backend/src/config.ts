@@ -27,6 +27,12 @@ export const config = {
   retryDecisionTtlMs: Number(process.env.RETRY_DECISION_TTL_MS ?? 24 * 60 * 60_000),
   /** How long an agent's question on a workshop task stays open for a person. */
   blockerQuestionTtlMs: Number(process.env.BLOCKER_QUESTION_TTL_MS ?? 24 * 60 * 60_000),
+  /** Time budget for a read-only workshop dispatch (explore, review, sign-off), counted while it runs. */
+  workshopReadOnlyTimeoutMs: Number(process.env.WORKSHOP_READ_ONLY_TIMEOUT_MS ?? 10 * 60_000),
+  /** Time budget for a workshop dispatch that writes code. */
+  workshopWriteTimeoutMs: Number(process.env.WORKSHOP_WRITE_TIMEOUT_MS ?? 60 * 60_000),
+  /** Default number of workshop dispatches running at once. */
+  workshopMaxParallelism: Number(process.env.WORKSHOP_MAX_PARALLELISM ?? 4),
   /** Budget for a graceful shutdown, run handoffs included; past it the process exits and crash recovery takes over. */
   shutdownTimeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 25_000),
   /** After asking an agent to stop so its run can be handed off, how long to wait before killing it. */

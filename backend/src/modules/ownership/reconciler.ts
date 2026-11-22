@@ -6,12 +6,15 @@ import type { LeaseKeeper } from './lease';
 import { recoverRun } from './recovery';
 import { stopExpiredDecisions } from './recovery-decisions';
 import { takeOverRun } from './takeover';
+import { advanceTask, workshopsToAdvance } from '../workshop/advance';
 
 export interface ReconcileResult {
   takenOver: string[];
   /** Interrupted runs stopped because their retry request expired. */
   stopped: string[];
   promoted: string[];
+  /** Workshops advanced: flagged ones, and ones with running dispatches whose clocks may have run out. */
+  advanced: string[];
 }
 
 /**
@@ -25,9 +28,11 @@ export interface ReconcileResult {
  * 2. Stop interrupted runs whose retry request expired unanswered.
  * 3. Promote queued runs whose agent and task are free, oldest first,
  *    skipping tasks whose workspace is quarantined.
+ * 4. Advance workshops: any left flagged by a crash between a settlement and
+ *    its advance, and any with a running dispatch, so time budgets are enforced.
  */
 export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResult> {
-  const result: ReconcileResult = { takenOver: [], stopped: [], promoted: [] };
+  const result: ReconcileResult = { takenOver: [], stopped: [], promoted: [], advanced: [] };
 
   const expired = await db
     .select({ id: runs.id, owner: runs.ownerInstance })
@@ -64,6 +69,11 @@ export async function reconcileOnce(keeper: LeaseKeeper): Promise<ReconcileResul
 
   for (const run of await promotableRuns()) {
     if (await promoteQueuedRun(run)) result.promoted.push(run.id);
+  }
+
+  for (const taskId of await workshopsToAdvance()) {
+    await advanceTask(taskId);
+    result.advanced.push(taskId);
   }
   return result;
 }

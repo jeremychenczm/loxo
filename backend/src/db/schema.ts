@@ -275,7 +275,8 @@ export const tasks = pgTable(
 
 export type Task = typeof tasks.$inferSelect;
 
-export type TaskMemberState = 'active' | 'removed';
+/** skipped: left out of a running workshop after a person chose to skip them. */
+export type TaskMemberState = 'active' | 'removed' | 'skipped';
 
 /**
  * Agents taking part in a task. Removed members keep their row so their
