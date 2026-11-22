@@ -60,11 +60,19 @@ export interface WorkshopState {
   members: MemberView[];
   parallelism: number;
   snapshotFrozen: boolean;
-  worktreesReady: boolean;
+  /**
+   * The members' worktrees: absent before any are asked for (always, for a
+   * workshop without a repository), preparing while their operations run,
+   * ready once all are prepared, cleaning and cleaned after the workshop ends.
+   */
+  worktrees: WorktreeState;
+  hasRepository: boolean;
   dispatches: DispatchView[];
   requests: RequestView[];
   nowMs: number;
 }
+
+export type WorktreeState = 'absent' | 'preparing' | 'ready' | 'cleaning' | 'cleaned';
 
 export interface EngineSettings {
   readOnlyTimeoutMs: number;
@@ -76,6 +84,7 @@ export type MemberFailedChoice = 'retry' | 'skip' | 'stop';
 export type Action =
   | { type: 'freeze_snapshot' }
   | { type: 'prepare_worktrees' }
+  | { type: 'cleanup_worktrees' }
   | {
       type: 'dispatch';
       phase: WorkshopPhase;
@@ -115,7 +124,10 @@ export function elapsedMs(d: Pick<DispatchView, 'elapsedMs' | 'startedAtMs' | 'p
 }
 
 export function decide(state: WorkshopState, settings: EngineSettings): Action[] {
-  if (state.phase === null || FINISHED_PHASES.includes(state.phase)) return [];
+  if (state.phase === null) return [];
+  if (FINISHED_PHASES.includes(state.phase)) {
+    return state.worktrees === 'ready' ? [{ type: 'cleanup_worktrees' }] : [];
+  }
   if (state.phase === 'brief') return decideBrief(state);
   const spec = agentPhase(state.phase);
   // Platform phases (integrate, check, approval, merge) arrive with their steps.
@@ -125,7 +137,9 @@ export function decide(state: WorkshopState, settings: EngineSettings): Action[]
 
 function decideBrief(state: WorkshopState): Action[] {
   if (!state.snapshotFrozen) return [{ type: 'freeze_snapshot' }];
-  if (!state.worktreesReady) return [{ type: 'prepare_worktrees' }];
+  if (state.hasRepository && state.worktrees === 'absent') return [{ type: 'prepare_worktrees' }];
+  // Their operations report back when they settle; nothing to do until then.
+  if (state.hasRepository && state.worktrees !== 'ready') return [];
   const to: WorkshopPhase = state.playbook === 'solo' ? 'build' : 'explore';
   return [transition(state, to, 0, { brief: 'ready' })];
 }

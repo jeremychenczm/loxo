@@ -1,16 +1,32 @@
 import { and, eq } from 'drizzle-orm';
 import { db, type Tx } from '../../db/client';
 import { platformOps, tasks, type HumanRequest, type Run, type Task } from '../../db/schema';
-import { platformOpOf, platformOpOfRequestKey, queuePlatformRun } from './platform-ops';
+import { localGitDriver } from '../code-workspaces/local-git-driver';
+import { findRepository, rethrowGitError } from '../code-workspaces/workspace.service';
+import { platformOpOf, platformOpOfRequestKey, queuePlatformRun, workshopGitReady } from './platform-ops';
 import { badRequest, conflict, notFound } from '../../http/errors';
-import { advanceTask, ENGINE_ERROR_KEY, moveToPhase, stopWorkshopWithin } from './advance';
+import { advanceTask, ENGINE_ERROR_KEY, freezeSnapshot, moveToPhase, stopWorkshopWithin } from './advance';
 import { liveRoster } from './state';
 
 /**
- * Starts a workshop: checks the roster against the playbook, enters Brief,
- * and advances once so the first dispatches go out with the response.
+ * Starts a workshop: checks the roster against the playbook, resolves the
+ * base commit of a repository (outside the transaction), freezes the
+ * snapshot, enters Brief, and advances once so the first work goes out with
+ * the response.
  */
 export async function startWorkshop(userId: string, taskId: string): Promise<Task> {
+  const [peek] = await db.select().from(tasks).where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)));
+  let base: { ref: string | null; commit: string | null } = { ref: null, commit: null };
+  if (peek?.repositoryId && peek.playbook !== 'legacy' && peek.phase === null) {
+    if (!(await workshopGitReady())) {
+      throw conflict('git_too_old', 'Workshops on a repository need git 2.38 or later');
+    }
+    const repository = await findRepository(userId, peek.repositoryId);
+    if (!repository) throw badRequest('invalid_repository', 'The task repository was removed');
+    const ref = peek.baseRef ?? repository.defaultBranch;
+    const info = await localGitDriver.inspectRepository({ rootPath: repository.rootPath, baseRef: ref }).catch(rethrowGitError);
+    base = { ref, commit: info.baseCommit };
+  }
   await db.transaction(async (tx) => {
     const [task] = await tx
       .select()
@@ -22,8 +38,8 @@ export async function startWorkshop(userId: string, taskId: string): Promise<Tas
       throw conflict('not_a_workshop', 'This task is not a workshop; create it with the build or solo playbook');
     }
     if (task.phase !== null) throw conflict('workshop_started', 'This workshop has already started');
-    if (task.repositoryId !== null) {
-      throw conflict('workshop_repository_unsupported', 'Workshops on a repository are not supported yet');
+    if (task.repositoryId !== peek?.repositoryId || (task.repositoryId !== null && base.commit === null)) {
+      throw conflict('task_changed', 'The task changed while the workshop was starting; try again');
     }
     const roster = await liveRoster(tx, task.id);
     if (task.playbook === 'solo' && roster.length !== 1) {
@@ -35,6 +51,7 @@ export async function startWorkshop(userId: string, taskId: string): Promise<Tas
     if (!task.leadAgentId || !roster.includes(task.leadAgentId)) {
       throw badRequest('no_lead', 'Choose a lead from the members first');
     }
+    await freezeSnapshot(tx, task, base);
     await moveToPhase(tx, task, null, 'brief', 0, 0, { startedBy: userId });
     await tx.update(tasks).set({ advancePending: true }).where(eq(tasks.id, task.id));
   });

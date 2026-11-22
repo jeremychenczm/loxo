@@ -4,11 +4,12 @@ import {
   dispatchReports,
   dispatches,
   humanRequests,
+  platformOps,
   runs,
   taskMembers,
   type Task,
 } from '../../db/schema';
-import type { DispatchView, MemberView, RequestView, WorkshopState } from './engine';
+import type { DispatchView, MemberView, RequestView, WorkshopState, WorktreeState } from './engine';
 
 /** What Brief freezes; later phases read the roster and lead from here, never from the live task. */
 export interface WorkshopSnapshot {
@@ -16,6 +17,8 @@ export interface WorkshopSnapshot {
   title: string;
   repositoryId: string | null;
   baseRef: string | null;
+  /** The commit the workshop builds on, resolved at start; null without a repository. */
+  baseCommit: string | null;
   roster: string[];
   leadAgentId: string;
   signers: string[];
@@ -25,6 +28,24 @@ export interface WorkshopSnapshot {
 
 export function snapshotOf(task: Pick<Task, 'snapshot'>): WorkshopSnapshot | null {
   return (task.snapshot as WorkshopSnapshot | null) ?? null;
+}
+
+/**
+ * Where the workshop's worktrees stand, from the operations that prepare and
+ * remove them: Brief's prepare_worktree operations, then the cleanup
+ * operations asked for once the workshop ends.
+ */
+async function worktreeState(tx: Tx, task: Task): Promise<WorktreeState> {
+  if (task.repositoryId === null) return 'absent';
+  const ops = await tx
+    .select({ kind: platformOps.kind, status: platformOps.status })
+    .from(platformOps)
+    .where(and(eq(platformOps.taskId, task.id), inArray(platformOps.kind, ['prepare_worktree', 'cleanup'])));
+  const prepared = ops.filter((o) => o.kind === 'prepare_worktree');
+  const cleanups = ops.filter((o) => o.kind === 'cleanup');
+  if (cleanups.length > 0) return cleanups.every((o) => o.status !== 'wanted' && o.status !== 'running') ? 'cleaned' : 'cleaning';
+  if (prepared.length === 0) return 'absent';
+  return prepared.every((o) => o.status === 'done') ? 'ready' : 'preparing';
 }
 
 /** Active members in speaking order, for a workshop that has not frozen its snapshot yet. */
@@ -114,8 +135,8 @@ export async function loadWorkshopState(tx: Tx, task: Task): Promise<WorkshopSta
     members,
     parallelism: task.parallelism ?? snapshot?.parallelism ?? Math.max(1, roster.length),
     snapshotFrozen: snapshot !== null,
-    // A workshop without a repository needs no worktrees; starting one on a repository is refused for now.
-    worktreesReady: task.repositoryId === null,
+    worktrees: await worktreeState(tx, task),
+    hasRepository: task.repositoryId !== null,
     dispatches: views,
     requests,
     nowMs: Number(clock!.now_ms),

@@ -104,7 +104,7 @@ beforeEach(() => {
 });
 
 describe('starting a workshop', () => {
-  it('refuses tasks that are not workshops, have the wrong roster, or are bound to a repository', async () => {
+  it('refuses tasks that are not workshops, have the wrong roster, or name a repository that is not there', async () => {
     const legacy = await newWorkshop('legacy');
     expect((await request(app).post(`/api/tasks/${legacy}/start`).set(auth())).body).toMatchObject({
       code: 'not_a_workshop',
@@ -124,7 +124,7 @@ describe('starting a workshop', () => {
     const bound = await newWorkshop('build');
     await db.update(tasks).set({ repositoryId: repo!.id }).where(eq(tasks.id, bound));
     expect((await request(app).post(`/api/tasks/${bound}/start`).set(auth())).body).toMatchObject({
-      code: 'workshop_repository_unsupported',
+      code: 'not_a_repository',
     });
   });
 
@@ -227,7 +227,7 @@ describe('advancing', () => {
       .insert(repositories)
       .values({ userId, name: 'broken', rootPath: '/tmp/broken', fingerprint: 'g' })
       .returning();
-    // Brief on a repository needs worktrees, which this build cannot prepare: every advance fails.
+    // Brief on a repository without a frozen base commit cannot prepare worktrees: every advance fails.
     await db
       .update(tasks)
       .set({ phase: 'brief', repositoryId: repo!.id, advancePending: true })
@@ -238,7 +238,7 @@ describe('advancing', () => {
     expect(task).toMatchObject({ advanceFailures: 3, advancePending: false });
     const [req] = await db.select().from(humanRequests).where(eq(humanRequests.taskId, id));
     expect(req).toMatchObject({ kind: 'engine_error', status: 'open', choices: ['retry', 'stop'] });
-    expect(String(req!.payload.error)).toContain('not supported yet');
+    expect(String(req!.payload.error)).toContain('needs its base commit');
 
     const res = await request(app).post(`/api/human-requests/${req!.id}/answer`).set(auth()).send({ choice: 'stop' });
     expect(res.status).toBe(200);

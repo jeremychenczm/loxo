@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import path from 'node:path';
+import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Tx } from '../../db/client';
 import {
@@ -9,12 +10,17 @@ import {
   phaseTransitions,
   taskMembers,
   tasks,
+  workspaces,
   type Run,
   type Task,
   type TaskStatus,
   type WorkshopPhase,
 } from '../../db/schema';
+import { workspaceBranchName, workspaceLeaf } from '../code-workspaces/branch-name';
+import { findRepository } from '../code-workspaces/workspace.service';
 import { crashPoint } from '../ownership/crash-points';
+import { storage } from '../../storage/layout';
+import { requestPlatformOp } from './platform-ops';
 import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 import { decide, type Action, type EngineSettings } from './engine';
 import { FINISHED_PHASES } from './phases';
@@ -171,14 +177,16 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function freezeSnapshot(tx: Tx, task: Task): Promise<void> {
+/** Freezes what the workshop works from; the base commit is resolved by the caller, outside the transaction. */
+export async function freezeSnapshot(tx: Tx, task: Task, base: { ref: string | null; commit: string | null }): Promise<void> {
   const roster = await liveRoster(tx, task.id);
   const leadAgentId = task.leadAgentId ?? roster[0]!;
   const snapshot: WorkshopSnapshot = {
     brief: task.brief,
     title: task.title,
     repositoryId: task.repositoryId,
-    baseRef: task.baseRef,
+    baseRef: base.ref,
+    baseCommit: base.commit,
     roster,
     leadAgentId,
     signers: roster,
@@ -199,12 +207,28 @@ function phaseLabel(phase: WorkshopPhase): string {
 async function applyAction(tx: Tx, task: Task, action: Action, queued: Run[]): Promise<void> {
   switch (action.type) {
     case 'freeze_snapshot':
-      await freezeSnapshot(tx, task);
+      await freezeSnapshot(tx, task, { ref: task.baseRef, commit: null });
       return;
     case 'prepare_worktrees':
-      throw new Error('Workshops on a repository are not supported yet');
+      queued.push(...(await prepareWorktrees(tx, task)));
+      return;
+    case 'cleanup_worktrees':
+      queued.push(...(await cleanupWorktrees(tx, task)));
+      return;
     case 'dispatch': {
       const [agent] = await tx.select().from(agents).where(eq(agents.id, action.agentId)).limit(1);
+      // A member works in their own worktree; a workshop without a repository has none.
+      const [worktree] = await tx
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(
+          and(
+            eq(workspaces.taskId, task.id),
+            eq(workspaces.kind, 'member'),
+            eq(workspaces.agentId, action.agentId),
+            notInArray(workspaces.status, ['merged', 'retained', 'abandoned'])
+          )
+        );
       const [row] = await tx
         .insert(dispatches)
         .values({
@@ -215,6 +239,7 @@ async function applyAction(tx: Tx, task: Task, action: Action, queued: Run[]): P
           cycle: action.cycle,
           round: action.round,
           agentId: action.agentId,
+          workspaceId: worktree?.id ?? null,
           timeoutMs: action.timeoutMs,
           // A deleted agent cannot run; its dispatch fails and the engine asks a person.
           ...(agent ? {} : { status: 'failed' as const, endedAt: new Date() }),
@@ -295,6 +320,95 @@ export async function stopWorkshopWithin(tx: Tx, task: Task, cause: Record<strin
         isNull(dispatches.cancelRequestedAt)
       )
     );
+}
+
+/**
+ * Brief's worktrees: the integration worktree on the task branch and one
+ * worktree per member, detached at the frozen base commit. Rows first, then
+ * one prepare_worktree operation each; both are keyed, so a repeated advance
+ * adds nothing. Returns the platform runs to start after commit.
+ */
+async function prepareWorktrees(tx: Tx, task: Task): Promise<Run[]> {
+  const snapshot = snapshotOf(task);
+  const repository = await findRepository(task.userId, task.repositoryId);
+  if (!snapshot?.baseCommit || !repository) throw new Error('A workshop on a repository needs its base commit and repository');
+  const root = storage.worktreesRoot(task.userId);
+  const live = notInArray(workspaces.status, ['merged', 'retained', 'abandoned']);
+  const wanted: { kind: 'integration' | 'member'; agentId: string | null; branch: string | null }[] = [
+    { kind: 'integration', agentId: null, branch: workspaceBranchName(task.number, null) },
+    ...snapshot.roster.map((agentId) => ({ kind: 'member' as const, agentId, branch: null })),
+  ];
+  const queued: Run[] = [];
+  for (const want of wanted) {
+    const [existing] = await tx
+      .select()
+      .from(workspaces)
+      .where(
+        and(
+          eq(workspaces.taskId, task.id),
+          eq(workspaces.kind, want.kind),
+          want.agentId ? eq(workspaces.agentId, want.agentId) : isNull(workspaces.agentId),
+          live
+        )
+      );
+    const row =
+      existing ??
+      (
+        await tx
+          .insert(workspaces)
+          .values({
+            userId: task.userId,
+            taskId: task.id,
+            repositoryId: repository.id,
+            kind: want.kind,
+            agentId: want.agentId,
+            worktreePath: path.join(root, workspaceLeaf(task.id, want.kind, want.agentId)),
+            branchName: want.branch,
+            currentBranch: want.branch,
+            baseRef: snapshot.baseRef ?? repository.defaultBranch,
+            baseCommit: snapshot.baseCommit,
+            status: 'preparing',
+          })
+          .returning()
+      )[0]!;
+    const { run } = await requestPlatformOp(tx, {
+      userId: task.userId,
+      taskId: task.id,
+      opKey: `prepare:${row.id}`,
+      kind: 'prepare_worktree',
+      workspaceId: row.id,
+      phase: 'brief',
+      cycle: 0,
+    });
+    if (run) queued.push(run);
+  }
+  return queued;
+}
+
+/** Once a workshop ends, its members' worktrees go; the integration worktree stays for its merge or a person. */
+async function cleanupWorktrees(tx: Tx, task: Task): Promise<Run[]> {
+  const rows = await tx
+    .select()
+    .from(workspaces)
+    .where(
+      and(
+        eq(workspaces.taskId, task.id),
+        eq(workspaces.kind, 'member'),
+        notInArray(workspaces.status, ['merged', 'retained', 'abandoned'])
+      )
+    );
+  const queued: Run[] = [];
+  for (const row of rows) {
+    const { run } = await requestPlatformOp(tx, {
+      userId: task.userId,
+      taskId: task.id,
+      opKey: `cleanup:${row.id}`,
+      kind: 'cleanup',
+      workspaceId: row.id,
+    });
+    if (run) queued.push(run);
+  }
+  return queued;
 }
 
 export async function moveToPhase(

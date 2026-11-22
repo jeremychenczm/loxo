@@ -31,7 +31,8 @@ function workshop(overrides: Partial<WorkshopState> = {}): WorkshopState {
     members: [LEAD, PEER, THIRD].map((agentId) => ({ agentId, skipped: false })),
     parallelism: 4,
     snapshotFrozen: true,
-    worktreesReady: true,
+    worktrees: 'absent',
+    hasRepository: false,
     dispatches: [],
     requests: [],
     nowMs: 1_000_000,
@@ -50,7 +51,7 @@ function apply(state: WorkshopState, actions: Action[]): WorkshopState {
         s.snapshotFrozen = true;
         break;
       case 'prepare_worktrees':
-        s.worktreesReady = true;
+        s.worktrees = 'preparing';
         break;
       case 'dispatch':
         s.dispatches.push({
@@ -87,6 +88,9 @@ function apply(state: WorkshopState, actions: Action[]): WorkshopState {
         break;
       case 'skip_member':
         s.members = s.members.map((m) => (m.agentId === a.agentId ? { ...m, skipped: true } : m));
+        break;
+      case 'cleanup_worktrees':
+        s.worktrees = 'cleaning';
         break;
       case 'transition':
         s.phase = a.to;
@@ -151,17 +155,26 @@ describe('workshop engine: lifecycle', () => {
   });
 
   it('freezes the snapshot, prepares worktrees, then moves a build workshop to explore', () => {
-    let s = workshop({ phase: 'brief', snapshotFrozen: false, worktreesReady: false });
+    let s = workshop({ phase: 'brief', snapshotFrozen: false, hasRepository: true });
     let r = step(s);
     expect(r.actions).toEqual([{ type: 'freeze_snapshot' }]);
     r = step(r.next);
     expect(r.actions).toEqual([{ type: 'prepare_worktrees' }]);
-    r = step(r.next);
+    // The operations are running: nothing to do until they settle.
+    expect(decide(r.next, settings)).toEqual([]);
+    r = step({ ...r.next, worktrees: 'ready' });
     expect(r.actions).toEqual([
       { type: 'transition', from: 'brief', to: 'explore', cycle: 0, round: 0, cause: { brief: 'ready' } },
     ]);
     s = r.next;
     expect(s.phase).toBe('explore');
+  });
+
+  it('asks to remove the worktrees once a workshop on a repository ends, and only once', () => {
+    const ended = workshop({ phase: 'stopped', hasRepository: true, worktrees: 'ready' });
+    expect(decide(ended, settings)).toEqual([{ type: 'cleanup_worktrees' }]);
+    expect(decide({ ...ended, worktrees: 'cleaning' }, settings)).toEqual([]);
+    expect(decide({ ...ended, phase: 'done', worktrees: 'cleaned' }, settings)).toEqual([]);
   });
 
   it('sends a solo workshop straight from brief to build', () => {

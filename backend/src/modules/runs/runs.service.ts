@@ -195,15 +195,16 @@ const dispatchCurrent = () =>
 
 /**
  * A platform run may start only while its operation is still wanted, its
- * task's workshop is not finished, and, for an operation tied to a phase,
- * the workshop is still in that phase and cycle. Runs without one pass.
+ * task's workshop is not finished (cleanup is what runs after it ends), and,
+ * for an operation tied to a phase, the workshop is still in that phase and
+ * cycle. Runs without one pass.
  */
 const opCurrent = () =>
   sql`(${runs.opId} IS NULL OR EXISTS (
     SELECT 1 FROM ${platformOps} o JOIN ${tasks} t ON t.id = o.task_id
     WHERE o.id = ${runs.opId}
       AND o.status IN ('wanted', 'running')
-      AND (t.phase IS NULL OR t.phase NOT IN ('done', 'stopped'))
+      AND (t.phase IS NULL OR t.phase NOT IN ('done', 'stopped') OR o.kind = 'cleanup')
       AND (o.phase IS NULL OR (o.phase = t.phase AND o.cycle IS NOT DISTINCT FROM t.cycle))))`;
 
 /** Cancels a queued workshop or platform run whose dispatch or operation is no longer current; it never started, so nothing else changes. */
