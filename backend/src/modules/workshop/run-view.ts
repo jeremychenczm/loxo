@@ -5,6 +5,7 @@ import {
   dispatches,
   phaseTransitions,
   runs,
+  taskMembers,
   tasks,
   turns,
   type Dispatch,
@@ -108,4 +109,19 @@ async function previousReply(dispatch: Dispatch, ex: Executor): Promise<string |
     .limit(1);
   const text = earlier?.output.trim();
   return text ? text.slice(0, MAX_PREVIOUS_REPLY_CHARS) : null;
+}
+
+/** Members still taking part, with their names: the frozen roster without those skipped. */
+export async function activeMembers(taskId: string, ex: Executor = db): Promise<{ agentId: string; name: string }[]> {
+  const [task] = await ex.select().from(tasks).where(eq(tasks.id, taskId));
+  const roster = task ? (snapshotOf(task)?.roster ?? []) : [];
+  if (roster.length === 0) return [];
+  const skipped = await ex
+    .select({ agentId: taskMembers.agentId })
+    .from(taskMembers)
+    .where(and(eq(taskMembers.taskId, taskId), eq(taskMembers.state, 'skipped')));
+  const out = new Set(skipped.map((r) => r.agentId));
+  const names = await ex.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, roster));
+  const nameOf = new Map(names.map((a) => [a.id, a.name]));
+  return roster.filter((id) => !out.has(id) && nameOf.has(id)).map((agentId) => ({ agentId, name: nameOf.get(agentId)! }));
 }

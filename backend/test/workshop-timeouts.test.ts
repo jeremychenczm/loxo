@@ -17,6 +17,7 @@ import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { advanceTask, setWorkshopRunStarterForTests } from '../src/modules/workshop/advance';
 import { agentPhase } from '../src/modules/workshop/phases';
+import { sampleReport } from './support/reports';
 import { scriptedHost } from './support/scripted-host';
 
 /**
@@ -140,7 +141,7 @@ describe('stop requests through the lease', () => {
         }
         const tool = agentPhase(dispatch!.phase)!.reportTool;
         if (tool === 'submit_result') await submitResult(ctx, 'Built.');
-        else await submitDispatchReport(ctx, tool, { summary: 'Looked.' });
+        else await submitDispatchReport(ctx, tool, sampleReport(tool, ctx));
         return { text: 'Done.' };
       })(req)
     );

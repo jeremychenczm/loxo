@@ -9,6 +9,7 @@ import { submitDispatchReport, submitResult } from '../src/modules/control-plane
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { agentPhase } from '../src/modules/workshop/phases';
+import { sampleReport } from './support/reports';
 import { scriptedHost } from './support/scripted-host';
 
 /**
@@ -37,7 +38,7 @@ beforeAll(async () => {
       const ctx = { run: run!, epoch: run!.ownerEpoch, agent: agent as Agent, task: task! };
       const tool = agentPhase(dispatch!.phase)!.reportTool;
       if (tool === 'submit_result') await submitResult(ctx, 'Built it.');
-      else await submitDispatchReport(ctx, tool, { summary: `${agent!.name} in ${dispatch!.phase}` });
+      else await submitDispatchReport(ctx, tool, sampleReport(tool, ctx, `${agent!.name} in ${dispatch!.phase}`));
       return { text: 'Done.' };
     })(req)
   );

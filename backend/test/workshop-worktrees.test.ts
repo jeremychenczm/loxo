@@ -16,6 +16,7 @@ import { agentPhase } from '../src/modules/workshop/phases';
 import { setPlatformRetryBackoffForTests } from '../src/modules/workshop/platform-ops';
 import { storage } from '../src/storage/layout';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
+import { sampleReport } from './support/reports';
 import { scriptedHost } from './support/scripted-host';
 
 /**
@@ -69,7 +70,7 @@ beforeAll(async () => {
       const ctx = { run: run!, epoch: run!.ownerEpoch, agent: agent as Agent, task: task! };
       const tool = agentPhase(dispatch!.phase)!.reportTool;
       if (tool === 'submit_result') await submitResult(ctx, 'Built.');
-      else await submitDispatchReport(ctx, tool, { summary: 'Looked.' });
+      else await submitDispatchReport(ctx, tool, sampleReport(tool, ctx));
       return { text: 'Done.' };
     })(req)
   );

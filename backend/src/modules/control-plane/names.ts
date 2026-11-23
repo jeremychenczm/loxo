@@ -13,12 +13,14 @@ export const CONTROL_PLANE_TOOLS = [
   'ask_blocker',
   'submit_result',
   'submit_exploration',
+  'submit_plan',
+  'submit_plan_review',
 ] as const;
 
 export type ControlPlaneTool = (typeof CONTROL_PLANE_TOOLS)[number];
 
 /** Phase report tools the control plane takes; a phase whose tool is not listed gets no report tool. */
-const OFFERED_REPORT_TOOLS: readonly string[] = ['submit_exploration', 'submit_result'];
+const OFFERED_REPORT_TOOLS: readonly string[] = ['submit_exploration', 'submit_plan', 'submit_plan_review', 'submit_result'];
 
 /**
  * The tools a run is offered. A review run judges; a legacy worker run moves
@@ -61,6 +63,18 @@ export function describeTool(tool: ControlPlaneTool, workshop: boolean): string 
         'Submit your exploration, once; the first submission stands.',
         '`summary`: what the code looks like where the task touches it, constraints and risks you found, and the approach you would take.',
         '`questions`: only what a person must answer before the work can be planned. They reach a person together with the other members\' questions once everyone has reported.',
+      ].join(' ');
+    case 'submit_plan':
+      return [
+        'Submit the plan, once; the first accepted plan stands.',
+        "`summary`: the approach. `packages`: one to eight work packages, each with a short `key`, a `title`, an `owner` (a member's name), the `area` it owns (files or part of the code, so packages built at the same time do not collide), `dependsOn` (keys of packages that must be integrated first) and its `acceptance` criteria.",
+        '`integration`: how the packages fit together. `verification`: how the result will be checked.',
+        'A plan that breaks these rules is refused with the reasons; fix it and call again.',
+      ].join(' ');
+    case 'submit_plan_review':
+      return [
+        'Submit your review of the plan, once.',
+        '`verdict`: approve, or object. An objection needs `comments` saying what to change; the lead revises the plan once, and a person decides if objections remain.',
       ].join(' ');
   }
 }

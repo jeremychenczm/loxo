@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { HttpError } from '../../http/errors';
-import { explorationShape } from '../workshop/reports';
+import { explorationShape, planReviewShape, planShape } from '../workshop/reports';
 import { describeTool, toolsForRun } from './names';
 import {
   askBlocker,
@@ -107,6 +107,16 @@ function buildControlPlaneServer(ctx: RunToolContext): McpServer {
         break;
       case 'submit_exploration':
         server.registerTool(tool, { description, inputSchema: explorationShape }, async (args) =>
+          guarded(async () => text(await submitDispatchReport(ctx, tool, args)))
+        );
+        break;
+      case 'submit_plan':
+        server.registerTool(tool, { description, inputSchema: planShape }, async (args) =>
+          guarded(async () => text(await submitDispatchReport(ctx, tool, args)))
+        );
+        break;
+      case 'submit_plan_review':
+        server.registerTool(tool, { description, inputSchema: planReviewShape }, async (args) =>
           guarded(async () => text(await submitDispatchReport(ctx, tool, args)))
         );
         break;

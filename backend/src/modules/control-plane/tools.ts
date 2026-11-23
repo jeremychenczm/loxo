@@ -12,6 +12,7 @@ import {
   type Task,
   type TaskStatus,
   type ApprovalDecision,
+  type Dispatch,
   type Run,
   type WorkshopPhase,
 } from '../../db/schema';
@@ -26,8 +27,8 @@ import {
 import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
 import { dispatchOf } from '../workshop/dispatch-info';
 import { agentPhase } from '../workshop/phases';
-import { MAX_EXPLORATION_QUESTIONS, parseReport } from '../workshop/reports';
-import { workshopRunView } from '../workshop/run-view';
+import { MAX_EXPLORATION_QUESTIONS, MAX_PACKAGES, parseReport } from '../workshop/reports';
+import { activeMembers, workshopRunView } from '../workshop/run-view';
 import { describeTool, toolsForRun, type ControlPlaneTool } from './names';
 import { startQueuedRuns } from '../runs/wake';
 import { isTransitionAllowed } from '../tasks/task-transitions';
@@ -344,18 +345,20 @@ export async function submitDispatchReport(
   report: Record<string, unknown>
 ): Promise<DispatchReportResult> {
   if (!ctx.run.dispatchId) throw badRequest('not_a_workshop_run', 'Only workshop runs submit this report');
-  await assertReportTool(ctx.run.dispatchId, tool);
-  const parsed = parseReport(tool, report);
+  const dispatch = await assertReportTool(ctx.run.dispatchId, tool);
+  const context = tool === 'submit_plan' ? { members: await activeMembers(dispatch.taskId) } : undefined;
+  const parsed = parseReport(tool, report, context);
   return controlPlaneWrite(ctx, tool, parsed, (tx) => insertDispatchReport(tx, ctx, tool, parsed));
 }
 
 /** A workshop run reports only through its dispatch's phase tool. */
-async function assertReportTool(dispatchId: string, tool: string): Promise<void> {
+async function assertReportTool(dispatchId: string, tool: string): Promise<Dispatch> {
   const dispatch = await dispatchOf(dispatchId);
   const expected = dispatch ? agentPhase(dispatch.phase)?.reportTool : undefined;
-  if (expected !== tool) {
+  if (!dispatch || expected !== tool) {
     throw badRequest('wrong_report_tool', expected ? `This run reports with ${expected}` : 'This run takes no report');
   }
+  return dispatch;
 }
 
 async function insertDispatchReport(
@@ -561,5 +564,48 @@ const TOOL_DEFS: Record<
       additionalProperties: false,
     },
     execute: async (ctx, args) => JSON.stringify(await submitDispatchReport(ctx, 'submit_exploration', args)),
+  },
+  submit_plan: {
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        packages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_PACKAGES,
+          items: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              title: { type: 'string' },
+              owner: { type: 'string' },
+              area: { type: 'string' },
+              dependsOn: { type: 'array', items: { type: 'string' } },
+              acceptance: { type: 'array', items: { type: 'string' }, minItems: 1 },
+            },
+            required: ['key', 'title', 'owner', 'area', 'acceptance'],
+            additionalProperties: false,
+          },
+        },
+        integration: { type: 'string' },
+        verification: { type: 'string' },
+      },
+      required: ['summary', 'packages', 'integration', 'verification'],
+      additionalProperties: false,
+    },
+    execute: async (ctx, args) => JSON.stringify(await submitDispatchReport(ctx, 'submit_plan', args)),
+  },
+  submit_plan_review: {
+    parameters: {
+      type: 'object',
+      properties: {
+        verdict: { type: 'string', enum: ['approve', 'object'] },
+        comments: { type: 'string' },
+      },
+      required: ['verdict'],
+      additionalProperties: false,
+    },
+    execute: async (ctx, args) => JSON.stringify(await submitDispatchReport(ctx, 'submit_plan_review', args)),
   },
 };

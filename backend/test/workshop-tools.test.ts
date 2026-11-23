@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, dispatchReports, dispatches, runs, tasks, turns, type Agent, type WorkshopPhase } from '../src/db/schema';
+import { agents, dispatchReports, dispatches, runs, taskMembers, tasks, turns, type Agent, type WorkshopPhase } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { CONTROL_PLANE_TOOLS, toolsForRun } from '../src/modules/control-plane/names';
 import { mintRunToken } from '../src/modules/control-plane/run-token';
@@ -16,6 +16,7 @@ import { admitRun } from '../src/modules/runs/runs.service';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { setWorkshopRunStarterForTests } from '../src/modules/workshop/advance';
 import { PHASES } from '../src/modules/workshop/phases';
+import { parseReport } from '../src/modules/workshop/reports';
 
 /**
  * What a workshop run is offered: its phase's report tool, and in a blind
@@ -90,8 +91,8 @@ describe('tools by phase', () => {
   it('offers each phase its report tool, and blind phases nothing their peers could read', () => {
     const run = { trigger: 'dispatch' as const, dispatchId: 'd' };
     expect(toolsForRun(run, 'explore')).toEqual(['get_task', 'submit_exploration']);
-    expect(toolsForRun(run, 'plan')).toEqual(['get_task', 'comment_on_task', 'ask_blocker']);
-    expect(toolsForRun(run, 'plan_review')).toEqual(['get_task']);
+    expect(toolsForRun(run, 'plan')).toEqual(['get_task', 'comment_on_task', 'ask_blocker', 'submit_plan']);
+    expect(toolsForRun(run, 'plan_review')).toEqual(['get_task', 'submit_plan_review']);
     expect(toolsForRun(run, 'build')).toEqual(['get_task', 'comment_on_task', 'ask_blocker', 'submit_result']);
     for (const phase of AGENT_PHASES) {
       const offered = toolsForRun(run, phase);
@@ -174,5 +175,95 @@ describe('submit_exploration', () => {
       report: { summary: 'Read the code.', questions: [] },
     });
     expect(await db.select().from(turns).where(eq(turns.taskId, ctx.task.id))).toEqual([]);
+  });
+});
+
+describe('submit_plan', () => {
+  const members = { members: [{ agentId: 'id-ada', name: 'Ada' }, { agentId: 'id-bo', name: 'Bo' }] };
+  const pkg = (key: string, owner: string, dependsOn?: string[]) => ({
+    key,
+    title: `Package ${key}`,
+    owner,
+    area: `src/${key}`,
+    ...(dependsOn ? { dependsOn } : {}),
+    acceptance: [`${key} works`],
+  });
+  const plan = (packages: unknown[]) => ({ summary: 'Split it in two.', packages, integration: 'api first', verification: 'npm test' });
+  const refused = (input: Record<string, unknown>) => {
+    try {
+      parseReport('submit_plan', input, members);
+    } catch (error) {
+      return error as { code: string; message: string };
+    }
+    throw new Error('the plan was accepted');
+  };
+
+  it('stores owners by agent id, matching member names without regard to case', () => {
+    expect(parseReport('submit_plan', plan([pkg('api', 'ada'), pkg('ui', 'Bo', ['api'])]), members)).toEqual({
+      summary: 'Split it in two.',
+      packages: [
+        { key: 'api', title: 'Package api', owner: 'id-ada', area: 'src/api', dependsOn: [], acceptance: ['api works'] },
+        { key: 'ui', title: 'Package ui', owner: 'id-bo', area: 'src/ui', dependsOn: ['api'], acceptance: ['ui works'] },
+      ],
+      integration: 'api first',
+      verification: 'npm test',
+    });
+  });
+
+  it('refuses a plan that breaks the structure rules, naming every problem', () => {
+    const problems = refused(
+      plan([pkg('api', 'Ada', ['api']), pkg('api', 'Carol'), pkg('ui', 'Bo', ['db', 'jobs']), pkg('jobs', 'Bo', ['ui'])])
+    );
+    expect(problems.code).toBe('invalid_plan');
+    expect(problems.message).toContain('"api" is used twice');
+    expect(problems.message).toContain('owner "Carol" is not a member; use one of Ada, Bo');
+    expect(problems.message).toContain('"api" depends on itself');
+    expect(problems.message).toContain('"ui" depends on "db", which is not in the plan');
+    expect(problems.message).toMatch(/cycle: (ui -> jobs -> ui|jobs -> ui -> jobs)/);
+  });
+
+  it('refuses a plan of the wrong shape', () => {
+    const nine = Array.from({ length: 9 }, (_, i) => pkg(`p${i}`, 'Ada'));
+    expect(refused(plan(nine))).toMatchObject({ code: 'invalid_report' });
+    expect(refused(plan([]))).toMatchObject({ code: 'invalid_report' });
+    expect(refused(plan([{ ...pkg('api', 'Ada'), acceptance: [] }]))).toMatchObject({ code: 'invalid_report' });
+    expect(refused(plan([pkg('Not A Key', 'Ada')]))).toMatchObject({ code: 'invalid_report' });
+    expect(refused({ ...plan([pkg('api', 'Ada')]), verification: '' })).toMatchObject({ code: 'invalid_report' });
+  });
+
+  it('accepts a plan over MCP against the members still taking part', async () => {
+    const ctx = await heldExploreRun('Plan over MCP');
+    await db.update(dispatches).set({ phase: 'plan', purpose: 'plan' }).where(eq(dispatches.id, ctx.run.dispatchId!));
+    const [peer] = await db.select().from(agents).where(eq(agents.name, 'Plan over MCP peer'));
+    const call = (args: Record<string, unknown>) => mcp(ctx, 'tools/call', { name: 'submit_plan', arguments: args });
+
+    const wrongOwner = await call(plan([pkg('api', 'Nobody')]));
+    expect(wrongOwner.body.result.isError).toBe(true);
+    expect(wrongOwner.body.result.content[0].text).toMatch(/^invalid_plan: .*not a member; use one of Plan over MCP lead, Plan over MCP peer$/);
+
+    // A skipped member cannot own a package.
+    const skipped = and(eq(taskMembers.taskId, ctx.task.id), eq(taskMembers.agentId, peer!.id));
+    await db.update(taskMembers).set({ state: 'skipped' }).where(skipped);
+    const toSkipped = await call(plan([pkg('ui', 'Plan over MCP peer')]));
+    expect(toSkipped.body.result.content[0].text).toMatch(/owner "Plan over MCP peer" is not a member; use one of Plan over MCP lead$/);
+    await db.update(taskMembers).set({ state: 'active' }).where(skipped);
+
+    const accepted = await call(plan([pkg('api', 'Plan over MCP lead'), pkg('ui', 'plan over mcp peer', ['api'])]));
+    expect(accepted.body.result.isError).toBeUndefined();
+    const [stored] = await db.select().from(dispatchReports).where(eq(dispatchReports.dispatchId, ctx.run.dispatchId!));
+    expect((stored!.report.packages as { owner: string }[]).map((p) => p.owner)).toEqual([ctx.agent.id, peer!.id]);
+  });
+});
+
+describe('submit_plan_review', () => {
+  it('needs comments to object, and none to approve', () => {
+    expect(() => parseReport('submit_plan_review', { verdict: 'object' })).toThrow(/an objection needs comments/);
+    expect(() => parseReport('submit_plan_review', { verdict: 'object', comments: '   ' })).toThrow(/an objection needs comments/);
+    expect(() => parseReport('submit_plan_review', { verdict: 'maybe' })).toThrow();
+    expect(parseReport('submit_plan_review', { verdict: 'approve' })).toEqual({ verdict: 'approve', comments: '' });
+    expect(parseReport('submit_plan_review', { verdict: 'object', comments: 'Split the UI.' })).toEqual({
+      verdict: 'object',
+      comments: 'Split the UI.',
+    });
   });
 });
