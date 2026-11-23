@@ -1,6 +1,6 @@
 import type { Agent, WorkshopPhase } from '../../db/schema';
 import { describeTool, type ControlPlaneTool } from '../control-plane/names';
-import type { PlanMaterial, WorkshopMaterials } from '../workshop/materials';
+import type { PackageMaterial, PlanMaterial, WorkshopMaterials } from '../workshop/materials';
 import type { WorkshopRunView } from '../workshop/run-view';
 
 const MAX_PROMPT_CHARS = 24_000;
@@ -160,7 +160,8 @@ const PHASE_GUIDANCE: Partial<Record<WorkshopPhase, string[]>> = {
     'Finish by calling submit_plan_review once.',
   ],
   build: [
-    'Build phase. Make the change in your worktree. No placeholders and no descriptions of work you did not do.',
+    'Build phase. Build your package below, and only that package; the plan says who builds the rest, and packages that do not depend on each other are built at the same time.',
+    'Make the change in your worktree. No placeholders and no descriptions of work you did not do.',
     'Finish by calling submit_result with a concise work report that names the files you created or changed.',
   ],
 };
@@ -169,9 +170,14 @@ const PHASE_GUIDANCE: Partial<Record<WorkshopPhase, string[]>> = {
 const MAX_MATERIALS_CHARS = 12_000;
 
 function formatPlan(plan: PlanMaterial): string {
-  const degraded = plan.source === 'degraded' ? ' (the lead gave no plan the platform could accept; one package for the whole task)' : '';
+  const note =
+    plan.source === 'degraded'
+      ? ' (the lead gave no plan the platform could accept; one package for the whole task)'
+      : plan.source === 'solo'
+        ? ' (a solo workshop; one package for the whole task)'
+        : '';
   return [
-    `Plan version ${plan.version}${degraded}:`,
+    `Plan version ${plan.version}${note}:`,
     `Summary: ${plan.summary}`,
     'Packages:',
     ...plan.packages.map((p) => {
@@ -181,6 +187,21 @@ function formatPlan(plan: PlanMaterial): string {
     `Integration: ${plan.integration}`,
     `Verification: ${plan.verification}`,
   ].join('\n');
+}
+
+function formatPackage(p: PackageMaterial): string {
+  const after = p.branch
+    ? `It builds on ${p.dependsOn.join(', ')}, already merged into the commit your branch starts from.`
+    : `It builds on ${p.dependsOn.join(', ')}, already done.`;
+  return [
+    `Your package: ${p.key}: ${p.title}`,
+    `Area: ${p.area}`,
+    `Acceptance: ${p.acceptance.join('; ')}`,
+    p.dependsOn.length ? after : 'It depends on no other package.',
+    p.branch ? `Your worktree is on branch ${p.branch}. Stay on it; the platform commits your changes when you report.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /** The phase materials as prompt text, cut to length with a pointer to get_task. */
@@ -200,6 +221,7 @@ export function formatMaterials(materials: WorkshopMaterials): string {
     );
   }
   if (materials.plan) parts.push(formatPlan(materials.plan));
+  if (materials.package) parts.push(formatPackage(materials.package));
   if (materials.objections?.length) {
     const version = materials.plan?.version ?? 1;
     parts.push(

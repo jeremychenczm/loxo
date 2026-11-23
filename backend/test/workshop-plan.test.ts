@@ -38,6 +38,8 @@ const auth = () => ({ Authorization: `Bearer ${token}` });
 /** What a member does in plan and plan review, by name; explore and build always report. */
 type Behavior = (turn: { dispatch: Dispatch; ctx: RunToolContext; prompt: string }) => Promise<string | void>;
 const behaviors = new Map<string, Behavior>();
+/** What each build saw, by package key: its prompt and its get_task snapshot. */
+const builds = new Map<string, { prompt: string; snapshot: string }>();
 /** Questions a member puts in its exploration, by name. */
 const asks = new Map<string, string[]>();
 
@@ -94,7 +96,10 @@ beforeAll(async () => {
         const questions = asks.get(req.agent.name) ?? [];
         await submitDispatchReport(ctx, 'submit_exploration', { summary: `Exploration by ${req.agent.name}`, questions });
       }
-      else if (dispatch.phase === 'build') await submitResult(ctx, 'Built.');
+      else if (dispatch.phase === 'build') {
+        builds.set(dispatch.packageKey, { prompt, snapshot: JSON.stringify(await getTaskSnapshot(ctx)) });
+        await submitResult(ctx, 'Built.');
+      }
       else {
         const text = await behaviors.get(req.agent.name)?.(turn);
         return { text: text ?? 'Done.' };
@@ -114,6 +119,7 @@ afterEach(async () => {
   await drainRunsForTests();
   behaviors.clear();
   asks.clear();
+  builds.clear();
 });
 
 afterAll(() => {
@@ -269,7 +275,7 @@ describe('plan and plan review', () => {
   });
 });
 
-describe('what plan and plan review work from', () => {
+describe('what plan, plan review and build work from', () => {
   it('gives the lead every exploration and the answer, reviewers the plan alone, and a revision the objections', async () => {
     const { taskId, names } = await newWorkshop('Materials');
     const [a, b, c] = names as [string, string, string];
@@ -326,6 +332,36 @@ describe('what plan and plan review work from', () => {
     expect(revision).toContain(`The members objected to plan version 1`);
     expect(revision).toContain(`- ${b}: OBJECTION-FROM-B: say where counts live.`);
     expect((await taskRow(taskId)).phase).toBe('check');
+  });
+
+  it('gives each owner the pinned plan and only their own package to build', async () => {
+    const { taskId, names } = await newWorkshop('Builds');
+    const [a, b, c] = names as [string, string, string];
+    behaviors.set(a, async ({ ctx }) => void (await submitDispatchReport(ctx, 'submit_plan', twoPackages(names))));
+    behaviors.set(b, async ({ ctx }) => void (await submitDispatchReport(ctx, 'submit_plan_review', approve)));
+    behaviors.set(c, async ({ ctx }) => void (await submitDispatchReport(ctx, 'submit_plan_review', approve)));
+    await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
+    await drainRunsForTests();
+
+    const api = builds.get('api')!;
+    const ui = builds.get('ui')!;
+    for (const prompt of [api.prompt, ui.prompt]) {
+      expect(prompt).toContain('Plan version 1:');
+      expect(prompt).toContain(`- ui: Lockout message (owner ${b}; area web/login; after api)`);
+      expect(prompt).toContain('Build your package below, and only that package');
+      // Without a repository there is no branch to stay on.
+      expect(prompt).not.toContain('Your worktree is on branch');
+    }
+    expect(api.prompt).toContain(
+      'Your package: api: Limiter middleware\nArea: src/auth\nAcceptance: 429 past the limit\nIt depends on no other package.'
+    );
+    expect(api.prompt).not.toContain('Your package: ui');
+    expect(ui.prompt).toContain('Your package: ui: Lockout message\nArea: web/login\nAcceptance: Shows the wait\nIt builds on api, already done.');
+    expect(ui.prompt).not.toContain('Your package: api');
+    expect(JSON.parse(ui.snapshot).workshop.materials).toEqual({
+      plan: expect.objectContaining({ version: 1, packages: [expect.objectContaining({ key: 'api', owner: a }), expect.objectContaining({ key: 'ui', owner: b })] }),
+      package: { key: 'ui', title: 'Lockout message', area: 'web/login', dependsOn: ['api'], acceptance: ['Shows the wait'], branch: null },
+    });
   });
 
   it('cuts long materials in the prompt and points to get_task', () => {

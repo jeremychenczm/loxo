@@ -91,7 +91,8 @@ const STALL_MS = LEASE_TTL_MS * 3;
 
 const WORKSHOP_MEMBERS = 2;
 // Per workshop: one exploration each; the lead, who never submits a plan here, is asked twice and the
-// plan degrades to one package; the other member approves it and the lead builds: six runs over two members.
+// plan degrades to one package; the other member approves it and the lead builds: six agent runs over two
+// members, besides the platform runs that branch, checkpoint and merge the package.
 const DISPATCHES_PER_MEMBER = 3;
 
 export interface TwoInstanceResult {

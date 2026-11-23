@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
 import type { Executor } from '../../db/client';
-import { dispatchReports, dispatches, humanRequests, plans, type Dispatch, type PlanSource } from '../../db/schema';
+import { dispatchReports, dispatches, humanRequests, plans, workPackages, type Dispatch, type PlanSource } from '../../db/schema';
 import { questionsKey } from './engine';
 import type { ExplorationReport, PlanReport, PlanReviewReport } from './reports';
 
@@ -14,10 +14,22 @@ export interface PlanMaterial {
   verification: string;
 }
 
+/** The package a build is for. */
+export interface PackageMaterial {
+  key: string;
+  title: string;
+  area: string;
+  dependsOn: string[];
+  acceptance: string[];
+  /** The branch the owner's worktree is on; null without a repository. */
+  branch: string | null;
+}
+
 /**
  * What a phase gives its participants to work from. Plan: every member's
  * exploration and the person's answer to their questions, and when revising,
  * the plan as it stood and the objections to it. Plan review: the plan.
+ * Build: the pinned plan and the member's own package.
  */
 export interface WorkshopMaterials {
   explorations?: { member: string; summary: string; questions: string[] }[];
@@ -28,6 +40,7 @@ export interface WorkshopMaterials {
   };
   plan?: PlanMaterial;
   objections?: { member: string; comments: string }[];
+  package?: PackageMaterial;
 }
 
 type NameOf = (agentId: string | null) => string;
@@ -46,6 +59,25 @@ export async function phaseMaterials(dispatch: Dispatch, nameOf: NameOf, ex: Exe
     case 'plan_review': {
       const latest = await latestPlan(dispatch, ex);
       return latest ? { plan: planMaterial(latest, nameOf) } : {};
+    }
+    case 'build': {
+      const [own] = await ex
+        .select()
+        .from(workPackages)
+        .where(and(eq(workPackages.taskId, dispatch.taskId), eq(workPackages.key, dispatch.packageKey)));
+      if (!own) return {};
+      const [pinned] = await ex.select().from(plans).where(eq(plans.id, own.planId));
+      return {
+        ...(pinned ? { plan: planMaterial(pinned, nameOf) } : {}),
+        package: {
+          key: own.key,
+          title: own.title,
+          area: own.area,
+          dependsOn: own.dependsOn,
+          acceptance: own.acceptance,
+          branch: own.branch,
+        },
+      };
     }
     default:
       return {};
@@ -102,7 +134,7 @@ async function latestPlan(dispatch: Dispatch, ex: Executor) {
   return plan;
 }
 
-function planMaterial(plan: NonNullable<Awaited<ReturnType<typeof latestPlan>>>, nameOf: NameOf): PlanMaterial {
+function planMaterial(plan: typeof plans.$inferSelect, nameOf: NameOf): PlanMaterial {
   const content = plan.content as unknown as PlanReport;
   return {
     version: plan.version,

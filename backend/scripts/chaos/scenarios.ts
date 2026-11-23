@@ -84,12 +84,13 @@ export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
     scenario: () => turn([{ sleep: 3_000 }, { say: 'Looked around; nothing to edit.' }, { sleep: 3_000 }]),
   },
   // After the platform runs: both members explore at once, the lead plans, the other member approves,
-  // and the lead builds; four agent rounds in a row. Each turn calls every report tool, and only its
-  // phase's is offered.
+  // and the lead builds the plan's one package, which the platform branches before and checkpoints and
+  // merges after: four agent rounds and three package operations in a row. Each turn calls every
+  // report tool, and only its phase's is offered.
   workshop: {
     repository: true,
     members: 2,
-    durationMs: 4 * DURATION_MS + 2_000,
+    durationMs: 4 * DURATION_MS + 4_000,
     scenario: (tag) =>
       turn([
         { say: 'Looking around the repository. ' },
