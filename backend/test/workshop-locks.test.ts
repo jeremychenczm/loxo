@@ -11,7 +11,8 @@ import { recoverRun } from '../src/modules/ownership/recovery';
 import { decideInterruptedRun } from '../src/modules/ownership/recovery-decisions';
 import { takeOverRun } from '../src/modules/ownership/takeover';
 import { admitRun, ownerOf, settleRun } from '../src/modules/runs/runs.service';
-import { drainRunsForTests, startQueuedRuns } from '../src/modules/runs/wake';
+import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
+import { drainRunsForTests } from '../src/modules/runs/wake';
 import { advanceTask, setWorkshopRunStarterForTests } from '../src/modules/workshop/advance';
 import { noteRunEnded } from '../src/modules/workshop/dispatch-end';
 import { notePlatformRunEnded } from '../src/modules/workshop/platform-ops';
@@ -33,13 +34,22 @@ let userId = '';
 let repositoryId = '';
 let baseCommit = '';
 let sandbox = '';
-// Platform runs execute for real (they need no agent); agent runs stay queued for the tests to admit.
-let executePlatformRuns = true;
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function startedWorkshop(prefix: string, onRepository: boolean): Promise<{ taskId: string; lead: string; peer: string }> {
+/**
+ * A started workshop whose runs all stay queued for the tests to admit. On a
+ * repository, Brief's platform runs are settled here by hand, as if their
+ * worktrees were prepared, and the workshop advanced: a run settled through
+ * the wake service would promote the next run on its gate, which is a
+ * member's explore run, and start it.
+ */
+async function startedWorkshop(
+  prefix: string,
+  onRepository: boolean,
+  options: { prepare?: boolean } = {}
+): Promise<{ taskId: string; lead: string; peer: string }> {
   const ids: string[] = [];
   for (const name of [`${prefix} lead`, `${prefix} peer`]) {
     const res = await request(app).post('/api/agents').set(auth()).send({ name, runtime: 'claude-code' });
@@ -55,10 +65,25 @@ async function startedWorkshop(prefix: string, onRepository: boolean): Promise<{
       memberAgentIds: ids,
       ...(onRepository ? { repositoryId } : {}),
     });
-  const started = await request(app).post(`/api/tasks/${res.body.task.id}/start`).set(auth());
+  const taskId = res.body.task.id as string;
+  const started = await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
   expect(started.status).toBe(202);
+  if (onRepository && options.prepare !== false) {
+    const platform = await db.select().from(runs).where(and(eq(runs.taskId, taskId), eq(runs.actor, 'platform')));
+    for (const queued of platform) {
+      const run = (await admitRun(queued.id, { instance: 'prepare-by-hand' }))!.run;
+      await db.transaction(async (tx) => {
+        const row = await settleRun(ownerOf(run), { status: 'succeeded' }, 'idle', tx);
+        await notePlatformRunEnded(tx, row!, {
+          kind: 'done',
+          result: { worktree: { id: run.workspaceId!, status: 'ready', headCommit: baseCommit, lastError: null } },
+        });
+      });
+    }
+    await advanceTask(taskId);
+  }
   await drainRunsForTests();
-  return { taskId: res.body.task.id, lead: ids[0]!, peer: ids[1]! };
+  return { taskId, lead: ids[0]!, peer: ids[1]! };
 }
 
 async function dispatchOf(taskId: string, agentId: string) {
@@ -111,8 +136,10 @@ function isDeadlock(error: unknown): boolean {
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
-  setWorkshopRunStarterForTests(async (queued) => {
-    if (executePlatformRuns) await startQueuedRuns(queued.filter((run) => run.actor === 'platform'));
+  setWorkshopRunStarterForTests(async () => {});
+  // Nothing here should reach an agent; a run that did would fail instead of launching a CLI.
+  setTaskHostFactoryForTests(() => {
+    throw new Error('No agent runs in the lock-order tests');
   });
   const reg = await request(app).post('/auth/register').send({
     email: 'locks@example.com',
@@ -130,11 +157,11 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await drainRunsForTests();
-  executePlatformRuns = true;
 });
 
 afterAll(async () => {
   setWorkshopRunStarterForTests(null);
+  setTaskHostFactoryForTests(null);
   removeSandbox(sandbox);
 });
 
@@ -219,8 +246,7 @@ describe.each([
 
 describe('lock order across the gates of one task', () => {
   it('settles runs on three gates at once while an advance holds the task', { timeout: 30_000 }, async () => {
-    executePlatformRuns = false;
-    const { taskId } = await startedWorkshop('Three gates', true);
+    const { taskId } = await startedWorkshop('Three gates', true, { prepare: false });
     const queued = await db.select().from(runs).where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued')));
     expect(queued).toHaveLength(3);
     expect(new Set(queued.map((r) => r.gateKey)).size).toBe(3);
