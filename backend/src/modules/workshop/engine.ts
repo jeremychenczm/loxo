@@ -6,6 +6,7 @@ import type {
   WorkshopPhase,
 } from '../../db/schema';
 import { agentPhase, FINISHED_PHASES, type AgentPhaseSpec } from './phases';
+import { questionsOf } from './reports';
 
 /**
  * The workshop engine's decision function. It reads a snapshot of one task's
@@ -46,6 +47,8 @@ export interface RequestView {
   dedupeKey: string | null;
   status: HumanRequestStatus;
   answer: Record<string, unknown> | null;
+  /** Null for a request that does not expire. */
+  expiresAtMs: number | null;
 }
 
 export interface WorkshopState {
@@ -77,6 +80,8 @@ export type WorktreeState = 'absent' | 'preparing' | 'ready' | 'cleaning' | 'cle
 export interface EngineSettings {
   readOnlyTimeoutMs: number;
   writeTimeoutMs: number;
+  /** How long the members' explore questions wait for a person before Plan goes ahead without answers. */
+  questionsTtlMs: number;
 }
 
 export type MemberFailedChoice = 'retry' | 'skip' | 'stop';
@@ -105,13 +110,20 @@ export type Action =
       dedupeKey: string;
       payload: Record<string, unknown>;
       choices: string[];
+      /** Omitted for requests that wait until a person answers. */
+      ttlMs?: number;
     }
+  | { type: 'expire_request'; requestId: string }
   | { type: 'skip_member'; agentId: string }
   | { type: 'transition'; from: WorkshopPhase | null; to: WorkshopPhase; cycle: number; round: number; cause: Record<string, unknown> }
   | { type: 'stop'; reason: string };
 
 const UNFINISHED: readonly DispatchStatus[] = ['pending', 'running'];
 const SETTLED_OK: readonly DispatchStatus[] = ['reported', 'skipped'];
+
+export function questionsKey(cycle: number): string {
+  return `questions:explore:${cycle}`;
+}
 
 export function memberFailedKey(phase: WorkshopPhase, cycle: number, round: number, agentId: string): string {
   return `member_failed:${phase}:${cycle}:${round}:${agentId}`;
@@ -253,7 +265,7 @@ function decideAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: 
     else if (choice === 'stop') return [{ type: 'stop', reason: `Stopped after ${agentId} failed in ${phase}` }];
   }
 
-  if (allSettled) actions.push(...exitAgentPhase(state));
+  if (allSettled) actions.push(...exitAgentPhase(state, spec, settings));
   return actions;
 }
 
@@ -278,11 +290,11 @@ function transition(
 }
 
 /** Where an agent phase leads once every participant has settled. */
-function exitAgentPhase(state: WorkshopState): Action[] {
+function exitAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: EngineSettings): Action[] {
   const cause = { settled: state.phase };
   switch (state.phase) {
     case 'explore':
-      return [transition(state, 'plan', 0, cause)];
+      return exitExplore(state, spec, settings);
     case 'plan': {
       const othersLeft = state.members.some((m) => !m.skipped && m.agentId !== state.leadAgentId);
       return [transition(state, othersLeft ? 'plan_review' : 'build', 0, cause)];
@@ -293,4 +305,38 @@ function exitAgentPhase(state: WorkshopState): Action[] {
       // Exits from build onward arrive with their steps.
       return [];
   }
+}
+
+/**
+ * Explore ends in Plan. Questions the members put in their reports go to a
+ * person first, all in one request; Plan waits for the answer, or goes ahead
+ * without one once the request expires.
+ */
+function exitExplore(state: WorkshopState, spec: AgentPhaseSpec, settings: EngineSettings): Action[] {
+  const questions = participantsOf(state, spec).flatMap((agentId) => {
+    const slot = slotOf(state, spec, agentId);
+    return slot?.status === 'reported' ? questionsOf(slot.report).map((question) => ({ agentId, question })) : [];
+  });
+  if (questions.length === 0) return [transition(state, 'plan', 0, { settled: 'explore' })];
+
+  const key = questionsKey(state.cycle);
+  const request = requestFor(state, key);
+  if (!request) {
+    return [
+      {
+        type: 'open_request',
+        kind: 'input',
+        dedupeKey: key,
+        payload: { phase: 'explore', cycle: state.cycle, questions },
+        choices: [],
+        ttlMs: settings.questionsTtlMs,
+      },
+    ];
+  }
+  if (request.status === 'open') {
+    const overdue = request.expiresAtMs !== null && request.expiresAtMs <= state.nowMs;
+    return overdue ? [{ type: 'expire_request', requestId: request.id }] : [];
+  }
+  const answered = request.status === 'answered';
+  return [transition(state, 'plan', 0, { settled: 'explore', questions: request.id, answered })];
 }

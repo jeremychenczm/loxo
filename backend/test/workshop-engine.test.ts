@@ -3,6 +3,7 @@ import {
   decide,
   elapsedMs,
   memberFailedKey,
+  questionsKey,
   type Action,
   type DispatchView,
   type EngineSettings,
@@ -15,7 +16,7 @@ import {
  * a workshop forward and check that deciding again on the result adds
  * nothing new.
  */
-const settings: EngineSettings = { readOnlyTimeoutMs: 600_000, writeTimeoutMs: 3_600_000 };
+const settings: EngineSettings = { readOnlyTimeoutMs: 600_000, writeTimeoutMs: 3_600_000, questionsTtlMs: 1_800_000 };
 const LEAD = 'agent-lead';
 const PEER = 'agent-peer';
 const THIRD = 'agent-third';
@@ -84,7 +85,17 @@ function apply(state: WorkshopState, actions: Action[]): WorkshopState {
         edit(s, a.dispatchId, { pausedAtMs: null, startedAtMs: s.nowMs });
         break;
       case 'open_request':
-        s.requests.push({ id: `r${++nextId}`, kind: a.kind, dedupeKey: a.dedupeKey, status: 'open', answer: null });
+        s.requests.push({
+          id: `r${++nextId}`,
+          kind: a.kind,
+          dedupeKey: a.dedupeKey,
+          status: 'open',
+          answer: null,
+          expiresAtMs: a.ttlMs === undefined ? null : s.nowMs + a.ttlMs,
+        });
+        break;
+      case 'expire_request':
+        s.requests = s.requests.map((r) => (r.id === a.requestId && r.status === 'open' ? { ...r, status: 'expired' } : r));
         break;
       case 'skip_member':
         s.members = s.members.map((m) => (m.agentId === a.agentId ? { ...m, skipped: true } : m));
@@ -250,6 +261,91 @@ describe('workshop engine: an agent phase', () => {
     ];
     const r = step(workshop({ phase: 'plan_review', members }));
     expect(r.actions.map((a) => a.type === 'dispatch' && a.agentId)).toEqual([THIRD]);
+  });
+});
+
+describe('workshop engine: explore questions', () => {
+  /** Explore with every member settled: the lead and peer asked, the third did not, or was skipped. */
+  function explored(): WorkshopState {
+    let s = step(workshop()).next;
+    s = settle(s, LEAD, reported({ summary: 'a', questions: ['Which store?'] }));
+    s = settle(s, PEER, reported({ summary: 'b', questions: ['Keep the old API?', 'Add a dependency?'] }));
+    return settle(s, THIRD, { status: 'skipped' });
+  }
+
+  it('puts every question to a person in one request, and waits for it', () => {
+    const r = step(explored());
+    expect(r.actions).toEqual([
+      {
+        type: 'open_request',
+        kind: 'input',
+        dedupeKey: questionsKey(0),
+        payload: {
+          phase: 'explore',
+          cycle: 0,
+          questions: [
+            { agentId: LEAD, question: 'Which store?' },
+            { agentId: PEER, question: 'Keep the old API?' },
+            { agentId: PEER, question: 'Add a dependency?' },
+          ],
+        },
+        choices: [],
+        ttlMs: settings.questionsTtlMs,
+      },
+    ]);
+    // Still explore, nothing new to do until a person answers or the request runs out.
+    expect(r.next.phase).toBe('explore');
+    expect(decide(r.next, settings)).toEqual([]);
+  });
+
+  it('goes on to plan once the questions are answered', () => {
+    const s = answer(step(explored()).next, questionsKey(0), 'Use Redis; keep the old API.');
+    const request = s.requests[0]!;
+    expect(step(s).actions).toEqual([
+      {
+        type: 'transition',
+        from: 'explore',
+        to: 'plan',
+        cycle: 0,
+        round: 0,
+        cause: { settled: 'explore', questions: request.id, answered: true },
+      },
+    ]);
+  });
+
+  it('expires the request once its time is up, then plans without answers', () => {
+    let s = step(explored()).next;
+    s = { ...s, nowMs: s.nowMs + settings.questionsTtlMs - 1 };
+    expect(decide(s, settings)).toEqual([]);
+    s = { ...s, nowMs: s.nowMs + 1 };
+    const request = s.requests[0]!;
+    let r = step(s);
+    expect(r.actions).toEqual([{ type: 'expire_request', requestId: request.id }]);
+    r = step(r.next);
+    expect(r.actions).toEqual([
+      {
+        type: 'transition',
+        from: 'explore',
+        to: 'plan',
+        cycle: 0,
+        round: 0,
+        cause: { settled: 'explore', questions: request.id, answered: false },
+      },
+    ]);
+  });
+
+  it("asks nothing when no report has questions, and ignores a skipped member's questions", () => {
+    let s = step(workshop()).next;
+    s = settle(s, LEAD, reported({ summary: 'a', questions: [] }));
+    s = settle(s, PEER, reported({ summary: 'b' }));
+    // THIRD's dispatch failed with a report (as after a read-only violation); once skipped, its questions are not asked.
+    s = settle(s, THIRD, { status: 'failed', report: { summary: 'c', questions: ['Ignored?'] } });
+    s = step(s).next; // member_failed for THIRD
+    s = step(answer(s, memberFailedKey('explore', 0, 0, THIRD), 'skip')).next;
+    expect(s.members.find((m) => m.agentId === THIRD)!.skipped).toBe(true);
+    expect(step(s).actions).toEqual([
+      { type: 'transition', from: 'explore', to: 'plan', cycle: 0, round: 0, cause: { settled: 'explore' } },
+    ]);
   });
 });
 

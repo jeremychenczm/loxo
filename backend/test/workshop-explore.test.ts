@@ -3,11 +3,14 @@ import { and, asc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, dispatches, runs, tasks, turns, type Agent, type Dispatch } from '../src/db/schema';
+import { config } from '../src/config';
+import { agents, dispatches, humanRequests, phaseTransitions, runs, tasks, turns, type Agent, type Dispatch } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { getTaskSnapshot, submitDispatchReport, type RunToolContext } from '../src/modules/control-plane/tools';
 import { setTaskHostFactoryForTests, type HostRequest } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
+import { advanceTask, workshopsToAdvance } from '../src/modules/workshop/advance';
+import { questionsKey } from '../src/modules/workshop/engine';
 import { setPlatformRetryBackoffForTests } from '../src/modules/workshop/platform-ops';
 import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
@@ -25,6 +28,7 @@ let repositoryId = '';
 let sandbox = '';
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
+const questionsTtl = config.workshopQuestionsTtlMs;
 
 /** What a scripted member sees and does on one turn. */
 interface MemberTurn {
@@ -105,6 +109,7 @@ afterEach(async () => {
   await drainRunsForTests();
   members.clear();
   otherPrompts.clear();
+  config.workshopQuestionsTtlMs = questionsTtl;
 });
 
 afterAll(() => {
@@ -214,3 +219,72 @@ describe('explore', () => {
   });
 });
 
+describe('explore questions', () => {
+  /** Two members who report with questions: one from the lead, two from the peer. */
+  async function askingWorkshop(prefix: string): Promise<string> {
+    const asks: Record<string, string[]> = {
+      [`${prefix} A`]: ['Which store backs the limiter?'],
+      [`${prefix} B`]: ['May we change the login response?', 'Is a new dependency fine?'],
+    };
+    for (const [name, questions] of Object.entries(asks)) {
+      members.set(name, async ({ ctx }) => {
+        await submitDispatchReport(ctx, 'submit_exploration', { summary: `${name} looked.`, questions });
+        return { text: 'Reported.' };
+      });
+    }
+    const { taskId } = await newWorkshop(Object.keys(asks));
+    await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
+    await drainRunsForTests();
+    return taskId;
+  }
+
+  const questionsRequest = async (taskId: string) =>
+    (await db.select().from(humanRequests).where(eq(humanRequests.taskId, taskId))).find(
+      (r) => r.dedupeKey === questionsKey(0)
+    )!;
+  const exploreExit = async (taskId: string) =>
+    (await db.select().from(phaseTransitions).where(eq(phaseTransitions.taskId, taskId))).find(
+      (t) => t.fromPhase === 'explore'
+    );
+
+  it('puts every question to a person in one request, and plans once it is answered', { timeout: T }, async () => {
+    const taskId = await askingWorkshop('Asking');
+    const asked = await questionsRequest(taskId);
+    expect(asked).toMatchObject({ kind: 'input', status: 'open', choices: [] });
+    expect((asked.payload.questions as unknown[]).length).toBe(3);
+    expect(asked.payload.questions).toContainEqual(expect.objectContaining({ question: 'Is a new dependency fine?' }));
+    const wait = asked.expiresAt!.getTime() - asked.createdAt.getTime();
+    expect(wait).toBeGreaterThan(questionsTtl - 5_000);
+    expect(wait).toBeLessThanOrEqual(questionsTtl + 5_000);
+    // Plan waits on the person.
+    expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.phase).toBe('explore');
+    expect(await exploreExit(taskId)).toBeUndefined();
+
+    const answered = await request(app)
+      .post(`/api/human-requests/${asked.id}/answer`)
+      .set(auth())
+      .send({ choice: 'Redis; keep the response; no new dependency.' });
+    expect(answered.status).toBe(200);
+    await drainRunsForTests();
+    expect((await exploreExit(taskId))?.cause).toEqual({ settled: 'explore', questions: asked.id, answered: true });
+    expect(otherPrompts.has('Asking A:plan:0')).toBe(true);
+  });
+
+  it('plans without answers once the request runs out of time', { timeout: T }, async () => {
+    config.workshopQuestionsTtlMs = 300;
+    const taskId = await askingWorkshop('Waiting');
+    const asked = await questionsRequest(taskId);
+    expect(asked.status).toBe('open');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // The reconciler finds the workshop by its expired request and advances it.
+    expect(await workshopsToAdvance()).toContain(taskId);
+    await advanceTask(taskId);
+    await drainRunsForTests();
+    expect((await questionsRequest(taskId)).status).toBe('expired');
+    expect((await exploreExit(taskId))?.cause).toEqual({ settled: 'explore', questions: asked.id, answered: false });
+    expect(await workshopsToAdvance()).not.toContain(taskId);
+    const late = await request(app).post(`/api/human-requests/${asked.id}/answer`).set(auth()).send({ choice: 'Too late' });
+    expect(late.status).toBe(409);
+  });
+});

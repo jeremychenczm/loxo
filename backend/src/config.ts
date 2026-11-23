@@ -31,6 +31,8 @@ export const config = {
   workshopReadOnlyTimeoutMs: Number(process.env.WORKSHOP_READ_ONLY_TIMEOUT_MS ?? 10 * 60_000),
   /** Time budget for a workshop dispatch that writes code. */
   workshopWriteTimeoutMs: Number(process.env.WORKSHOP_WRITE_TIMEOUT_MS ?? 60 * 60_000),
+  /** How long the members' explore questions wait for a person; Plan then goes ahead without answers. */
+  workshopQuestionsTtlMs: Number(process.env.WORKSHOP_QUESTIONS_TTL_MS ?? 30 * 60_000),
   /** Default number of workshop dispatches running at once. */
   workshopMaxParallelism: Number(process.env.WORKSHOP_MAX_PARALLELISM ?? 4),
   /** Budget for a graceful shutdown, run handoffs included; past it the process exits and crash recovery takes over. */

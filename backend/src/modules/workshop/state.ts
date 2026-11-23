@@ -121,6 +121,7 @@ export async function loadWorkshopState(tx: Tx, task: Task): Promise<WorkshopSta
     dedupeKey: r.dedupeKey,
     status: r.status,
     answer: r.answer ?? null,
+    expiresAtMs: r.expiresAt?.getTime() ?? null,
   }));
 
   const [clock] = await tx.execute<{ now_ms: string }>(sql`SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint AS now_ms`).then((r) => r.rows);

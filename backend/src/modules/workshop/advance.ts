@@ -44,6 +44,7 @@ export function engineSettings(): EngineSettings {
   return {
     readOnlyTimeoutMs: config.workshopReadOnlyTimeoutMs,
     writeTimeoutMs: config.workshopWriteTimeoutMs,
+    questionsTtlMs: config.workshopQuestionsTtlMs,
   };
 }
 
@@ -145,7 +146,13 @@ async function recordAdvanceFailure(taskId: string, error: unknown): Promise<voi
 async function openEngineRequest(
   tx: Tx,
   taskId: string,
-  request: { kind: (typeof humanRequests.$inferInsert)['kind']; dedupeKey: string; payload: Record<string, unknown>; choices: string[] }
+  request: {
+    kind: (typeof humanRequests.$inferInsert)['kind'];
+    dedupeKey: string;
+    payload: Record<string, unknown>;
+    choices: string[];
+    ttlMs?: number;
+  }
 ): Promise<void> {
   const [open] = await tx
     .select({ id: humanRequests.id })
@@ -165,6 +172,10 @@ async function openEngineRequest(
     payload: request.payload,
     choices: request.choices,
     dedupeKey: request.dedupeKey,
+    // On the database clock, which the engine compares it with.
+    ...(request.ttlMs !== undefined
+      ? { expiresAt: sql`clock_timestamp() + ${request.ttlMs}::integer * interval '1 millisecond'` }
+      : {}),
   });
 }
 
@@ -291,6 +302,12 @@ async function applyAction(tx: Tx, task: Task, action: Action, queued: Run[]): P
       return;
     case 'open_request':
       await openEngineRequest(tx, task.id, action);
+      return;
+    case 'expire_request':
+      await tx
+        .update(humanRequests)
+        .set({ status: 'expired' })
+        .where(and(eq(humanRequests.id, action.requestId), eq(humanRequests.status, 'open')));
       return;
     case 'skip_member':
       await tx
@@ -444,13 +461,17 @@ export async function moveToPhase(
   });
 }
 
-/** Workshops the reconciler should advance: flagged ones, and running ones whose clocks may have run out. */
+/**
+ * Workshops the reconciler should advance: flagged ones, running ones whose
+ * clocks may have run out, and ones waiting on an engine request that has
+ * expired.
+ */
 export async function workshopsToAdvance(): Promise<string[]> {
   const rows = await db
     .select({ id: tasks.id })
     .from(tasks)
     .where(
-      sql`${tasks.advancePending} OR (${tasks.playbook} <> 'legacy' AND ${tasks.phase} IS NOT NULL AND ${tasks.phase} NOT IN ('done', 'stopped') AND EXISTS (SELECT 1 FROM ${dispatches} d WHERE d.task_id = ${tasks.id} AND d.status = 'running'))`
+      sql`${tasks.advancePending} OR (${tasks.playbook} <> 'legacy' AND ${tasks.phase} IS NOT NULL AND ${tasks.phase} NOT IN ('done', 'stopped') AND EXISTS (SELECT 1 FROM ${dispatches} d WHERE d.task_id = ${tasks.id} AND d.status = 'running')) OR EXISTS (SELECT 1 FROM ${humanRequests} h WHERE h.task_id = ${tasks.id} AND h.status = 'open' AND h.dedupe_key IS NOT NULL AND h.expires_at <= clock_timestamp())`
     );
   return rows.map((r) => r.id);
 }
