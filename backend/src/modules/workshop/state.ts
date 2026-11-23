@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import type { Tx } from '../../db/client';
 import {
   dispatchReports,
@@ -8,9 +8,24 @@ import {
   platformOps,
   runs,
   taskMembers,
+  workPackages,
+  workspaces,
+  type Plan,
+  type PlatformOpStatus,
   type Task,
 } from '../../db/schema';
-import type { DispatchView, MemberView, PlanView, RequestView, WorkshopState, WorktreeState } from './engine';
+import type {
+  DispatchView,
+  MemberView,
+  PackageOpKind,
+  PackageView,
+  PlanView,
+  RequestView,
+  WorkshopState,
+  WorktreeState,
+} from './engine';
+
+const PACKAGE_OP_KINDS: readonly PackageOpKind[] = ['branch_package', 'checkpoint', 'integrate'];
 
 /** What Brief freezes; later phases read the roster and lead from here, never from the live task. */
 export interface WorkshopSnapshot {
@@ -47,6 +62,41 @@ async function worktreeState(tx: Tx, task: Task): Promise<WorktreeState> {
   if (cleanups.length > 0) return cleanups.every((o) => o.status !== 'wanted' && o.status !== 'running') ? 'cleaned' : 'cleaning';
   if (prepared.length === 0) return 'absent';
   return prepared.every((o) => o.status === 'done') ? 'ready' : 'preparing';
+}
+
+/** The pinned plan's packages in the order the plan lists them. */
+async function packagesOf(tx: Tx, taskId: string, planRows: Plan[]): Promise<PackageView[]> {
+  const rows = await tx.select().from(workPackages).where(eq(workPackages.taskId, taskId));
+  if (rows.length === 0) return [];
+  const content = planRows.find((p) => p.id === rows[0]!.planId)?.content as { packages?: { key: string }[] } | undefined;
+  const order = (content?.packages ?? []).map((p) => p.key);
+  const rank = (key: string) => (order.includes(key) ? order.indexOf(key) : order.length);
+  return rows
+    .sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
+    .map((p) => ({ key: p.key, ownerAgentId: p.ownerAgentId, dependsOn: p.dependsOn, status: p.status, attempt: p.attempt }));
+}
+
+async function packageOpsOf(tx: Tx, taskId: string): Promise<Record<string, PlatformOpStatus>> {
+  const rows = await tx
+    .select({ opKey: platformOps.opKey, status: platformOps.status })
+    .from(platformOps)
+    .where(and(eq(platformOps.taskId, taskId), inArray(platformOps.kind, [...PACKAGE_OP_KINDS])));
+  return Object.fromEntries(rows.map((r) => [r.opKey, r.status]));
+}
+
+async function integrationHeadOf(tx: Tx, task: Task): Promise<string | null> {
+  if (task.repositoryId === null) return null;
+  const [row] = await tx
+    .select({ headCommit: workspaces.headCommit })
+    .from(workspaces)
+    .where(
+      and(
+        eq(workspaces.taskId, task.id),
+        eq(workspaces.kind, 'integration'),
+        notInArray(workspaces.status, ['merged', 'retained', 'abandoned'])
+      )
+    );
+  return row?.headCommit ?? null;
 }
 
 /** Active members in speaking order, for a workshop that has not frozen its snapshot yet. */
@@ -153,6 +203,10 @@ export async function loadWorkshopState(tx: Tx, task: Task): Promise<WorkshopSta
     requests,
     plans: planViews,
     planPinned: task.planHash !== null,
+    packages: await packagesOf(tx, task.id, planRows),
+    packageOps: await packageOpsOf(tx, task.id),
+    baseCommit: snapshot?.baseCommit ?? null,
+    integrationHead: await integrationHeadOf(tx, task),
     nowMs: Number(clock!.now_ms),
   };
 }

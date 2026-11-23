@@ -158,10 +158,10 @@ describe('stop requests through the lease', () => {
 
     const [stopped] = await db.select().from(runs).where(eq(runs.dispatchId, (await dispatchOf(taskId, slow)).id));
     expect(stopped).toMatchObject({ status: 'cancelled', stopReason: 'cancel_requested' });
-    // Skipped in explore only: the member still reviews the plan, and the workshop reaches build.
+    // Skipped in explore only: the member still reviews the plan, and the workshop gets through build.
     expect((await dispatchOf(taskId, slow, 'plan_review')).status).toBe('reported');
     const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
-    expect(task!.phase).toBe('build');
+    expect(task!.phase).toBe('check');
   });
 });
 

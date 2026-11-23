@@ -8,8 +8,10 @@ import {
   type Action,
   type DispatchView,
   type EngineSettings,
+  type PackageView,
   type WorkshopState,
 } from '../src/modules/workshop/engine';
+import type { WorkPackageStatus } from '../src/db/schema';
 
 /**
  * Table-style tests for the pure decision function. A small in-memory
@@ -39,6 +41,10 @@ function workshop(overrides: Partial<WorkshopState> = {}): WorkshopState {
     requests: [],
     plans: [],
     planPinned: false,
+    packages: [],
+    packageOps: {},
+    baseCommit: null,
+    integrationHead: null,
     nowMs: 1_000_000,
     ...overrides,
   };
@@ -113,6 +119,9 @@ function apply(state: WorkshopState, actions: Action[]): WorkshopState {
       case 'pin_plan':
         s.planPinned = true;
         break;
+      case 'package_op':
+        s.packageOps[a.opKey] = 'wanted';
+        break;
       case 'skip_member':
         s.members = s.members.map((m) => (m.agentId === a.agentId ? { ...m, skipped: true } : m));
         break;
@@ -176,6 +185,194 @@ function answer(s: WorkshopState, dedupeKey: string, choice: string): WorkshopSt
   return next;
 }
 
+const BASE = 'b'.repeat(40);
+
+function pkg(key: string, ownerAgentId: string, dependsOn: string[] = [], status: WorkPackageStatus = 'pending'): PackageView {
+  return { key, ownerAgentId, dependsOn, status, attempt: 0 };
+}
+
+/** Build on a repository, with the plan pinned and the integration branch still at base. */
+function building(packages: PackageView[], overrides: Partial<WorkshopState> = {}): WorkshopState {
+  return workshop({
+    phase: 'build',
+    planPinned: true,
+    packages,
+    hasRepository: true,
+    worktrees: 'ready',
+    baseCommit: BASE,
+    integrationHead: BASE,
+    ...overrides,
+  });
+}
+
+/** The platform finishes an operation: its package moves on, and a merge moves the integration head. */
+function opDone(s: WorkshopState, opKey: string, status: WorkPackageStatus, integrationHead?: string): WorkshopState {
+  expect(s.packageOps[opKey]).toBe('wanted');
+  const next = structuredClone(s);
+  next.packageOps[opKey] = 'done';
+  const key = opKey.split(':').at(-1);
+  next.packages = next.packages.map((p) => (p.key === key ? { ...p, status } : p));
+  if (integrationHead) next.integrationHead = integrationHead;
+  return next;
+}
+
+function settlePackage(s: WorkshopState, key: string, patch: Partial<DispatchView>): WorkshopState {
+  const d = s.dispatches.filter((x) => x.packageKey === key).at(-1);
+  if (!d) throw new Error(`no dispatch for package ${key}`);
+  const next = structuredClone(s);
+  edit(next, d.id, patch);
+  return next;
+}
+
+const branchOp = (key: string, startCommit: string) => ({
+  type: 'package_op',
+  kind: 'branch_package',
+  packageKey: key,
+  opKey: `branch_package:0:0:${key}`,
+  startCommit,
+});
+const checkpointOp = (key: string) => ({ type: 'package_op', kind: 'checkpoint', packageKey: key, opKey: `checkpoint:0:0:${key}` });
+const integrateOp = (key: string) => ({ type: 'package_op', kind: 'integrate', packageKey: key, opKey: `integrate:0:0:${key}` });
+const buildOf = (agentId: string, key: string, round = 0) =>
+  expect.objectContaining({ type: 'dispatch', phase: 'build', purpose: 'build', agentId, packageKey: key, round, readOnly: false });
+
+/** A branched package's build reported, then checkpointed and merged. */
+function buildAndMerge(s: WorkshopState, key: string, integrationHead: string): WorkshopState {
+  let next = settlePackage(s, key, reported({ summary: `Built ${key}` }));
+  next = opDone(step(next).next, `checkpoint:0:0:${key}`, 'built');
+  return opDone(step(next).next, `integrate:0:0:${key}`, 'integrated', integrationHead);
+}
+
+describe('workshop engine: build', () => {
+  it('branches packages of different owners from base at once, builds them side by side, then checkpoints and merges each', () => {
+    let r = step(building([pkg('api', LEAD), pkg('ui', PEER)]));
+    expect(r.actions).toEqual([branchOp('api', BASE), branchOp('ui', BASE)]);
+    // Nothing more until the branches exist.
+    expect(decide(r.next, settings)).toEqual([]);
+    let s = opDone(opDone(r.next, 'branch_package:0:0:api', 'branched'), 'branch_package:0:0:ui', 'branched');
+    r = step(s);
+    expect(r.actions).toEqual([buildOf(LEAD, 'api'), buildOf(PEER, 'ui')]);
+    expect(r.actions[0]).toMatchObject({ timeoutMs: 3_600_000 });
+
+    s = settlePackage(r.next, 'api', reported());
+    r = step(s);
+    expect(r.actions).toEqual([checkpointOp('api')]);
+    s = opDone(r.next, 'checkpoint:0:0:api', 'built');
+    r = step(s);
+    expect(r.actions).toEqual([integrateOp('api')]);
+    s = opDone(r.next, 'integrate:0:0:api', 'integrated', 'i1');
+    // ui is still being built.
+    expect(decide(s, settings)).toEqual([]);
+
+    s = buildAndMerge(s, 'ui', 'i2');
+    r = step(s);
+    expect(r.actions).toEqual([
+      { type: 'transition', from: 'build', to: 'check', cycle: 0, round: 0, cause: { settled: 'build', packages: 2 } },
+    ]);
+  });
+
+  it('gives an owner one package at a time: the next is branched once the last is checkpointed', () => {
+    let r = step(building([pkg('api', LEAD), pkg('docs', LEAD), pkg('ui', PEER)]));
+    expect(r.actions).toEqual([branchOp('api', BASE), branchOp('ui', BASE)]);
+    let s = opDone(r.next, 'branch_package:0:0:api', 'branched');
+    r = step(s);
+    expect(r.actions).toEqual([buildOf(LEAD, 'api')]);
+    s = settlePackage(r.next, 'api', reported());
+    r = step(s);
+    expect(r.actions).toEqual([checkpointOp('api')]);
+    s = opDone(r.next, 'checkpoint:0:0:api', 'built');
+    r = step(s);
+    expect(r.actions).toEqual([integrateOp('api'), branchOp('docs', BASE)]);
+  });
+
+  it('starts a dependent package from the integration head once its dependencies are merged', () => {
+    let r = step(building([pkg('api', LEAD), pkg('ui', PEER, ['api'])]));
+    expect(r.actions).toEqual([branchOp('api', BASE)]);
+    let s = opDone(r.next, 'branch_package:0:0:api', 'branched');
+    s = step(s).next;
+    s = settlePackage(s, 'api', reported());
+    s = opDone(step(s).next, 'checkpoint:0:0:api', 'built');
+    r = step(s);
+    // Built but not merged yet: ui still waits.
+    expect(r.actions).toEqual([integrateOp('api')]);
+    s = opDone(r.next, 'integrate:0:0:api', 'integrated', 'i1');
+    r = step(s);
+    expect(r.actions).toEqual([branchOp('ui', 'i1')]);
+  });
+
+  it('leaves a package whose operation failed to the person asked about it', () => {
+    const s = building([pkg('api', LEAD), pkg('docs', LEAD)], { packageOps: { 'branch_package:0:0:api': 'failed' } });
+    // api waits on the person; docs waits for its owner's worktree.
+    expect(decide(s, settings)).toEqual([]);
+    const built = building([pkg('api', LEAD, [], 'built')], { packageOps: { 'integrate:0:0:api': 'failed' } });
+    expect(decide(built, settings)).toEqual([]);
+  });
+
+  it('without a repository, sends packages to their owners in order and counts one in once reported', () => {
+    const s = workshop({ phase: 'build', planPinned: true, packages: [pkg('api', LEAD), pkg('docs', LEAD), pkg('ui', PEER, ['api'])] });
+    let r = step(s);
+    expect(r.actions).toEqual([buildOf(LEAD, 'api')]);
+    r = step(settlePackage(r.next, 'api', reported()));
+    expect(r.actions).toEqual([buildOf(LEAD, 'docs'), buildOf(PEER, 'ui')]);
+    r = step(settlePackage(settlePackage(r.next, 'docs', reported()), 'ui', reported()));
+    expect(r.actions).toEqual([
+      { type: 'transition', from: 'build', to: 'check', cycle: 0, round: 0, cause: { settled: 'build', packages: 3 } },
+    ]);
+  });
+
+  it('keeps builds within the parallelism', () => {
+    const s = workshop({ phase: 'build', planPinned: true, parallelism: 1, packages: [pkg('api', LEAD), pkg('ui', PEER)] });
+    const r = step(s);
+    expect(r.actions).toEqual([buildOf(LEAD, 'api')]);
+    expect(step(settlePackage(r.next, 'api', reported())).actions).toEqual([buildOf(PEER, 'ui')]);
+  });
+
+  it('asks once more when a build gives no report, then asks a person about that package', () => {
+    let r = step(building([pkg('api', LEAD, [], 'branched')]));
+    expect(r.actions).toEqual([buildOf(LEAD, 'api')]);
+    r = step(settlePackage(r.next, 'api', { status: 'no_report' }));
+    expect(r.actions).toEqual([buildOf(LEAD, 'api', 1)]);
+    r = step(settlePackage(r.next, 'api', { status: 'no_report' }));
+    const key = memberFailedKey('build', 0, 1, LEAD, 'api');
+    expect(r.actions).toEqual([
+      {
+        type: 'open_request',
+        kind: 'member_failed',
+        dedupeKey: key,
+        payload: { phase: 'build', agentId: LEAD, packageKey: 'api', dispatchId: r.next.dispatches[1]!.id, outcome: 'no_report' },
+        choices: ['retry', 'stop'],
+      },
+    ]);
+    expect(decide(r.next, settings)).toEqual([]);
+    r = step(answer(r.next, key, 'retry'));
+    expect(r.actions).toEqual([buildOf(LEAD, 'api', 2)]);
+    r = step(settlePackage(r.next, 'api', { status: 'failed' }));
+    const again = memberFailedKey('build', 0, 2, LEAD, 'api');
+    expect(r.actions).toMatchObject([{ type: 'open_request', dedupeKey: again }]);
+    expect(decide(answer(r.next, again, 'stop'), settings)).toEqual([
+      { type: 'stop', reason: `Stopped after ${LEAD} failed to build api` },
+    ]);
+  });
+
+  it('asks about each package of an owner on its own, not reusing an answer about another', () => {
+    let r = step(workshop({ phase: 'build', planPinned: true, packages: [pkg('api', LEAD), pkg('docs', LEAD)] }));
+    r = step(settlePackage(r.next, 'api', { status: 'failed' }));
+    const apiKey = memberFailedKey('build', 0, 0, LEAD, 'api');
+    expect(r.actions).toMatchObject([{ type: 'open_request', dedupeKey: apiKey }]);
+    r = step(answer(r.next, apiKey, 'retry'));
+    r = step(settlePackage(r.next, 'api', reported()));
+    expect(r.actions).toEqual([buildOf(LEAD, 'docs')]);
+    r = step(settlePackage(r.next, 'docs', { status: 'failed' }));
+    expect(r.actions).toMatchObject([{ type: 'open_request', dedupeKey: memberFailedKey('build', 0, 0, LEAD, 'docs') }]);
+  });
+
+  it('cancels a build that runs out of time', () => {
+    const r = step(building([pkg('api', LEAD, [], 'branched')]));
+    const s = { ...settlePackage(r.next, 'api', running(1_000)), nowMs: 1_000 + 3_600_001 };
+    expect(decide(s, settings)).toEqual([{ type: 'cancel_dispatch', dispatchId: r.next.dispatches[0]!.id, reason: 'timeout' }]);
+  });
+});
+
 describe('workshop engine: lifecycle', () => {
   it('does nothing before the workshop starts or after it ends', () => {
     expect(decide(workshop({ phase: null }), settings)).toEqual([]);
@@ -206,13 +403,19 @@ describe('workshop engine: lifecycle', () => {
     expect(decide({ ...ended, phase: 'done', worktrees: 'cleaned' }, settings)).toEqual([]);
   });
 
-  it('sends a solo workshop straight from brief to build', () => {
+  it('sends a solo workshop from brief to build with one package for its member, without a plan phase', () => {
     const s = workshop({ phase: 'brief', playbook: 'solo', members: [{ agentId: LEAD, skipped: false }] });
-    const r = step(s);
-    expect(r.actions).toMatchObject([{ type: 'transition', to: 'build' }]);
-    const build = step(r.next);
+    let r = step(s);
+    expect(r.actions).toEqual([{ type: 'record_plan', version: 1, round: 0, source: 'solo', dispatchId: null }]);
+    r = step(r.next);
+    expect(r.actions).toMatchObject([
+      { type: 'pin_plan', planId: r.next.plans[0]!.id },
+      { type: 'transition', from: 'brief', to: 'build', cause: { brief: 'ready', plan: 1, source: 'solo' } },
+    ]);
+    // Pinning writes the plan's one package.
+    const build = step({ ...r.next, packages: [pkg('main', LEAD)] });
     expect(build.actions).toEqual([
-      expect.objectContaining({ type: 'dispatch', purpose: 'build', agentId: LEAD, readOnly: false, timeoutMs: 3_600_000 }),
+      expect.objectContaining({ type: 'dispatch', purpose: 'build', agentId: LEAD, packageKey: 'main', readOnly: false, timeoutMs: 3_600_000 }),
     ]);
   });
 });

@@ -134,11 +134,22 @@ describe('plan and plan review', () => {
     expect(v1).toMatchObject({ version: 1, source: 'lead', cycle: 0 });
     expect(v1!.hash).toBe(planHash(v1!.content as never));
     const task = await taskRow(taskId);
-    expect(task).toMatchObject({ phase: 'build', planHash: v1!.hash });
+    expect(task).toMatchObject({ phase: 'check', planHash: v1!.hash });
     expect((await packagesOf(taskId)).map((p) => [p.key, p.ownerAgentId, p.dependsOn, p.planId, p.status])).toEqual([
       ['api', ids[0], [], v1!.id, 'pending'],
       ['ui', ids[1], ['api'], v1!.id, 'pending'],
     ]);
+    // Without a repository each package goes to its owner, and ui only once api, which it depends on, reported.
+    const builds = await db
+      .select()
+      .from(dispatches)
+      .where(and(eq(dispatches.taskId, taskId), eq(dispatches.phase, 'build')))
+      .orderBy(asc(dispatches.createdAt));
+    expect(builds.map((d) => [d.packageKey, d.agentId, d.status])).toEqual([
+      ['api', ids[0], 'reported'],
+      ['ui', ids[1], 'reported'],
+    ]);
+    expect(builds[1]!.createdAt.getTime()).toBeGreaterThanOrEqual(builds[0]!.endedAt!.getTime());
   });
 
   it('revises once on an objection and pins the revised plan', async () => {
@@ -185,6 +196,7 @@ describe('plan and plan review', () => {
       'plan_review>plan',
       'plan>plan_review',
       'plan_review>build',
+      'build>check',
     ]);
   });
 
@@ -214,7 +226,7 @@ describe('plan and plan review', () => {
     const answered = await request(app).post(`/api/human-requests/${dispute.id}/answer`).set(auth()).send({ choice: 'proceed' });
     expect(answered.status).toBe(200);
     await drainRunsForTests();
-    expect(await taskRow(taskId)).toMatchObject({ phase: 'build', planHash: versions[1]!.hash });
+    expect(await taskRow(taskId)).toMatchObject({ phase: 'check', planHash: versions[1]!.hash });
     expect((await packagesOf(taskId)).map((p) => p.planId)).toEqual([versions[1]!.id, versions[1]!.id]);
   });
 
@@ -250,7 +262,7 @@ describe('plan and plan review', () => {
     const [degraded] = await plansOf(taskId);
     expect(degraded).toMatchObject({ version: 1, source: 'degraded', dispatchId: null });
     expect(await db.select().from(humanRequests).where(eq(humanRequests.taskId, taskId))).toEqual([]);
-    expect(await taskRow(taskId)).toMatchObject({ phase: 'build', planHash: degraded!.hash });
+    expect(await taskRow(taskId)).toMatchObject({ phase: 'check', planHash: degraded!.hash });
     const [only] = await packagesOf(taskId);
     expect(only).toMatchObject({ key: 'main', title: 'Degrade task', ownerAgentId: ids[0] });
     expect(only!.acceptance).toEqual(['The brief is met: Add rate limiting to login.']);
@@ -313,7 +325,7 @@ describe('what plan and plan review work from', () => {
     expect(revision).toContain('Summary: First plan');
     expect(revision).toContain(`The members objected to plan version 1`);
     expect(revision).toContain(`- ${b}: OBJECTION-FROM-B: say where counts live.`);
-    expect((await taskRow(taskId)).phase).toBe('build');
+    expect((await taskRow(taskId)).phase).toBe('check');
   });
 
   it('cuts long materials in the prompt and points to get_task', () => {

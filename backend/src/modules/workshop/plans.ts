@@ -12,12 +12,24 @@ export function planHash(content: PlanReport): string {
   return createHash('sha256').update(canonicalJson(content)).digest('hex');
 }
 
-/** The plan the workshop falls back to when the lead gave none it could accept: the lead builds everything. */
-export function degradedPlan(task: Pick<Task, 'title' | 'brief' | 'leadAgentId' | 'snapshot'>): PlanReport {
+const ONE_PACKAGE_SUMMARY: Record<Exclude<PlanSource, 'lead'>, string> = {
+  degraded: 'The lead gave no plan the platform could accept, so the lead builds the whole task as one package.',
+  solo: 'A solo workshop: its one member builds the whole task as one package.',
+};
+
+/**
+ * One package for the lead covering the whole brief: the plan a workshop
+ * falls back to when the lead gave none it could accept, and a solo
+ * workshop's only plan.
+ */
+export function degradedPlan(
+  task: Pick<Task, 'title' | 'brief' | 'leadAgentId' | 'snapshot'>,
+  source: Exclude<PlanSource, 'lead'> = 'degraded'
+): PlanReport {
   const snapshot = snapshotOf(task);
   const brief = (snapshot?.brief ?? task.brief).trim();
   return {
-    summary: 'The lead gave no plan the platform could accept, so the lead builds the whole task as one package.',
+    summary: ONE_PACKAGE_SUMMARY[source],
     packages: [
       {
         key: 'main',
@@ -35,7 +47,7 @@ export function degradedPlan(task: Pick<Task, 'title' | 'brief' | 'leadAgentId' 
 
 /**
  * Records a plan version: the lead's report as submitted (already validated
- * and normalized by the tool), or the degraded plan. Keyed by version, so a
+ * and normalized by the tool), or a one-package plan. Keyed by version, so a
  * repeated advance records nothing new.
  */
 export async function recordPlan(
@@ -49,7 +61,7 @@ export async function recordPlan(
     if (!report) throw new Error(`Dispatch ${plan.dispatchId} has no plan to record`);
     content = report.report as unknown as PlanReport;
   } else {
-    content = degradedPlan(task);
+    content = degradedPlan(task, plan.source);
   }
   await tx
     .insert(plans)

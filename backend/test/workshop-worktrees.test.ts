@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { TurnPermission } from '@swarmdev/shared';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, dispatches, humanRequests, platformOps, runs, tasks, workspaces, type Agent } from '../src/db/schema';
+import { agents, dispatches, humanRequests, platformOps, runs, tasks, workPackages, workspaces, type Agent } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { workspaceLeaf } from '../src/modules/code-workspaces/branch-name';
 import { submitDispatchReport, submitResult } from '../src/modules/control-plane/tools';
@@ -22,7 +22,8 @@ import { scriptedHost } from './support/scripted-host';
 /**
  * A workshop on a repository: Brief prepares the integration worktree and
  * one worktree per member through platform runs, each member then works in
- * its own worktree, and the members' worktrees are removed once it ends.
+ * its own worktree, the built package is merged into the integration branch,
+ * and the members' worktrees are removed once it ends.
  */
 const app = createApp();
 const T = 90_000;
@@ -69,8 +70,10 @@ beforeAll(async () => {
       turns.push({ agent: agent!.name, phase: dispatch!.phase, workspace: turn.workspace, permission: turn.permission });
       const ctx = { run: run!, epoch: run!.ownerEpoch, agent: agent as Agent, task: task! };
       const tool = agentPhase(dispatch!.phase)!.reportTool;
-      if (tool === 'submit_result') await submitResult(ctx, 'Built.');
-      else await submitDispatchReport(ctx, tool, sampleReport(tool, ctx));
+      if (tool === 'submit_result') {
+        fs.writeFileSync(path.join(turn.workspace, 'built.txt'), `${agent!.name} built ${dispatch!.packageKey}\n`);
+        await submitResult(ctx, 'Built.');
+      } else await submitDispatchReport(ctx, tool, sampleReport(tool, ctx));
       return { text: 'Done.' };
     })(req)
   );
@@ -100,7 +103,7 @@ afterAll(() => {
 });
 
 describe('a workshop on a repository', () => {
-  it('prepares the worktrees in Brief, then has each member work in their own', { timeout: T }, async () => {
+  it('prepares the worktrees in Brief, has each member work in their own, and merges the built package', { timeout: T }, async () => {
     const { taskId, ids } = await newWorkshop(['Wt Lead', 'Wt Peer']);
     const started = await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
     expect(started.status).toBe(202);
@@ -134,7 +137,27 @@ describe('a workshop on a repository', () => {
     for (const d of explore) expect(d.workspaceId).toBe(members.get(d.agentId)!.id);
     const exploreRuns = await db.select().from(runs).where(and(eq(runs.taskId, taskId), eq(runs.trigger, 'dispatch')));
     for (const r of exploreRuns) expect(r.gateKey).toBe(`ws:${r.workspaceId}`);
-    expect((await taskRow(taskId)).phase).toBe('build');
+
+    // The plan's one package: branched at base in the lead's worktree, built, checkpointed, merged.
+    const task = await taskRow(taskId);
+    const branch = `loxo/t${task.number}/p/main`;
+    const [pkg] = await db.select().from(workPackages).where(eq(workPackages.taskId, taskId));
+    expect(pkg).toMatchObject({ key: 'main', status: 'integrated', branch, startCommit: base });
+    expect(await git(lead.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(branch);
+    expect(await git(lead.worktreePath, 'log', '-1', '--format=%an | %cn | %s', pkg!.headCommit!)).toBe(
+      'Wt Lead via Loxo | Loxo | Package main: The whole task'
+    );
+    expect(await git(integration.worktreePath, 'rev-parse', 'HEAD^1', 'HEAD^2')).toBe(`${base}\n${pkg!.headCommit}`);
+    expect(fs.readFileSync(path.join(integration.worktreePath, 'built.txt'), 'utf8')).toBe('Wt Lead built main\n');
+    const packageOps = (await db.select().from(platformOps).where(eq(platformOps.taskId, taskId)).orderBy(asc(platformOps.createdAt))).filter(
+      (o) => o.kind !== 'prepare_worktree'
+    );
+    expect(packageOps.map((o) => [o.kind, o.status, o.workspaceId])).toEqual([
+      ['branch_package', 'done', lead.id],
+      ['checkpoint', 'done', lead.id],
+      ['integrate', 'done', integration.id],
+    ]);
+    expect(task.phase).toBe('check');
   });
 
   it("removes the members' worktrees once the workshop ends and keeps the integration worktree", { timeout: T }, async () => {
@@ -175,6 +198,6 @@ describe('a workshop on a repository', () => {
     fs.rmSync(blockedPath, { recursive: true, force: true });
     await request(app).post(`/api/human-requests/${req!.id}/answer`).set(auth()).send({ choice: 'retry' });
     await drainRunsForTests();
-    expect((await taskRow(taskId)).phase).toBe('build');
+    expect((await taskRow(taskId)).phase).toBe('check');
   });
 });

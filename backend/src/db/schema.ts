@@ -587,8 +587,11 @@ export const phaseTransitions = pgTable(
 
 export type PhaseTransition = typeof phaseTransitions.$inferSelect;
 
-/** lead: the lead's report; degraded: one package for the lead, after the lead gave no acceptable plan. */
-export type PlanSource = 'lead' | 'degraded';
+/**
+ * lead: the lead's report; degraded: one package for the lead, after the lead
+ * gave no acceptable plan; solo: the one package of a solo workshop.
+ */
+export type PlanSource = 'lead' | 'degraded' | 'solo';
 
 /**
  * Plan versions within a cycle: the first, and at most one revision. The

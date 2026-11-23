@@ -56,7 +56,7 @@ afterAll(async () => {
 });
 
 describe('workshop runs', () => {
-  it('walks explore, plan and plan review to build, read-only until build', async () => {
+  it('walks explore, plan, plan review and build to check, read-only until build', async () => {
     const ids: string[] = [];
     for (const name of ['Explorer A', 'Explorer B']) {
       const res = await request(app)
@@ -89,6 +89,6 @@ describe('workshop runs', () => {
     const statuses = await db.select({ phase: dispatches.phase, status: dispatches.status }).from(dispatches).where(eq(dispatches.taskId, taskId));
     expect(statuses.every((d) => d.status === 'reported')).toBe(true);
     const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
-    expect(task).toMatchObject({ phase: 'build', status: 'in_progress' });
+    expect(task).toMatchObject({ phase: 'check', status: 'in_progress' });
   });
 });
