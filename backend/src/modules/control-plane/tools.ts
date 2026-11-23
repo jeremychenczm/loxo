@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db, type Executor, type Tx } from '../../db/client';
+import { canonicalJson } from '../../lib/canonical-json';
 import {
   agents,
   controlPlaneRequests,
@@ -109,17 +110,6 @@ export async function resolveRunContext(token: string): Promise<RunToolContext> 
   const dispatch = run.dispatchId ? await dispatchOf(run.dispatchId) : undefined;
 
   return { run, epoch: claims.epoch, agent, task, phase: dispatch?.phase ?? null };
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value ?? null);
 }
 
 const TERMINAL_TOOLS: readonly string[] = TERMINAL_CONTROL_PLANE_TOOLS;

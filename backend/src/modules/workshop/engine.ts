@@ -1,5 +1,6 @@
 import type {
   DispatchPurpose,
+  PlanSource,
   DispatchStatus,
   HumanRequestKind,
   HumanRequestStatus,
@@ -51,6 +52,17 @@ export interface RequestView {
   expiresAtMs: number | null;
 }
 
+/** A recorded plan version. */
+export interface PlanView {
+  id: string;
+  cycle: number;
+  version: number;
+  /** The plan-phase instance (task round) it was recorded in. */
+  round: number;
+  source: PlanSource;
+  dispatchId: string | null;
+}
+
 export interface WorkshopState {
   taskId: string;
   playbook: 'build' | 'solo';
@@ -72,6 +84,9 @@ export interface WorkshopState {
   hasRepository: boolean;
   dispatches: DispatchView[];
   requests: RequestView[];
+  plans: PlanView[];
+  /** A plan has been pinned and its work packages written. */
+  planPinned: boolean;
   nowMs: number;
 }
 
@@ -115,6 +130,8 @@ export type Action =
     }
   | { type: 'expire_request'; requestId: string }
   | { type: 'skip_member'; agentId: string }
+  | { type: 'record_plan'; version: number; round: number; source: PlanSource; dispatchId: string | null }
+  | { type: 'pin_plan'; planId: string }
   | { type: 'transition'; from: WorkshopPhase | null; to: WorkshopPhase; cycle: number; round: number; cause: Record<string, unknown> }
   | { type: 'stop'; reason: string };
 
@@ -123,6 +140,10 @@ const SETTLED_OK: readonly DispatchStatus[] = ['reported', 'skipped'];
 
 export function questionsKey(cycle: number): string {
   return `questions:explore:${cycle}`;
+}
+
+export function planDisputeKey(cycle: number): string {
+  return `plan_dispute:${cycle}`;
 }
 
 export function memberFailedKey(phase: WorkshopPhase, cycle: number, round: number, agentId: string): string {
@@ -207,6 +228,7 @@ function decideAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: 
   const timeoutMs = spec.readOnly ? settings.readOnlyTimeoutMs : settings.writeTimeoutMs;
   let unfinished = state.dispatches.filter((d) => UNFINISHED.includes(d.status)).length;
   let allSettled = true;
+  let leadGaveUp = false;
 
   const dispatchAt = (agentId: string, round: number) => {
     if (unfinished >= state.parallelism) return;
@@ -232,6 +254,11 @@ function decideAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: 
       continue;
     }
     if (SETTLED_OK.includes(slot.status)) continue;
+    // A lead who gave no acceptable plan, asked twice, has not failed: the plan degrades or goes to a person.
+    if (spec.purpose === 'plan' && slot.status === 'no_report' && noReportsInInstance(state, spec, agentId) > 1) {
+      leadGaveUp = true;
+      continue;
+    }
     allSettled = false;
 
     if (UNFINISHED.includes(slot.status)) {
@@ -265,7 +292,7 @@ function decideAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: 
     else if (choice === 'stop') return [{ type: 'stop', reason: `Stopped after ${agentId} failed in ${phase}` }];
   }
 
-  if (allSettled) actions.push(...exitAgentPhase(state, spec, settings));
+  if (allSettled) actions.push(...exitAgentPhase(state, spec, settings, leadGaveUp));
   return actions;
 }
 
@@ -290,17 +317,19 @@ function transition(
 }
 
 /** Where an agent phase leads once every participant has settled. */
-function exitAgentPhase(state: WorkshopState, spec: AgentPhaseSpec, settings: EngineSettings): Action[] {
-  const cause = { settled: state.phase };
+function exitAgentPhase(
+  state: WorkshopState,
+  spec: AgentPhaseSpec,
+  settings: EngineSettings,
+  leadGaveUp: boolean
+): Action[] {
   switch (state.phase) {
     case 'explore':
       return exitExplore(state, spec, settings);
-    case 'plan': {
-      const othersLeft = state.members.some((m) => !m.skipped && m.agentId !== state.leadAgentId);
-      return [transition(state, othersLeft ? 'plan_review' : 'build', 0, cause)];
-    }
+    case 'plan':
+      return exitPlan(state, spec, leadGaveUp);
     case 'plan_review':
-      return [transition(state, 'build', 0, cause)];
+      return exitPlanReview(state, spec);
     default:
       // Exits from build onward arrive with their steps.
       return [];
@@ -339,4 +368,83 @@ function exitExplore(state: WorkshopState, spec: AgentPhaseSpec, settings: Engin
   }
   const answered = request.status === 'answered';
   return [transition(state, 'plan', 0, { settled: 'explore', questions: request.id, answered })];
+}
+
+function plansInCycle(state: WorkshopState): PlanView[] {
+  return state.plans.filter((p) => p.cycle === state.cycle).sort((a, b) => a.version - b.version);
+}
+
+/** A round above every round used in the cycle, so a phase entered again never reuses a dispatch key. */
+function nextRound(state: WorkshopState): number {
+  return Math.max(state.round, ...state.dispatches.filter((d) => d.cycle === state.cycle).map((d) => d.round)) + 1;
+}
+
+const othersLeft = (state: WorkshopState) => state.members.some((m) => !m.skipped && m.agentId !== state.leadAgentId);
+
+/**
+ * Plan records the lead's plan as the next version, then sends it to the
+ * other members for review, or straight to Build when none are left. A lead
+ * who gave no acceptable plan after being asked again gets one package for
+ * the whole task (degraded) the first time; during a revision, the plan as
+ * it stands goes to a person.
+ */
+function exitPlan(state: WorkshopState, spec: AgentPhaseSpec, leadGaveUp: boolean): Action[] {
+  const versions = plansInCycle(state);
+  const recorded = versions.find((p) => p.round === state.round);
+  if (!recorded) {
+    const slot = slotOf(state, spec, state.leadAgentId);
+    if (slot?.status === 'reported') {
+      return [{ type: 'record_plan', version: versions.length + 1, round: state.round, source: 'lead', dispatchId: slot.id }];
+    }
+    if (!leadGaveUp) return [];
+    if (versions.length === 0) {
+      return [{ type: 'record_plan', version: 1, round: state.round, source: 'degraded', dispatchId: null }];
+    }
+    return decidePlanDispute(state, versions.at(-1)!);
+  }
+  const cause = { settled: 'plan', plan: recorded.version, source: recorded.source };
+  if (!othersLeft(state)) return pinAndBuild(state, recorded, cause);
+  return [transition(state, 'plan_review', versions.length > 1 ? nextRound(state) : 0, cause)];
+}
+
+/** Every reviewer approves: the plan goes ahead. Objections get one revision, then a person decides. */
+function exitPlanReview(state: WorkshopState, spec: AgentPhaseSpec): Action[] {
+  const versions = plansInCycle(state);
+  const latest = versions.at(-1);
+  if (!latest) return [];
+  const objections = participantsOf(state, spec).filter((agentId) => {
+    const slot = slotOf(state, spec, agentId);
+    return slot?.status === 'reported' && slot.report?.verdict === 'object';
+  }).length;
+  if (objections === 0) return pinAndBuild(state, latest, { settled: 'plan_review', plan: latest.version });
+  if (versions.length < 2) {
+    return [transition(state, 'plan', nextRound(state), { settled: 'plan_review', plan: latest.version, objections })];
+  }
+  return decidePlanDispute(state, latest);
+}
+
+function decidePlanDispute(state: WorkshopState, plan: PlanView): Action[] {
+  const key = planDisputeKey(state.cycle);
+  const request = requestFor(state, key);
+  if (!request) {
+    return [
+      {
+        type: 'open_request',
+        kind: 'plan_dispute',
+        dedupeKey: key,
+        payload: { cycle: state.cycle, planId: plan.id, version: plan.version },
+        choices: ['proceed', 'stop'],
+      },
+    ];
+  }
+  if (request.status !== 'answered') return [];
+  const choice = choiceOf(request);
+  if (choice === 'proceed') {
+    return pinAndBuild(state, plan, { settled: state.phase, plan: plan.version, dispute: request.id });
+  }
+  return choice === 'stop' ? [{ type: 'stop', reason: 'Stopped over a disputed plan' }] : [];
+}
+
+function pinAndBuild(state: WorkshopState, plan: PlanView, cause: Record<string, unknown>): Action[] {
+  return [...(state.planPinned ? [] : [{ type: 'pin_plan' as const, planId: plan.id }]), transition(state, 'build', 0, cause)];
 }

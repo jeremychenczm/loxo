@@ -4,12 +4,13 @@ import {
   dispatchReports,
   dispatches,
   humanRequests,
+  plans,
   platformOps,
   runs,
   taskMembers,
   type Task,
 } from '../../db/schema';
-import type { DispatchView, MemberView, RequestView, WorkshopState, WorktreeState } from './engine';
+import type { DispatchView, MemberView, PlanView, RequestView, WorkshopState, WorktreeState } from './engine';
 
 /** What Brief freezes; later phases read the roster and lead from here, never from the live task. */
 export interface WorkshopSnapshot {
@@ -124,6 +125,16 @@ export async function loadWorkshopState(tx: Tx, task: Task): Promise<WorkshopSta
     expiresAtMs: r.expiresAt?.getTime() ?? null,
   }));
 
+  const planRows = await tx.select().from(plans).where(eq(plans.taskId, task.id));
+  const planViews: PlanView[] = planRows.map((p) => ({
+    id: p.id,
+    cycle: p.cycle,
+    version: p.version,
+    round: p.round,
+    source: p.source,
+    dispatchId: p.dispatchId,
+  }));
+
   const [clock] = await tx.execute<{ now_ms: string }>(sql`SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint AS now_ms`).then((r) => r.rows);
 
   return {
@@ -140,6 +151,8 @@ export async function loadWorkshopState(tx: Tx, task: Task): Promise<WorkshopSta
     hasRepository: task.repositoryId !== null,
     dispatches: views,
     requests,
+    plans: planViews,
+    planPinned: task.planHash !== null,
     nowMs: Number(clock!.now_ms),
   };
 }

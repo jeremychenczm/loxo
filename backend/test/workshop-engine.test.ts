@@ -3,6 +3,7 @@ import {
   decide,
   elapsedMs,
   memberFailedKey,
+  planDisputeKey,
   questionsKey,
   type Action,
   type DispatchView,
@@ -36,6 +37,8 @@ function workshop(overrides: Partial<WorkshopState> = {}): WorkshopState {
     hasRepository: false,
     dispatches: [],
     requests: [],
+    plans: [],
+    planPinned: false,
     nowMs: 1_000_000,
     ...overrides,
   };
@@ -97,6 +100,19 @@ function apply(state: WorkshopState, actions: Action[]): WorkshopState {
       case 'expire_request':
         s.requests = s.requests.map((r) => (r.id === a.requestId && r.status === 'open' ? { ...r, status: 'expired' } : r));
         break;
+      case 'record_plan':
+        s.plans.push({
+          id: `p${++nextId}`,
+          cycle: s.cycle,
+          version: a.version,
+          round: a.round,
+          source: a.source,
+          dispatchId: a.dispatchId,
+        });
+        break;
+      case 'pin_plan':
+        s.planPinned = true;
+        break;
       case 'skip_member':
         s.members = s.members.map((m) => (m.agentId === a.agentId ? { ...m, skipped: true } : m));
         break;
@@ -149,6 +165,8 @@ function settle(s: WorkshopState, agentId: string, patch: Partial<DispatchView>)
 
 const reported = (report: Record<string, unknown> = { ok: true }) => ({ status: 'reported' as const, report });
 const running = (startedAtMs: number) => ({ status: 'running' as const, startedAtMs });
+const approve = reported({ verdict: 'approve', comments: '' });
+const object = (comments: string) => reported({ verdict: 'object', comments });
 
 function answer(s: WorkshopState, dedupeKey: string, choice: string): WorkshopState {
   const next = structuredClone(s);
@@ -236,11 +254,13 @@ describe('workshop engine: an agent phase', () => {
     expect(r.actions).toEqual([expect.objectContaining({ type: 'dispatch', purpose: 'plan', agentId: LEAD })]);
     s = settle(r.next, LEAD, reported({ plan: 'x' }));
     r = step(s);
+    expect(r.actions).toMatchObject([{ type: 'record_plan', version: 1, source: 'lead' }]);
+    r = step(r.next);
     expect(r.actions).toMatchObject([{ type: 'transition', to: 'plan_review' }]);
     r = step(r.next);
     expect(r.actions.map((a) => a.type === 'dispatch' && a.agentId)).toEqual([PEER, THIRD]);
-    s = settle(settle(r.next, PEER, reported()), THIRD, reported());
-    expect(step(s).actions).toMatchObject([{ type: 'transition', to: 'build' }]);
+    s = settle(settle(r.next, PEER, approve), THIRD, approve);
+    expect(step(s).actions).toMatchObject([{ type: 'pin_plan' }, { type: 'transition', to: 'build' }]);
   });
 
   it('skips plan review when every other member has been skipped', () => {
@@ -250,7 +270,8 @@ describe('workshop engine: an agent phase', () => {
     ];
     let s = step(workshop({ phase: 'plan', members })).next;
     s = settle(s, LEAD, reported());
-    expect(step(s).actions).toMatchObject([{ type: 'transition', to: 'build' }]);
+    s = step(s).next; // records the plan
+    expect(step(s).actions).toMatchObject([{ type: 'pin_plan' }, { type: 'transition', to: 'build' }]);
   });
 
   it('leaves skipped members out of later phases', () => {
@@ -261,6 +282,134 @@ describe('workshop engine: an agent phase', () => {
     ];
     const r = step(workshop({ phase: 'plan_review', members }));
     expect(r.actions.map((a) => a.type === 'dispatch' && a.agentId)).toEqual([THIRD]);
+  });
+});
+
+describe('workshop engine: plan and plan review', () => {
+  /** Plan with the lead's first plan recorded and sent to review, reviewers dispatched. */
+  function inReview(): WorkshopState {
+    let s = step(workshop({ phase: 'plan' })).next;
+    s = step(settle(s, LEAD, reported({ summary: 'v1' }))).next; // record v1
+    s = step(s).next; // to plan review
+    return step(s).next; // reviewers dispatched
+  }
+  const usedRounds = (s: WorkshopState) => s.dispatches.map((d) => d.round);
+
+  it('gives objections one revision in a fresh round, and reviews the revised plan again', () => {
+    let s = settle(settle(inReview(), PEER, object('Split the API out.')), THIRD, approve);
+    let r = step(s);
+    const revision = r.actions[0] as Extract<Action, { type: 'transition' }>;
+    expect(revision).toMatchObject({ type: 'transition', from: 'plan_review', to: 'plan', cause: { objections: 1, plan: 1 } });
+    expect(revision.round).toBeGreaterThan(Math.max(...usedRounds(s)));
+
+    r = step(r.next);
+    expect(r.actions).toEqual([expect.objectContaining({ type: 'dispatch', purpose: 'plan', agentId: LEAD, round: revision.round })]);
+    r = step(settle(r.next, LEAD, reported({ summary: 'v2' })));
+    expect(r.actions).toEqual([{ type: 'record_plan', version: 2, round: revision.round, source: 'lead', dispatchId: expect.any(String) }]);
+    r = step(r.next);
+    const secondReview = r.actions[0] as Extract<Action, { type: 'transition' }>;
+    expect(secondReview).toMatchObject({ to: 'plan_review', cause: { plan: 2 } });
+    expect(secondReview.round).toBeGreaterThan(revision.round);
+
+    r = step(r.next);
+    expect(r.actions.map((a) => a.type === 'dispatch' && [a.agentId, a.round])).toEqual([
+      [PEER, secondReview.round],
+      [THIRD, secondReview.round],
+    ]);
+    s = settle(settle(r.next, PEER, approve), THIRD, approve);
+    const v2 = s.plans.find((p) => p.version === 2)!;
+    expect(step(s).actions).toEqual([
+      { type: 'pin_plan', planId: v2.id },
+      { type: 'transition', from: 'plan_review', to: 'build', cycle: 0, round: 0, cause: { settled: 'plan_review', plan: 2 } },
+    ]);
+  });
+
+  it('starts the revision above every round used, even after the lead was asked again in the first round', () => {
+    let s = step(workshop({ phase: 'plan' })).next;
+    s = step(settle(s, LEAD, { status: 'no_report' })).next; // asked again at round 1
+    s = step(settle(s, LEAD, reported({ summary: 'v1' }))).next; // record v1
+    s = step(s).next; // to plan review
+    s = step(s).next; // reviewers dispatched
+    expect(Math.max(...s.dispatches.map((d) => d.round))).toBe(1);
+    let r = step(settle(settle(s, PEER, object('No.')), THIRD, approve));
+    const revision = r.actions[0] as Extract<Action, { type: 'transition' }>;
+    expect(revision.round).toBe(2);
+    r = step(r.next);
+    // A plan dispatch at round 1 already exists; the revision's must not reuse its key.
+    expect(r.actions).toEqual([expect.objectContaining({ type: 'dispatch', purpose: 'plan', round: 2 })]);
+  });
+
+  /** The revised plan, objected to again. */
+  function disputed(): WorkshopState {
+    let s = step(settle(settle(inReview(), PEER, object('Split the API out.')), THIRD, approve)).next; // to plan
+    s = step(s).next; // lead dispatched
+    s = step(settle(s, LEAD, reported({ summary: 'v2' }))).next; // record v2
+    s = step(s).next; // to plan review
+    s = step(s).next; // reviewers dispatched
+    return settle(settle(s, PEER, approve), THIRD, object('Still too big.'));
+  }
+
+  it('puts a plan still objected to after its revision to a person', () => {
+    const r = step(disputed());
+    const v2 = r.next.plans.find((p) => p.version === 2)!;
+    expect(r.actions).toEqual([
+      {
+        type: 'open_request',
+        kind: 'plan_dispute',
+        dedupeKey: planDisputeKey(0),
+        payload: { cycle: 0, planId: v2.id, version: 2 },
+        choices: ['proceed', 'stop'],
+      },
+    ]);
+    expect(decide(r.next, settings)).toEqual([]);
+
+    const proceed = step(answer(r.next, planDisputeKey(0), 'proceed'));
+    expect(proceed.actions).toMatchObject([
+      { type: 'pin_plan', planId: v2.id },
+      { type: 'transition', to: 'build', cause: { dispute: r.next.requests[0]!.id, plan: 2 } },
+    ]);
+    expect(step(answer(r.next, planDisputeKey(0), 'stop')).actions).toEqual([
+      { type: 'stop', reason: 'Stopped over a disputed plan' },
+    ]);
+  });
+
+  it('asks a lead with no acceptable plan once more, then degrades the plan to one package', () => {
+    let s = step(workshop({ phase: 'plan' })).next;
+    let r = step(settle(s, LEAD, { status: 'no_report' }));
+    expect(r.actions).toEqual([expect.objectContaining({ type: 'dispatch', purpose: 'plan', agentId: LEAD, round: 1 })]);
+    s = settle(r.next, LEAD, { status: 'no_report' });
+    r = step(s);
+    expect(r.actions).toEqual([{ type: 'record_plan', version: 1, round: 0, source: 'degraded', dispatchId: null }]);
+    expect(r.actions.some((a) => a.type === 'open_request')).toBe(false);
+    // The degraded plan is reviewed like any other.
+    expect(step(r.next).actions).toMatchObject([{ type: 'transition', to: 'plan_review', cause: { source: 'degraded' } }]);
+  });
+
+  it('puts the plan to a person when the lead gives no revision', () => {
+    let s = step(settle(settle(inReview(), PEER, object('Split the API out.')), THIRD, approve)).next; // to plan
+    s = step(s).next; // lead dispatched
+    s = step(settle(s, LEAD, { status: 'no_report' })).next; // asked again
+    const r = step(settle(s, LEAD, { status: 'no_report' }));
+    const v1 = r.next.plans.find((p) => p.version === 1)!;
+    expect(r.actions).toEqual([
+      expect.objectContaining({ type: 'open_request', kind: 'plan_dispute', payload: { cycle: 0, planId: v1.id, version: 1 } }),
+    ]);
+    expect(step(answer(r.next, planDisputeKey(0), 'proceed')).actions).toMatchObject([
+      { type: 'pin_plan', planId: v1.id },
+      { type: 'transition', from: 'plan', to: 'build' },
+    ]);
+  });
+
+  it('treats a lead whose plan run failed as a failed member', () => {
+    const s = step(workshop({ phase: 'plan' })).next;
+    expect(step(settle(s, LEAD, { status: 'failed' })).actions).toEqual([
+      expect.objectContaining({ type: 'open_request', kind: 'member_failed', choices: ['retry', 'stop'] }),
+    ]);
+  });
+
+  it('does not pin twice', () => {
+    const s = { ...settle(settle(inReview(), PEER, approve), THIRD, approve), planPinned: true };
+    expect(decide(s, settings)).toEqual([expect.objectContaining({ type: 'transition', to: 'build' })]);
   });
 });
 

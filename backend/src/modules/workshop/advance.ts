@@ -3,6 +3,7 @@ import path from 'node:path';
 import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Tx } from '../../db/client';
+import { canonicalJson } from '../../lib/canonical-json';
 import {
   agents,
   dispatches,
@@ -20,6 +21,7 @@ import { workspaceBranchName, workspaceLeaf } from '../code-workspaces/branch-na
 import { findRepository } from '../code-workspaces/workspace.service';
 import { crashPoint } from '../ownership/crash-points';
 import { storage } from '../../storage/layout';
+import { pinPlan, recordPlan } from './plans';
 import { requestPlatformOp } from './platform-ops';
 import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 import { decide, type Action, type EngineSettings } from './engine';
@@ -179,15 +181,6 @@ async function openEngineRequest(
   });
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** Freezes what the workshop works from; the base commit is resolved by the caller, outside the transaction. */
 export async function freezeSnapshot(tx: Tx, task: Task, base: { ref: string | null; commit: string | null }): Promise<void> {
   const roster = await liveRoster(tx, task.id);
@@ -308,6 +301,12 @@ async function applyAction(tx: Tx, task: Task, action: Action, queued: Run[]): P
         .update(humanRequests)
         .set({ status: 'expired' })
         .where(and(eq(humanRequests.id, action.requestId), eq(humanRequests.status, 'open')));
+      return;
+    case 'record_plan':
+      await recordPlan(tx, task, action);
+      return;
+    case 'pin_plan':
+      await pinPlan(tx, task, action.planId);
       return;
     case 'skip_member':
       await tx

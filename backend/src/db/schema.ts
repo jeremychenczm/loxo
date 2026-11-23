@@ -587,6 +587,64 @@ export const phaseTransitions = pgTable(
 
 export type PhaseTransition = typeof phaseTransitions.$inferSelect;
 
+/** lead: the lead's report; degraded: one package for the lead, after the lead gave no acceptable plan. */
+export type PlanSource = 'lead' | 'degraded';
+
+/**
+ * Plan versions within a cycle: the first, and at most one revision. The
+ * content is the normalized plan report; hash is over its canonical JSON, and
+ * the version that goes ahead is pinned on the task (tasks.plan_hash).
+ */
+export const plans = pgTable(
+  'plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    cycle: integer('cycle').notNull(),
+    version: integer('version').notNull(),
+    /** The task round when the plan was recorded: the plan-phase instance it came out of. */
+    round: integer('round').notNull(),
+    source: text('source').$type<PlanSource>().notNull(),
+    dispatchId: uuid('dispatch_id').references(() => dispatches.id, { onDelete: 'set null' }),
+    content: jsonb('content').$type<Record<string, unknown>>().notNull(),
+    hash: text('hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('plans_version').on(t.taskId, t.cycle, t.version)]
+);
+
+export type Plan = typeof plans.$inferSelect;
+
+export type WorkPackageStatus = 'pending';
+
+/** The packages of the pinned plan, one row each; keys are unique within a task. */
+export const workPackages = pgTable(
+  'work_packages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    title: text('title').notNull(),
+    ownerAgentId: uuid('owner_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    area: text('area').notNull(),
+    dependsOn: jsonb('depends_on').$type<string[]>().notNull().default([]),
+    acceptance: jsonb('acceptance').$type<string[]>().notNull().default([]),
+    status: text('status').$type<WorkPackageStatus>().notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('work_packages_key').on(t.taskId, t.key)]
+);
+
+export type WorkPackage = typeof workPackages.$inferSelect;
+
 /** Tools whose effect is final for a run: they take effect at most once per run, whatever the arguments. */
 export const TERMINAL_CONTROL_PLANE_TOOLS = [
   'submit_result',
@@ -897,7 +955,8 @@ export type HumanRequestKind =
   | 'budget'
   | 'base_drift'
   | 'member_failed'
-  | 'engine_error';
+  | 'engine_error'
+  | 'plan_dispute';
 
 export type HumanRequestStatus = 'open' | 'answered' | 'expired' | 'cancelled';
 
