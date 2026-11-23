@@ -1,10 +1,24 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { and, asc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import { config } from '../src/config';
-import { agents, dispatches, humanRequests, phaseTransitions, runs, tasks, turns, type Agent, type Dispatch } from '../src/db/schema';
+import {
+  agents,
+  dispatchReports,
+  dispatches,
+  humanRequests,
+  phaseTransitions,
+  platformOps,
+  runs,
+  tasks,
+  turns,
+  workspaces,
+  type Agent,
+  type Dispatch,
+} from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { getTaskSnapshot, submitDispatchReport, type RunToolContext } from '../src/modules/control-plane/tools';
 import { setTaskHostFactoryForTests, type HostRequest } from '../src/modules/runs/task-run';
@@ -12,7 +26,7 @@ import { drainRunsForTests } from '../src/modules/runs/wake';
 import { advanceTask, workshopsToAdvance } from '../src/modules/workshop/advance';
 import { questionsKey } from '../src/modules/workshop/engine';
 import { setPlatformRetryBackoffForTests } from '../src/modules/workshop/platform-ops';
-import { initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
+import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 import { scriptedHost, type ScriptedReply, type ScriptedTurn } from './support/scripted-host';
 
 /**
@@ -286,5 +300,62 @@ describe('explore questions', () => {
     expect(await workshopsToAdvance()).not.toContain(taskId);
     const late = await request(app).post(`/api/human-requests/${asked.id}/answer`).set(auth()).send({ choice: 'Too late' });
     expect(late.status).toBe(409);
+  });
+});
+
+describe('a read-only phase that changes files', () => {
+  it('fails the member, keeps its report aside, puts the worktree back, and asks a person', { timeout: T }, async () => {
+    members.set('Writer A', async ({ turn, dispatch, ctx }) => {
+      if (dispatch.round === 0) {
+        fs.writeFileSync(path.join(turn.workspace, 'README.md'), '# changed while exploring\n');
+        await submitDispatchReport(ctx, 'submit_exploration', { summary: 'WRITER-REPORT', questions: ['Not asked?'] });
+        return { text: 'Edited and reported.' };
+      }
+      await submitDispatchReport(ctx, 'submit_exploration', { summary: 'Read only this time.' });
+      return { text: 'Reported.' };
+    });
+    members.set('Reader B', async ({ ctx }) => {
+      await submitDispatchReport(ctx, 'submit_exploration', { summary: 'Read the handler.' });
+      return { text: 'Reported.' };
+    });
+    const { taskId, ids } = await newWorkshop(['Writer A', 'Reader B'], { repository: true });
+    await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
+    await drainRunsForTests();
+
+    const rows = await exploreRuns(taskId);
+    const writer = rows.find((r) => r.run.agentName === 'Writer A')!;
+    expect(writer.dispatch.status).toBe('failed');
+    expect(rows.find((r) => r.run.agentName === 'Reader B')!.dispatch.status).toBe('reported');
+    // The report is kept on record but does not count.
+    const kept = await db.select().from(dispatchReports).where(eq(dispatchReports.dispatchId, writer.dispatch.id));
+    expect(kept.map((r) => r.report.summary)).toEqual(['WRITER-REPORT']);
+
+    const [reset] = await db
+      .select()
+      .from(platformOps)
+      .where(and(eq(platformOps.taskId, taskId), eq(platformOps.kind, 'reset_to_before')));
+    expect(reset).toMatchObject({ status: 'done', opKey: `reset:${writer.run.id}`, workspaceId: writer.run.workspaceId });
+    const [worktree] = await db.select().from(workspaces).where(eq(workspaces.id, writer.run.workspaceId!));
+    expect(fs.readFileSync(path.join(worktree!.worktreePath, 'README.md'), 'utf8')).toBe('# fixture\n');
+    expect(await git(worktree!.worktreePath, 'status', '--porcelain')).toBe('');
+
+    const asked = (await db.select().from(humanRequests).where(eq(humanRequests.taskId, taskId))).filter(
+      (r) => r.status === 'open'
+    );
+    expect(asked.map((r) => [r.kind, r.payload.agentId, r.payload.outcome])).toEqual([['member_failed', ids[0], 'failed']]);
+    expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.phase).toBe('explore');
+
+    // Asked to try again, the member explores without writing, and the workshop goes on; its questions were never asked.
+    const retried = await request(app).post(`/api/human-requests/${asked[0]!.id}/answer`).set(auth()).send({ choice: 'retry' });
+    expect(retried.status).toBe(200);
+    await drainRunsForTests();
+    expect((await exploreRuns(taskId)).map((r) => [r.run.agentName, r.dispatch.round, r.dispatch.status])).toEqual([
+      ['Writer A', 0, 'failed'],
+      ['Reader B', 0, 'reported'],
+      ['Writer A', 1, 'reported'],
+    ]);
+    const opened = await db.select().from(humanRequests).where(eq(humanRequests.taskId, taskId));
+    expect(opened.some((r) => r.kind === 'input')).toBe(false);
+    expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.phase).not.toBe('explore');
   });
 });

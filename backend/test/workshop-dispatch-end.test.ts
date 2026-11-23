@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import {
   agents,
+  changeSnapshots,
   dispatchReports,
   dispatches,
   humanRequests,
@@ -276,6 +277,29 @@ describe('handoff', () => {
     expect(followUp).toBeUndefined();
     // Explore is read-only: a stopped dispatch counts as skipped.
     expect((await dispatchFor(task.id, lead!)).status).toBe('skipped');
+  });
+
+  it('fails a read-only dispatch whose handed-off run changed files, though the follow-up reports', async () => {
+    const { task, agents: [lead] } = await startedWorkshop(['Edit A', 'Edit B']);
+    const ctx = await admitted(task.id, lead!);
+    // The capture the handed-off run leaves behind found tracked files changed.
+    await db.insert(changeSnapshots).values({
+      runId: ctx.run.id,
+      epoch: ctx.epoch,
+      beforeHead: 'before',
+      afterHead: 'before',
+      changeFingerprint: 'edited',
+      policyViolation: true,
+    });
+    const followUp = await handOffRun(ownerOf(ctx.run), { status: 'cancelled' });
+    const admission = await admitRun(followUp!.id, { instance: OWNER });
+    const next: RunToolContext = { ...ctx, run: admission!.run, epoch: admission!.run.ownerEpoch };
+    await submitDispatchReport(next, 'submit_exploration', { summary: 'Reported after the edit' });
+    await db.transaction(async (tx) => {
+      const row = await settleRun(ownerOf(next.run), { status: 'succeeded' }, 'idle', tx);
+      await noteRunEnded(tx, row!.id, { kind: 'settled', status: 'succeeded' });
+    });
+    expect((await dispatchFor(task.id, lead!)).status).toBe('failed');
   });
 });
 
