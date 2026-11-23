@@ -66,12 +66,26 @@ const SCENARIO = {
     },
   ],
 };
+/** Workshop members explore and report; Plan takes no report from agents yet, so the lead is asked twice there. */
+const WORKSHOP_SCENARIO = {
+  turns: [
+    {
+      steps: [
+        { sleep: 1_000 },
+        { mcp: { tool: 'submit_exploration', args: { summary: 'Explored' } } },
+        { sleep: 2_000 },
+        { say: 'Done.' },
+        { sleep: 1_000 },
+      ],
+    },
+  ],
+};
 const SCENARIO_MS = 4_000;
 // Long enough for every lease the frozen instance holds to expire and be taken over.
 const STALL_MS = LEASE_TTL_MS * 3;
 
 const WORKSHOP_MEMBERS = 2;
-// A member ending its turn without a report is asked once more.
+// Per workshop: one exploration each, then two plan rounds for the lead; four runs over two members.
 const DISPATCHES_PER_MEMBER = 2;
 
 export interface TwoInstanceResult {
@@ -108,7 +122,7 @@ export async function runTwoInstances(options: TwoInstanceOptions): Promise<TwoI
   const logs = path.join(dir, 'logs');
   for (const sub of [storage, witness, platformWitness, logs]) fs.mkdirSync(sub, { recursive: true });
   const agentScript = path.join(dir, 'agent.mjs');
-  writeAgentScript(agentScript, SCENARIO, witness, { shim: false });
+  writeAgentScript(agentScript, options.workshop ? WORKSHOP_SCENARIO : SCENARIO, witness, { shim: false });
   const crashLog = path.join(dir, 'faults.jsonl');
 
   const workshop = options.workshop === true;

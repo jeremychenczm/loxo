@@ -75,19 +75,20 @@ export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
     durationMs: DURATION_MS,
     scenario: () => turn([{ sleep: 3_000 }, { say: 'Looked around; nothing to edit.' }, { sleep: 3_000 }]),
   },
-  // Members end their turns without a report, so each is asked once more and then marked failed:
-  // two explore rounds back to back, after the platform runs.
-  // TODO(chaos): report through the phase tools once the control plane offers them to agents.
+  // After the platform runs, both members explore at once and report; Plan takes no report from
+  // agents yet, so the lead is asked once more and then marked failed: three agent rounds in a row.
   workshop: {
     repository: true,
     members: 2,
-    durationMs: 2 * DURATION_MS + 2_000,
-    scenario: () =>
+    durationMs: 3 * DURATION_MS + 2_000,
+    scenario: (tag) =>
       turn([
         { say: 'Looking around the repository. ' },
+        { sleep: 1_500 },
+        { mcp: { tool: 'submit_exploration', args: { summary: `Exploration ${tag}` } } },
         { sleep: 3_000 },
-        { say: 'Nothing to report yet.' },
-        { sleep: 3_000 },
+        { say: 'Reported.' },
+        { sleep: 1_500 },
       ]),
   },
   'edit-dirty': {
