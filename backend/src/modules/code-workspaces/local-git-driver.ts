@@ -43,6 +43,7 @@ import {
   type TreeState,
   type WorkingTreeSnapshot,
   type WorkspaceObservation,
+  type GitIdentity,
 } from './workspace.types';
 import { childEnv } from '../../lib/child-env';
 
@@ -536,6 +537,68 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
       abortedMerge = true;
     }
     return { removedLock, abortedMerge };
+  }
+
+  /**
+   * Puts a clean worktree on a package branch, creating the branch at
+   * `startCommit` first. A branch that already exists must point exactly at
+   * `startCommit`, so a redo after a crash finds its own work and anything
+   * else is refused.
+   */
+  async checkoutPackageBranch(input: { worktreePath: string; branch: string; startCommit: string }): Promise<{ head: string }> {
+    const branch = assertSafeRefName(input.branch);
+    const start = assertCommitId(input.startCommit);
+    const existing = await tryGit(input.worktreePath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+    if (existing === null) await runGit(input.worktreePath, ['branch', branch, start]);
+    else if (line(existing) !== start) {
+      throw new GitDriverError('branch_elsewhere', `Branch ${branch} already points at ${line(existing)}, not ${start}`);
+    }
+    const current = await tryGit(input.worktreePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    if (current === null || line(current) !== branch) {
+      if (text(await runGit(input.worktreePath, ['status', '--porcelain'])).trim()) {
+        throw new GitDriverError('dirty_workspace', `The worktree has uncommitted changes; cannot switch to ${branch}`);
+      }
+      await runGit(input.worktreePath, ['checkout', '--quiet', branch]);
+    }
+    return { head: line(await runGit(input.worktreePath, ['rev-parse', 'HEAD'])) };
+  }
+
+  /** Where a worktree stands against its package: its branch, HEAD, whether HEAD grew from `startCommit`, and whether it is clean. */
+  async packageHead(worktreePath: string, startCommit: string): Promise<{ branch: string | null; head: string; descends: boolean; clean: boolean }> {
+    const current = await tryGit(worktreePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    const head = line(await runGit(worktreePath, ['rev-parse', 'HEAD']));
+    return {
+      branch: current === null ? null : line(current),
+      head,
+      descends: await isAncestor(worktreePath, assertCommitId(startCommit), head),
+      clean: !text(await runGit(worktreePath, ['status', '--porcelain'])).trim(),
+    };
+  }
+
+  /**
+   * Merges a package branch into the worktree's current branch with a merge
+   * commit under `identity`. A branch already merged is left alone; a
+   * conflict is aborted and reported, leaving the worktree as it was.
+   */
+  async mergePackage(input: { worktreePath: string; branch: string; message: string; identity: GitIdentity }): Promise<{ result: 'merged' | 'already_merged' | 'conflicted'; head: string }> {
+    const branch = assertSafeRefName(input.branch);
+    const tip = line(await runGit(input.worktreePath, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]));
+    const headNow = () => runGit(input.worktreePath, ['rev-parse', 'HEAD']).then(line);
+    if (await isAncestor(input.worktreePath, tip, 'HEAD')) return { result: 'already_merged', head: await headNow() };
+    try {
+      await runGit(input.worktreePath, ['-c', 'commit.gpgsign=false', 'merge', '--no-ff', '--no-verify', '-m', input.message, branch], {
+        env: {
+          GIT_AUTHOR_NAME: input.identity.name,
+          GIT_AUTHOR_EMAIL: input.identity.email,
+          GIT_COMMITTER_NAME: input.identity.name,
+          GIT_COMMITTER_EMAIL: input.identity.email,
+        },
+      });
+    } catch {
+      await tryGit(input.worktreePath, ['merge', '--abort']);
+      return { result: 'conflicted', head: await headNow() };
+    }
+    return { result: 'merged', head: await headNow() };
   }
 
   /** The installed git version, or null when git cannot be run. */

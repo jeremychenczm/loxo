@@ -1,7 +1,15 @@
 import path from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
-import { runs, type PlatformOp, type Workspace, type WorkspaceStatus } from '../../db/schema';
+import {
+  runs,
+  workPackages,
+  type PlatformOp,
+  type WorkPackage,
+  type WorkPackageStatus,
+  type Workspace,
+  type WorkspaceStatus,
+} from '../../db/schema';
 import { localGitDriver } from '../code-workspaces/local-git-driver';
 import { findRepository, getWorkspace } from '../code-workspaces/workspace.service';
 import type { PlatformOpHandler } from './platform-ops';
@@ -13,13 +21,27 @@ import type { PlatformOpHandler } from './platform-ops';
  * fenced transaction that settles the run.
  */
 
+/** Who platform commits are made as; never the repository's own git config. */
+export const PLATFORM_IDENTITY = { name: 'Loxo', email: 'platform@loxo.local' } as const;
+
 /** What an operation saw of its worktree, applied to the row when its run settles. */
 export interface WorktreeObservation {
   id: string;
   status: WorkspaceStatus;
   headCommit: string | null;
   worktreePath?: string;
+  /** Set when the operation moved the worktree to another branch. */
+  currentBranch?: string | null;
   lastError: string | null;
+}
+
+/** What a package operation established, applied to the work package row when its run settles. */
+export interface PackageObservation {
+  key: string;
+  status: WorkPackageStatus;
+  branch?: string;
+  startCommit?: string;
+  headCommit?: string;
 }
 
 /** Operations allowed on a quarantined worktree: they exist to release one. */
@@ -100,8 +122,73 @@ const cleanup: PlatformOpHandler = async (op) => {
   return { worktree };
 };
 
+async function packageOf(op: PlatformOp): Promise<WorkPackage> {
+  const key = typeof op.args.packageKey === 'string' ? op.args.packageKey : '';
+  const [pkg] = await db.select().from(workPackages).where(and(eq(workPackages.taskId, op.taskId), eq(workPackages.key, key)));
+  if (!pkg) throw new Error(`Package "${key}" does not exist`);
+  return pkg;
+}
+
+/** Creates the package branch at the start the engine chose and checks it out in the owner's worktree. */
+const branchPackage: PlatformOpHandler = async (op) => {
+  const { workspace } = await worktreeOf(op);
+  const pkg = await packageOf(op);
+  const branch = String(op.args.branch);
+  const startCommit = String(op.args.startCommit);
+  const { head } = await localGitDriver.checkoutPackageBranch({ worktreePath: workspace.worktreePath, branch, startCommit });
+  const worktree: WorktreeObservation = { id: workspace.id, status: 'ready', headCommit: head, currentBranch: branch, lastError: null };
+  const observed: PackageObservation = { key: pkg.key, status: 'branched', branch, startCommit };
+  return { worktree, package: observed };
+};
+
+/**
+ * Commits what the owner built onto the package branch, authored as the
+ * owner via the platform. The build must have left the worktree on that
+ * branch, grown from its start; one already committed is taken as it stands.
+ */
+const checkpoint: PlatformOpHandler = async (op) => {
+  const { workspace } = await worktreeOf(op);
+  const pkg = await packageOf(op);
+  if (!pkg.branch || !pkg.startCommit) throw new Error(`Package "${pkg.key}" has no branch yet`);
+  const at = await localGitDriver.packageHead(workspace.worktreePath, pkg.startCommit);
+  if (at.branch !== pkg.branch || !at.descends) {
+    throw new Error(`The build left the worktree off ${pkg.branch} (on ${at.branch ?? 'a detached HEAD'})`);
+  }
+  const author = typeof op.args.author === 'string' && op.args.author ? op.args.author : 'A member';
+  const { commit } = await localGitDriver.commitAs({
+    worktreePath: workspace.worktreePath,
+    message: `Package ${pkg.key}: ${pkg.title}`,
+    author: { name: `${author} via Loxo`, email: PLATFORM_IDENTITY.email },
+    committer: PLATFORM_IDENTITY,
+  });
+  const head = commit ?? at.head;
+  const worktree: WorktreeObservation = { id: workspace.id, status: 'ready', headCommit: head, lastError: null };
+  const observed: PackageObservation = { key: pkg.key, status: 'built', headCommit: head };
+  return { worktree, package: observed };
+};
+
+/** Merges a built package into the integration branch with a merge commit; a package already merged is left alone. */
+const integrate: PlatformOpHandler = async (op) => {
+  const { workspace } = await worktreeOf(op);
+  const pkg = await packageOf(op);
+  if (!pkg.branch) throw new Error(`Package "${pkg.key}" has no branch yet`);
+  const merged = await localGitDriver.mergePackage({
+    worktreePath: workspace.worktreePath,
+    branch: pkg.branch,
+    message: `Integrate package ${pkg.key}: ${pkg.title}`,
+    identity: PLATFORM_IDENTITY,
+  });
+  if (merged.result === 'conflicted') throw new Error(`Package "${pkg.key}" conflicts with the integration branch`);
+  const worktree: WorktreeObservation = { id: workspace.id, status: 'ready', headCommit: merged.head, lastError: null };
+  const observed: PackageObservation = { key: pkg.key, status: 'integrated' };
+  return { worktree, package: observed };
+};
+
 export const BUILT_IN_PLATFORM_OPS: Readonly<Record<string, PlatformOpHandler>> = {
   prepare_worktree: prepareWorktree,
+  branch_package: branchPackage,
+  checkpoint,
+  integrate,
   reset_to_before: resetToBefore,
   reconcile_worktree: reconcileWorktree,
   cleanup,

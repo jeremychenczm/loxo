@@ -8,6 +8,7 @@ export type GitDriverErrorCode =
   | 'dirty_workspace'
   | 'git_identity_missing'
   | 'merge_precondition_failed'
+  | 'branch_elsewhere'
   | 'output_overflow'
   | 'git_failed';
 

@@ -4,10 +4,19 @@ import type { Executor, Tx } from '../../db/client';
 import { db } from '../../db/client';
 import fs from 'node:fs';
 import path from 'node:path';
-import { humanRequests, platformOps, tasks, workspaces, type PlatformOp, type Run, type WorkshopPhase } from '../../db/schema';
+import {
+  humanRequests,
+  platformOps,
+  tasks,
+  workPackages,
+  workspaces,
+  type PlatformOp,
+  type Run,
+  type WorkshopPhase,
+} from '../../db/schema';
 import { localGitDriver } from '../code-workspaces/local-git-driver';
 import { getWorkspace } from '../code-workspaces/workspace.service';
-import { BUILT_IN_PLATFORM_OPS, type WorktreeObservation } from './platform-op-kinds';
+import { BUILT_IN_PLATFORM_OPS, type PackageObservation, type WorktreeObservation } from './platform-op-kinds';
 import type { RunLease } from '../ownership/lease';
 import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 
@@ -22,7 +31,7 @@ import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 export const PLATFORM_AGENT_NAME = 'Loxo platform';
 
 /** Commits the platform makes itself carry this identity, never the repository's git config. */
-export const PLATFORM_IDENTITY = { name: 'Loxo', email: 'platform@loxo.local' } as const;
+export { PLATFORM_IDENTITY } from './platform-op-kinds';
 
 /** Integration relies on `git merge-tree --write-tree`, added in git 2.38. */
 const MIN_GIT: [number, number] = [2, 38];
@@ -226,6 +235,8 @@ export async function notePlatformRunEnded(
       .where(eq(platformOps.id, op.id));
     const observed = ending.result.worktree as WorktreeObservation | undefined;
     if (observed) await applyWorktreeObservation(tx, observed);
+    const pkg = ending.result.package as PackageObservation | undefined;
+    if (pkg) await applyPackageObservation(tx, op.taskId, pkg);
     return { taskId: op.taskId, retry: null };
   }
   if (run.attempt < config.runMaxAttempts) {
@@ -257,10 +268,25 @@ async function applyWorktreeObservation(tx: Tx, observed: WorktreeObservation): 
       headCommit: observed.headCommit,
       lastError: observed.lastError,
       ...(observed.worktreePath ? { worktreePath: observed.worktreePath } : {}),
+      ...(observed.currentBranch !== undefined ? { currentBranch: observed.currentBranch } : {}),
       ...(observed.status === 'abandoned' ? { abandonedAt: new Date() } : {}),
       updatedAt: new Date(),
     })
     .where(eq(workspaces.id, observed.id));
+}
+
+/** Writes what a package operation established: its branch and start, its head, and how far it has come. */
+async function applyPackageObservation(tx: Tx, taskId: string, observed: PackageObservation): Promise<void> {
+  await tx
+    .update(workPackages)
+    .set({
+      status: observed.status,
+      ...(observed.branch !== undefined ? { branch: observed.branch } : {}),
+      ...(observed.startCommit !== undefined ? { startCommit: observed.startCommit } : {}),
+      ...(observed.headCommit !== undefined ? { headCommit: observed.headCommit } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(workPackages.taskId, taskId), eq(workPackages.key, observed.key)));
 }
 
 const OP_REQUEST_PREFIX = 'platform_op:';

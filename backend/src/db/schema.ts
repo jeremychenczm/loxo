@@ -617,7 +617,8 @@ export const plans = pgTable(
 
 export type Plan = typeof plans.$inferSelect;
 
-export type WorkPackageStatus = 'pending';
+/** pending until its branch exists; branched while it is built; built once checkpointed; integrated once merged. */
+export type WorkPackageStatus = 'pending' | 'branched' | 'built' | 'integrated';
 
 /** The packages of the pinned plan, one row each; keys are unique within a task. */
 export const workPackages = pgTable(
@@ -637,6 +638,13 @@ export const workPackages = pgTable(
     dependsOn: jsonb('depends_on').$type<string[]>().notNull().default([]),
     acceptance: jsonb('acceptance').$type<string[]>().notNull().default([]),
     status: text('status').$type<WorkPackageStatus>().notNull().default('pending'),
+    /** Starts at 0; a reassignment continues on a new branch and bumps it. */
+    attempt: integer('attempt').notNull().default(0),
+    branch: text('branch'),
+    /** Where the branch started: the base for a package without dependencies, else the integration head once they were in. */
+    startCommit: text('start_commit'),
+    /** The branch head after the last checkpoint. */
+    headCommit: text('head_commit'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

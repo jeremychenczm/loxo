@@ -81,6 +81,11 @@ export function workspaceBranchName(taskNumber: number, member: string | null): 
   return assertSafeRefName(`${MANAGED_BRANCH_PREFIX}/t${taskNumber}/${member ?? 'integration'}`);
 }
 
+/** `loxo/t<n>/p/<key>` for a work package; a reassigned package continues on `…-r<attempt>`. */
+export function packageBranchName(taskNumber: number, key: string, attempt = 0): string {
+  return assertSafeRefName(`${MANAGED_BRANCH_PREFIX}/t${taskNumber}/p/${key}${attempt > 0 ? `-r${attempt}` : ''}`);
+}
+
 /** Worktree leaf under the managed root: `<taskId>/integration` or `<taskId>/<kind>-<member>`. */
 export function workspaceLeaf(taskId: string, kind: string, member: string | null): string {
   return kind === 'integration' || !member ? `${taskId}/integration` : `${taskId}/${kind}-${member}`;
