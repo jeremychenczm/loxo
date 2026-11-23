@@ -1,5 +1,6 @@
 import type { Agent, WorkshopPhase } from '../../db/schema';
 import { describeTool, type ControlPlaneTool } from '../control-plane/names';
+import type { PlanMaterial, WorkshopMaterials } from '../workshop/materials';
 import type { WorkshopRunView } from '../workshop/run-view';
 
 const MAX_PROMPT_CHARS = 24_000;
@@ -148,11 +149,71 @@ const PHASE_GUIDANCE: Partial<Record<WorkshopPhase, string[]>> = {
     'Read the code the task touches: where the change would go, what it depends on, what could break, and how it is tested. Do not change any files.',
     'Finish by calling submit_exploration once: a summary the lead can plan from, and only the questions a person must answer before the work can be planned.',
   ],
+  plan: [
+    'Plan phase. You are the lead: turn the explorations below into a plan of work packages.',
+    'Each package is built by its owner in their own worktree, at the same time as the packages that do not depend on it, then merged in dependency order. Give each package an area of the code of its own so packages built at the same time do not collide, and make a package depend on another only when it needs that work first.',
+    'Finish by calling submit_plan once. A plan that breaks the rules is refused with the reasons; fix it and call again.',
+  ],
+  plan_review: [
+    "Plan review phase. Review the lead's plan below on your own; you will not see the other members' reviews, and they will not see yours.",
+    'Check that the packages cover the brief, that parallel packages do not touch the same code, that the dependencies are right, and that each acceptance criterion can be checked. Approve it, or object with comments saying what to change.',
+    'Finish by calling submit_plan_review once.',
+  ],
   build: [
     'Build phase. Make the change in your worktree. No placeholders and no descriptions of work you did not do.',
     'Finish by calling submit_result with a concise work report that names the files you created or changed.',
   ],
 };
+
+/** Longest stretch of phase materials a prompt carries; get_task has them in full. */
+const MAX_MATERIALS_CHARS = 12_000;
+
+function formatPlan(plan: PlanMaterial): string {
+  const degraded = plan.source === 'degraded' ? ' (the lead gave no plan the platform could accept; one package for the whole task)' : '';
+  return [
+    `Plan version ${plan.version}${degraded}:`,
+    `Summary: ${plan.summary}`,
+    'Packages:',
+    ...plan.packages.map((p) => {
+      const after = p.dependsOn.length ? `after ${p.dependsOn.join(', ')}` : 'no dependencies';
+      return `- ${p.key}: ${p.title} (owner ${p.owner}; area ${p.area}; ${after})\n  Acceptance: ${p.acceptance.join('; ')}`;
+    }),
+    `Integration: ${plan.integration}`,
+    `Verification: ${plan.verification}`,
+  ].join('\n');
+}
+
+/** The phase materials as prompt text, cut to length with a pointer to get_task. */
+export function formatMaterials(materials: WorkshopMaterials): string {
+  const parts: string[] = [];
+  if (materials.explorations) {
+    const lines = materials.explorations.map((e) =>
+      [`- ${e.member}: ${e.summary}`, ...e.questions.map((q) => `  Asked a person: ${q}`)].join('\n')
+    );
+    parts.push(['Explorations, one per member:', ...lines].join('\n'));
+  }
+  if (materials.questions) {
+    parts.push(
+      materials.questions.answer !== null
+        ? `A person answered the members' questions:\n${materials.questions.answer}`
+        : "The members' questions got no answer in time; plan without one, and say in the plan what you assumed."
+    );
+  }
+  if (materials.plan) parts.push(formatPlan(materials.plan));
+  if (materials.objections?.length) {
+    const version = materials.plan?.version ?? 1;
+    parts.push(
+      [
+        `The members objected to plan version ${version}. Revise it once, answering each objection; if objections remain, a person decides.`,
+        ...materials.objections.map((o) => `- ${o.member}: ${o.comments}`),
+      ].join('\n')
+    );
+  }
+  const text = sanitizeInjected(parts.join('\n\n'));
+  return text.length > MAX_MATERIALS_CHARS
+    ? `${text.slice(0, MAX_MATERIALS_CHARS)}\n[materials truncated; call get_task for them in full]`
+    : text;
+}
 
 export interface WorkshopTurnContext {
   agent: Pick<Agent, 'name' | 'description'>;
@@ -202,6 +263,7 @@ export function buildWorkshopRunPrompt(input: WorkshopTurnContext): string {
     ].join('\n'),
     guidance.join('\n'),
     retry,
+    formatMaterials(view.materials),
     view.timeline.length > 0
       ? [
           'Task timeline you can see (oldest first):',

@@ -14,6 +14,7 @@ import {
   type Turn,
   type WorkshopPhase,
 } from '../../db/schema';
+import { phaseMaterials, type WorkshopMaterials } from './materials';
 import { agentPhase } from './phases';
 import { snapshotOf } from './state';
 
@@ -38,6 +39,8 @@ export interface WorkshopRunView {
   timeline: Turn[];
   /** The member's own last reply, when its previous round in this phase ended without a report. */
   previousReply: string | null;
+  /** What the phase gives its participants to work from. */
+  materials: WorkshopMaterials;
 }
 
 export async function workshopRunView(run: Pick<Run, 'dispatchId' | 'agentId'>, ex: Executor = db): Promise<WorkshopRunView | null> {
@@ -63,6 +66,7 @@ export async function workshopRunView(run: Pick<Run, 'dispatchId' | 'agentId'>, 
     members: roster.map((agentId) => ({ agentId, name: nameOf.get(agentId) ?? 'a removed agent' })),
     timeline: await visibleTimeline(task, dispatch, ex),
     previousReply: await previousReply(dispatch, ex),
+    materials: await phaseMaterials(dispatch, (id) => (id && nameOf.get(id)) || 'a removed agent', ex),
   };
 }
 

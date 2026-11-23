@@ -15,11 +15,12 @@ import {
   type Dispatch,
 } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { submitDispatchReport, submitResult, type RunToolContext } from '../src/modules/control-plane/tools';
+import { getTaskSnapshot, submitDispatchReport, submitResult, type RunToolContext } from '../src/modules/control-plane/tools';
 import { setTaskHostFactoryForTests, type HostRequest } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { planDisputeKey } from '../src/modules/workshop/engine';
 import { planHash } from '../src/modules/workshop/plans';
+import { formatMaterials } from '../src/modules/runner/turn-context';
 import { sampleReport } from './support/reports';
 import { scriptedHost } from './support/scripted-host';
 
@@ -35,8 +36,10 @@ let token = '';
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
 /** What a member does in plan and plan review, by name; explore and build always report. */
-type Behavior = (turn: { dispatch: Dispatch; ctx: RunToolContext }) => Promise<string | void>;
+type Behavior = (turn: { dispatch: Dispatch; ctx: RunToolContext; prompt: string }) => Promise<string | void>;
 const behaviors = new Map<string, Behavior>();
+/** Questions a member puts in its exploration, by name. */
+const asks = new Map<string, string[]>();
 
 async function turnContext(req: HostRequest): Promise<{ dispatch: Dispatch; ctx: RunToolContext }> {
   const [run] = await db.select().from(runs).where(and(eq(runs.status, 'running'), eq(runs.agentId, req.agent.id)));
@@ -84,10 +87,13 @@ const reviewRounds = async (taskId: string) =>
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
   setTaskHostFactoryForTests((req) =>
-    scriptedHost(async () => {
-      const turn = await turnContext(req);
+    scriptedHost(async ({ prompt }) => {
+      const turn = { ...(await turnContext(req)), prompt };
       const { dispatch, ctx } = turn;
-      if (dispatch.phase === 'explore') await submitDispatchReport(ctx, 'submit_exploration', sampleReport('submit_exploration', ctx));
+      if (dispatch.phase === 'explore') {
+        const questions = asks.get(req.agent.name) ?? [];
+        await submitDispatchReport(ctx, 'submit_exploration', { summary: `Exploration by ${req.agent.name}`, questions });
+      }
       else if (dispatch.phase === 'build') await submitResult(ctx, 'Built.');
       else {
         const text = await behaviors.get(req.agent.name)?.(turn);
@@ -107,6 +113,7 @@ beforeAll(async () => {
 afterEach(async () => {
   await drainRunsForTests();
   behaviors.clear();
+  asks.clear();
 });
 
 afterAll(() => {
@@ -247,5 +254,73 @@ describe('plan and plan review', () => {
     const [only] = await packagesOf(taskId);
     expect(only).toMatchObject({ key: 'main', title: 'Degrade task', ownerAgentId: ids[0] });
     expect(only!.acceptance).toEqual(['The brief is met: Add rate limiting to login.']);
+  });
+});
+
+describe('what plan and plan review work from', () => {
+  it('gives the lead every exploration and the answer, reviewers the plan alone, and a revision the objections', async () => {
+    const { taskId, names } = await newWorkshop('Materials');
+    const [a, b, c] = names as [string, string, string];
+    const seen = new Map<string, string>();
+    asks.set(a, ['Which store backs the limiter?']);
+    behaviors.set(a, async ({ ctx, prompt }) => {
+      const revising = (await plansOf(taskId)).length > 0;
+      seen.set(revising ? 'revision' : 'plan', prompt);
+      if (!revising) seen.set('plan:get_task', JSON.stringify(await getTaskSnapshot(ctx)));
+      await submitDispatchReport(ctx, 'submit_plan', twoPackages(names, { summary: revising ? 'Second plan' : 'First plan' }));
+    });
+    behaviors.set(b, async ({ ctx, prompt }) => {
+      const first = (await plansOf(taskId)).length === 1;
+      if (first) seen.set('review:B', prompt);
+      await submitDispatchReport(ctx, 'submit_plan_review', first ? object('OBJECTION-FROM-B: say where counts live.') : approve);
+    });
+    behaviors.set(c, async ({ ctx, prompt }) => {
+      if ((await plansOf(taskId)).length === 1) seen.set('review:C', prompt);
+      await submitDispatchReport(ctx, 'submit_plan_review', approve);
+    });
+    // One dispatch at a time, so B has reviewed before C's turn is built.
+    await db.update(tasks).set({ parallelism: 1 }).where(eq(tasks.id, taskId));
+    await request(app).post(`/api/tasks/${taskId}/start`).set(auth());
+    await drainRunsForTests();
+    const [asked] = await db.select().from(humanRequests).where(eq(humanRequests.taskId, taskId));
+    await request(app).post(`/api/human-requests/${asked!.id}/answer`).set(auth()).send({ choice: 'ANSWER: use Redis.' });
+    await drainRunsForTests();
+
+    const plan = seen.get('plan')!;
+    for (const name of names) expect(plan).toContain(`- ${name}: Exploration by ${name}`);
+    expect(plan).toContain('Asked a person: Which store backs the limiter?');
+    expect(plan).toContain('ANSWER: use Redis.');
+    expect(plan).toContain('submit_plan');
+    const materials = JSON.parse(seen.get('plan:get_task')!).workshop.materials;
+    expect(materials.explorations).toHaveLength(3);
+    expect(materials.questions).toEqual({
+      asked: [{ member: a, question: 'Which store backs the limiter?' }],
+      answer: 'ANSWER: use Redis.',
+    });
+
+    // Reviewers see the plan with owners by name; C does not see B's objection.
+    for (const key of ['review:B', 'review:C']) {
+      const review = seen.get(key)!;
+      expect(review).toContain('Plan version 1');
+      expect(review).toContain('Summary: First plan');
+      expect(review).toContain(`- ui: Lockout message (owner ${b}; area web/login; after api)`);
+      expect(review).not.toContain('Exploration by');
+    }
+    expect(seen.get('review:C')).not.toContain('OBJECTION-FROM-B');
+
+    // The revision carries the plan as it stood and the objection to it.
+    const revision = seen.get('revision')!;
+    expect(revision).toContain('Summary: First plan');
+    expect(revision).toContain(`The members objected to plan version 1`);
+    expect(revision).toContain(`- ${b}: OBJECTION-FROM-B: say where counts live.`);
+    expect((await taskRow(taskId)).phase).toBe('build');
+  });
+
+  it('cuts long materials in the prompt and points to get_task', () => {
+    const long = 'x'.repeat(20_000);
+    const text = formatMaterials({ explorations: [{ member: 'Ada', summary: long, questions: [] }] });
+    expect(text.length).toBeLessThan(13_000);
+    expect(text.endsWith('[materials truncated; call get_task for them in full]')).toBe(true);
+    expect(formatMaterials({})).toBe('');
   });
 });

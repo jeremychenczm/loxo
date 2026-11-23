@@ -281,7 +281,7 @@ describe('explore questions', () => {
     expect(answered.status).toBe(200);
     await drainRunsForTests();
     expect((await exploreExit(taskId))?.cause).toEqual({ settled: 'explore', questions: asked.id, answered: true });
-    expect(otherPrompts.has('Asking A:plan:0')).toBe(true);
+    expect(otherPrompts.get('Asking A:plan:0')).toContain('Redis; keep the response; no new dependency.');
   });
 
   it('plans without answers once the request runs out of time', { timeout: T }, async () => {
@@ -298,6 +298,7 @@ describe('explore questions', () => {
     expect((await questionsRequest(taskId)).status).toBe('expired');
     expect((await exploreExit(taskId))?.cause).toEqual({ settled: 'explore', questions: asked.id, answered: false });
     expect(await workshopsToAdvance()).not.toContain(taskId);
+    expect(otherPrompts.get('Waiting A:plan:0')).toContain('got no answer in time');
     const late = await request(app).post(`/api/human-requests/${asked.id}/answer`).set(auth()).send({ choice: 'Too late' });
     expect(late.status).toBe(409);
   });

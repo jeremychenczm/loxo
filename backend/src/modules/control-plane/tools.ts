@@ -29,6 +29,7 @@ import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
 import { dispatchOf } from '../workshop/dispatch-info';
 import { agentPhase } from '../workshop/phases';
 import { MAX_EXPLORATION_QUESTIONS, MAX_PACKAGES, parseReport } from '../workshop/reports';
+import type { WorkshopMaterials } from '../workshop/materials';
 import { activeMembers, workshopRunView } from '../workshop/run-view';
 import { describeTool, toolsForRun, type ControlPlaneTool } from './names';
 import { startQueuedRuns } from '../runs/wake';
@@ -222,6 +223,8 @@ export interface WorkshopTaskSnapshot extends TaskSnapshot {
     members: string[];
     /** The tool this run reports with; null when its phase takes no report from it yet. */
     reportTool: string | null;
+    /** In full; the prompt carries them cut to length. */
+    materials: WorkshopMaterials;
   };
 }
 
@@ -242,6 +245,7 @@ export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot
         role: view.role,
         members: view.members.map((m) => m.name),
         reportTool: offered.find((t) => t.startsWith('submit_')) ?? null,
+        materials: view.materials,
       },
       timeline: view.timeline.map((t) => ({
         seq: t.seq,
