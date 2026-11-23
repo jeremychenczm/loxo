@@ -32,6 +32,14 @@ const DURATION_MS = 6_000;
 
 const turn = (steps: Scenario['turns'][number]['steps']): Scenario => ({ turns: [{ steps }] });
 
+/** One package for the lead; the trial names its members "Chaos member 1" (the lead) and up. */
+const chaosPlan = (tag: string) => ({
+  summary: `Plan ${tag}`,
+  packages: [{ key: 'main', title: 'The trial change', owner: 'Chaos member 1', area: 'everything', acceptance: ['It runs'] }],
+  integration: 'One package.',
+  verification: 'The trial checks.',
+});
+
 export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
   read: {
     repository: false,
@@ -75,17 +83,21 @@ export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
     durationMs: DURATION_MS,
     scenario: () => turn([{ sleep: 3_000 }, { say: 'Looked around; nothing to edit.' }, { sleep: 3_000 }]),
   },
-  // After the platform runs, both members explore at once and report; Plan takes no report from
-  // agents yet, so the lead is asked once more and then marked failed: three agent rounds in a row.
+  // After the platform runs: both members explore at once, the lead plans, the other member approves,
+  // and the lead builds; four agent rounds in a row. Each turn calls every report tool, and only its
+  // phase's is offered.
   workshop: {
     repository: true,
     members: 2,
-    durationMs: 3 * DURATION_MS + 2_000,
+    durationMs: 4 * DURATION_MS + 2_000,
     scenario: (tag) =>
       turn([
         { say: 'Looking around the repository. ' },
         { sleep: 1_500 },
         { mcp: { tool: 'submit_exploration', args: { summary: `Exploration ${tag}` } } },
+        { mcp: { tool: 'submit_plan', args: chaosPlan(tag) } },
+        { mcp: { tool: 'submit_plan_review', args: { verdict: 'approve' } } },
+        { mcp: { tool: 'submit_result', args: { summary: `Built ${tag}` } } },
         { sleep: 3_000 },
         { say: 'Reported.' },
         { sleep: 1_500 },

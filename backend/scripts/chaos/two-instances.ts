@@ -66,13 +66,18 @@ const SCENARIO = {
     },
   ],
 };
-/** Workshop members explore and report; Plan takes no report from agents yet, so the lead is asked twice there. */
+/**
+ * Workshop members report in every phase but Plan: the lead differs from race to race, so it cannot
+ * name an owner, and the plan degrades to one package for it after two rounds.
+ */
 const WORKSHOP_SCENARIO = {
   turns: [
     {
       steps: [
         { sleep: 1_000 },
         { mcp: { tool: 'submit_exploration', args: { summary: 'Explored' } } },
+        { mcp: { tool: 'submit_plan_review', args: { verdict: 'approve' } } },
+        { mcp: { tool: 'submit_result', args: { summary: 'Built' } } },
         { sleep: 2_000 },
         { say: 'Done.' },
         { sleep: 1_000 },
@@ -85,8 +90,9 @@ const SCENARIO_MS = 4_000;
 const STALL_MS = LEASE_TTL_MS * 3;
 
 const WORKSHOP_MEMBERS = 2;
-// Per workshop: one exploration each, then two plan rounds for the lead; four runs over two members.
-const DISPATCHES_PER_MEMBER = 2;
+// Per workshop: one exploration each; the lead, who never submits a plan here, is asked twice and the
+// plan degrades to one package; the other member approves it and the lead builds: six runs over two members.
+const DISPATCHES_PER_MEMBER = 3;
 
 export interface TwoInstanceResult {
   fault: TwoInstanceFault;
