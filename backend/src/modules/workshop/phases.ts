@@ -37,7 +37,6 @@ export const PHASES: Record<WorkshopPhase, PhaseSpec> = {
     reportTool: 'submit_plan_review',
   },
   build: { kind: 'agent', purpose: 'build', participants: 'lead', readOnly: false, blind: false, reportTool: 'submit_result' },
-  integrate: { kind: 'platform' },
   check: { kind: 'platform' },
   verify: { kind: 'agent', purpose: 'verify', participants: 'others', readOnly: true, blind: true, reportTool: 'submit_verification' },
   triage: { kind: 'agent', purpose: 'triage', participants: 'lead', readOnly: true, blind: false, reportTool: 'submit_triage' },

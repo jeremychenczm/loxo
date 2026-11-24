@@ -198,7 +198,6 @@ export type WorkshopPhase =
   | 'plan'
   | 'plan_review'
   | 'build'
-  | 'integrate'
   | 'check'
   | 'verify'
   | 'triage'

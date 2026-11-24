@@ -188,7 +188,7 @@ function answer(s: WorkshopState, dedupeKey: string, choice: string): WorkshopSt
 const BASE = 'b'.repeat(40);
 
 function pkg(key: string, ownerAgentId: string, dependsOn: string[] = [], status: WorkPackageStatus = 'pending'): PackageView {
-  return { key, ownerAgentId, dependsOn, status, attempt: 0 };
+  return { key, ownerAgentId, dependsOn, status, attempt: 0, resolves: 0 };
 }
 
 /** Build on a repository, with the plan pinned and the integration branch still at base. */
@@ -206,12 +206,19 @@ function building(packages: PackageView[], overrides: Partial<WorkshopState> = {
 }
 
 /** The platform finishes an operation: its package moves on, and a merge moves the integration head. */
-function opDone(s: WorkshopState, opKey: string, status: WorkPackageStatus, integrationHead?: string): WorkshopState {
+function opDone(
+  s: WorkshopState,
+  opKey: string,
+  status: WorkPackageStatus,
+  integrationHead?: string,
+  patch: Partial<PackageView> = {}
+): WorkshopState {
   expect(s.packageOps[opKey]).toBe('wanted');
   const next = structuredClone(s);
   next.packageOps[opKey] = 'done';
-  const key = opKey.split(':').at(-1);
-  next.packages = next.packages.map((p) => (p.key === key ? { ...p, status } : p));
+  // kind:cycle:attempt:key, then :r<n> once the package has been resolved n times
+  const key = opKey.split(':')[3];
+  next.packages = next.packages.map((p) => (p.key === key ? { ...p, status, ...patch } : p));
   if (integrationHead) next.integrationHead = integrationHead;
   return next;
 }
@@ -339,7 +346,7 @@ describe('workshop engine: build', () => {
         type: 'open_request',
         kind: 'member_failed',
         dedupeKey: key,
-        payload: { phase: 'build', agentId: LEAD, packageKey: 'api', dispatchId: r.next.dispatches[1]!.id, outcome: 'no_report' },
+        payload: { phase: 'build', purpose: 'build', agentId: LEAD, packageKey: 'api', dispatchId: r.next.dispatches[1]!.id, outcome: 'no_report' },
         choices: ['retry', 'stop'],
       },
     ]);
@@ -370,6 +377,130 @@ describe('workshop engine: build', () => {
     const r = step(building([pkg('api', LEAD, [], 'branched')]));
     const s = { ...settlePackage(r.next, 'api', running(1_000)), nowMs: 1_000 + 3_600_001 };
     expect(decide(s, settings)).toEqual([{ type: 'cancel_dispatch', dispatchId: r.next.dispatches[0]!.id, reason: 'timeout' }]);
+  });
+});
+
+const resolveOp = (kind: 'begin_resolve' | 'finish_resolve' | 'integrate', key: string, resolves = 0) => ({
+  type: 'package_op',
+  kind,
+  packageKey: key,
+  opKey: `${kind}:0:0:${key}${resolves > 0 ? `:r${resolves}` : ''}`,
+});
+const resolveOf = (agentId: string, key: string, round = 0) =>
+  expect.objectContaining({ type: 'dispatch', phase: 'build', purpose: 'resolve', agentId, packageKey: key, round, readOnly: false });
+
+/** A conflicted package taken through begin_resolve to a resolving owner. */
+function resolving(s: WorkshopState, key: string, resolves = 0): WorkshopState {
+  const r = step(s);
+  expect(r.actions).toContainEqual(resolveOp('begin_resolve', key, resolves));
+  return opDone(r.next, resolveOp('begin_resolve', key, resolves).opKey, 'resolving');
+}
+
+describe('workshop engine: conflicts', () => {
+  it('has the owner merge the integration head into a conflicted package, resolve it, then integrates it again', () => {
+    const s0 = building([pkg('api', LEAD, [], 'integrated'), pkg('ui', PEER, [], 'conflicted')], { integrationHead: 'i1' });
+    let r = step(s0);
+    expect(r.actions).toEqual([resolveOp('begin_resolve', 'ui')]);
+    // Nothing more until the merge is under way in the owner's worktree.
+    expect(decide(r.next, settings)).toEqual([]);
+
+    let s = opDone(r.next, 'begin_resolve:0:0:ui', 'resolving');
+    r = step(s);
+    expect(r.actions).toEqual([resolveOf(PEER, 'ui')]);
+    expect(r.actions[0]).toMatchObject({ timeoutMs: 3_600_000 });
+    r = step(settlePackage(r.next, 'ui', reported({ summary: 'Kept both changes.' })));
+    expect(r.actions).toEqual([resolveOp('finish_resolve', 'ui')]);
+
+    s = opDone(r.next, 'finish_resolve:0:0:ui', 'built', undefined, { resolves: 1 });
+    r = step(s);
+    expect(r.actions).toEqual([resolveOp('integrate', 'ui', 1)]);
+    s = opDone(r.next, 'integrate:0:0:ui:r1', 'integrated', 'i2');
+    expect(step(s).actions).toEqual([
+      { type: 'transition', from: 'build', to: 'check', cycle: 0, round: 0, cause: { settled: 'build', packages: 2 } },
+    ]);
+  });
+
+  it("resolves before the owner's next package, and waits for a build already in the owner's worktree", () => {
+    // The owner's next package waits for the resolve; once it is committed, both move.
+    let s = resolving(building([pkg('api', LEAD, [], 'conflicted'), pkg('docs', LEAD)], { integrationHead: 'i1' }), 'api');
+    expect(step(s).actions).toEqual([resolveOf(LEAD, 'api')]);
+    s = step(s).next;
+    let r = step(settlePackage(s, 'api', reported()));
+    expect(r.actions).toEqual([resolveOp('finish_resolve', 'api')]);
+    r = step(opDone(r.next, 'finish_resolve:0:0:api', 'built', undefined, { resolves: 1 }));
+    expect(r.actions).toEqual([resolveOp('integrate', 'api', 1), branchOp('docs', BASE)]);
+
+    // Also when the plan lists the owner's next package first.
+    r = step(building([pkg('docs', LEAD), pkg('api', LEAD, [], 'conflicted')], { integrationHead: 'i1' }));
+    expect(r.actions).toEqual([resolveOp('begin_resolve', 'api')]);
+
+    // A package already branched in the owner's worktree is built first; the merge starts after its checkpoint.
+    r = step(building([pkg('api', LEAD, [], 'conflicted'), pkg('docs', LEAD, [], 'branched')], { integrationHead: 'i1' }));
+    expect(r.actions).toEqual([buildOf(LEAD, 'docs')]);
+    r = step(settlePackage(r.next, 'docs', reported()));
+    expect(r.actions).toEqual([checkpointOp('docs')]);
+    r = step(opDone(r.next, 'checkpoint:0:0:docs', 'built'));
+    expect(r.actions).toEqual([resolveOp('begin_resolve', 'api'), integrateOp('docs')]);
+  });
+
+  it('resolves again, in a fresh round, when the package conflicts once more with a moved integration branch', () => {
+    let s = resolving(building([pkg('api', LEAD, [], 'integrated'), pkg('ui', PEER, [], 'conflicted')]), 'ui');
+    s = step(s).next;
+    s = step(settlePackage(s, 'ui', reported())).next;
+    s = opDone(s, 'finish_resolve:0:0:ui', 'built', undefined, { resolves: 1 });
+    s = step(s).next;
+    // Another package went in first; ui conflicts again.
+    s = opDone(s, 'integrate:0:0:ui:r1', 'conflicted', 'i3');
+
+    s = resolving(s, 'ui', 1);
+    let r = step(s);
+    expect(r.actions).toEqual([resolveOf(PEER, 'ui', 1)]);
+    r = step(settlePackage(r.next, 'ui', reported()));
+    expect(r.actions).toEqual([resolveOp('finish_resolve', 'ui', 1)]);
+    r = step(opDone(r.next, 'finish_resolve:0:0:ui:r1', 'built', undefined, { resolves: 2 }));
+    expect(r.actions).toEqual([resolveOp('integrate', 'ui', 2)]);
+  });
+
+  it('asks once more when a resolve gives no report, then asks a person apart from any answer about the build', () => {
+    // A person already answered "retry" about this package's build in round 1.
+    const buildKey = memberFailedKey('build', 0, 1, PEER, 'ui');
+    let s = building([pkg('api', LEAD, [], 'integrated'), pkg('ui', PEER, [], 'conflicted')], {
+      requests: [{ id: 'old', kind: 'member_failed', dedupeKey: buildKey, status: 'answered', answer: { choice: 'retry' }, expiresAtMs: null }],
+    });
+    s = resolving(s, 'ui');
+    let r = step(s);
+    expect(r.actions).toEqual([resolveOf(PEER, 'ui')]);
+    r = step(settlePackage(r.next, 'ui', { status: 'no_report' }));
+    expect(r.actions).toEqual([resolveOf(PEER, 'ui', 1)]);
+    r = step(settlePackage(r.next, 'ui', { status: 'no_report' }));
+    const key = memberFailedKey('build', 0, 1, PEER, 'ui', 'resolve');
+    expect(key).not.toBe(buildKey);
+    expect(r.actions).toEqual([
+      {
+        type: 'open_request',
+        kind: 'member_failed',
+        dedupeKey: key,
+        payload: { phase: 'build', purpose: 'resolve', agentId: PEER, packageKey: 'ui', dispatchId: r.next.dispatches.at(-1)!.id, outcome: 'no_report' },
+        choices: ['retry', 'stop'],
+      },
+    ]);
+    r = step(answer(r.next, key, 'retry'));
+    expect(r.actions).toEqual([resolveOf(PEER, 'ui', 2)]);
+    r = step(settlePackage(r.next, 'ui', { status: 'failed' }));
+    const again = memberFailedKey('build', 0, 2, PEER, 'ui', 'resolve');
+    expect(decide(answer(step(r.next).next, again, 'stop'), settings)).toEqual([
+      { type: 'stop', reason: `Stopped after ${PEER} failed to resolve ui` },
+    ]);
+  });
+
+  it('leaves a package whose merge could not be started or committed to the person asked about it', () => {
+    const begin = building([pkg('ui', PEER, [], 'conflicted')], { packageOps: { 'begin_resolve:0:0:ui': 'failed' } });
+    expect(decide(begin, settings)).toEqual([]);
+    let s = resolving(building([pkg('ui', PEER, [], 'conflicted')]), 'ui');
+    s = step(s).next;
+    s = step(settlePackage(s, 'ui', reported())).next;
+    s.packageOps['finish_resolve:0:0:ui'] = 'failed';
+    expect(decide(s, settings)).toEqual([]);
   });
 });
 

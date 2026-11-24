@@ -408,9 +408,9 @@ async function prepareWorktrees(tx: Tx, task: Task): Promise<Run[]> {
 const LIVE_WORKTREE = notInArray(workspaces.status, ['merged', 'retained', 'abandoned']);
 
 /**
- * A package operation in the worktree it belongs to: the owner's to branch
- * and checkpoint, the integration worktree to merge. Keyed by the engine, so
- * asking again queues nothing.
+ * A package operation in the worktree it belongs to: the integration
+ * worktree to merge, the owner's for everything else. Keyed by the engine,
+ * so asking again queues nothing.
  */
 async function requestPackageOp(tx: Tx, task: Task, action: Extract<Action, { type: 'package_op' }>): Promise<Run[]> {
   const [pkg] = await tx
@@ -431,7 +431,7 @@ async function requestPackageOp(tx: Tx, task: Task, action: Extract<Action, { ty
   if (action.kind === 'branch_package') {
     args.branch = packageBranchName(task.number, pkg.key, pkg.attempt);
     args.startCommit = action.startCommit;
-  } else if (action.kind === 'checkpoint') {
+  } else if (action.kind === 'checkpoint' || action.kind === 'finish_resolve') {
     const [owner] = await tx.select({ name: agents.name }).from(agents).where(eq(agents.id, pkg.ownerAgentId));
     args.author = owner?.name ?? '';
   }

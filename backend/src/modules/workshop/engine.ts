@@ -73,9 +73,11 @@ export interface PackageView {
   dependsOn: string[];
   status: WorkPackageStatus;
   attempt: number;
+  /** Conflicts resolved on the package branch so far. */
+  resolves: number;
 }
 
-export type PackageOpKind = 'branch_package' | 'checkpoint' | 'integrate';
+export type PackageOpKind = 'branch_package' | 'checkpoint' | 'integrate' | 'begin_resolve' | 'finish_resolve';
 
 export interface WorkshopState {
   taskId: string;
@@ -176,14 +178,25 @@ export function planDisputeKey(cycle: number): string {
   return `plan_dispute:${cycle}`;
 }
 
-/** A build failure is per package: one owner builds several packages, each from round 0. */
-export function memberFailedKey(phase: WorkshopPhase, cycle: number, round: number, agentId: string, packageKey = ''): string {
-  return `member_failed:${phase}:${cycle}:${round}:${agentId}${packageKey ? `:${packageKey}` : ''}`;
+/**
+ * A build failure is per package: one owner builds several packages, each
+ * from round 0. A resolve numbers its rounds apart from the build, so its
+ * failures are keyed apart too.
+ */
+export function memberFailedKey(
+  phase: WorkshopPhase,
+  cycle: number,
+  round: number,
+  agentId: string,
+  packageKey = '',
+  purpose?: DispatchPurpose
+): string {
+  return `member_failed:${phase}:${cycle}:${round}:${agentId}${packageKey ? `:${packageKey}` : ''}${purpose === 'resolve' ? ':resolve' : ''}`;
 }
 
-/** One operation of each kind per package attempt and cycle. */
-export function packageOpKey(kind: PackageOpKind, cycle: number, pkg: Pick<PackageView, 'key' | 'attempt'>): string {
-  return `${kind}:${cycle}:${pkg.attempt}:${pkg.key}`;
+/** One operation of each kind per package attempt, cycle and resolve: a package goes back to integration after each resolve. */
+export function packageOpKey(kind: PackageOpKind, cycle: number, pkg: Pick<PackageView, 'key' | 'attempt' | 'resolves'>): string {
+  return `${kind}:${cycle}:${pkg.attempt}:${pkg.key}${pkg.resolves > 0 ? `:r${pkg.resolves}` : ''}`;
 }
 
 /** Running time so far, excluding paused spans. */
@@ -497,7 +510,11 @@ function pinAndBuild(state: WorkshopState, plan: PlanView, cause: Record<string,
  * a package is branched in its owner's worktree (from the base, or from the
  * integration head once its dependencies are merged), built, checkpointed,
  * and merged into the integration branch; without one, it is in once its
- * owner reports. Build ends in Check when every package is in.
+ * owner reports. A package that conflicts with the integration branch goes
+ * back to its owner, ahead of their next package: the platform merges the
+ * integration head into the package branch, the owner resolves it there, and
+ * the platform commits the merge and integrates the package again. Build
+ * ends in Check when every package is in.
  */
 function decideBuild(state: WorkshopState, spec: AgentPhaseSpec, settings: EngineSettings): Action[] {
   // A pinned plan always has packages; with none there is nothing to schedule.
@@ -509,26 +526,34 @@ function decideBuild(state: WorkshopState, spec: AgentPhaseSpec, settings: Engin
   const slot = (p: PackageView) => (p.ownerAgentId ? slotOf(state, spec, p.ownerAgentId, p.key) : undefined);
   const opOf = (kind: PackageOpKind, p: PackageView) => state.packageOps[packageOpKey(kind, state.cycle, p)];
   const isIn = (p: PackageView) => (onRepository ? p.status === 'integrated' : slot(p)?.status === 'reported');
-  // The owner's worktree is taken from the package's branch until its checkpoint.
+  // The owner's worktree is taken from the package's branch until its checkpoint, and again while a conflict is resolved on it.
   const holdsOwner = (p: PackageView) =>
     onRepository
-      ? p.status === 'branched' || (p.status === 'pending' && opOf('branch_package', p) !== undefined)
+      ? p.status === 'branched' ||
+        p.status === 'resolving' ||
+        (p.status === 'pending' && opOf('branch_package', p) !== undefined) ||
+        (p.status === 'conflicted' && opOf('begin_resolve', p) !== undefined)
       : slot(p) !== undefined && !isIn(p);
   const busy = new Set(state.packages.filter(holdsOwner).map((p) => p.ownerAgentId));
+  // A conflict waiting for its owner's worktree goes before that owner's next package.
+  const owed = new Set(
+    state.packages.filter((p) => p.status === 'conflicted' && opOf('begin_resolve', p) === undefined).map((p) => p.ownerAgentId)
+  );
   const canStart = (p: PackageView) =>
     !busy.has(p.ownerAgentId) &&
+    !owed.has(p.ownerAgentId) &&
     p.dependsOn.every((key) => {
       const dep = byKey.get(key);
       return dep !== undefined && isIn(dep);
     });
 
-  const dispatchAt = (p: PackageView, round: number) => {
+  const dispatchAt = (p: PackageView, purpose: 'build' | 'resolve', round: number) => {
     if (unfinished >= state.parallelism) return;
     unfinished += 1;
     actions.push({
       type: 'dispatch',
       phase: 'build',
-      purpose: spec.purpose,
+      purpose,
       agentId: p.ownerAgentId!,
       packageKey: p.key,
       cycle: state.cycle,
@@ -546,6 +571,54 @@ function decideBuild(state: WorkshopState, spec: AgentPhaseSpec, settings: Engin
       ...(startCommit ? { startCommit } : {}),
     });
 
+  /**
+   * Carries a package's dispatch through: dispatch, wait, ask once more after
+   * no report, then ask a person. Returns the stop a person asked for.
+   */
+  const follow = (
+    p: PackageView,
+    owner: string,
+    purpose: 'build' | 'resolve',
+    work: { latest: DispatchView | undefined; misses: number; firstRound: number },
+    onReported: () => void
+  ): Action | null => {
+    const s = work.latest;
+    if (!s) {
+      dispatchAt(p, purpose, work.firstRound);
+      return null;
+    }
+    if (s.status === 'reported') {
+      onReported();
+      return null;
+    }
+    if (UNFINISHED.includes(s.status)) {
+      actions.push(...clockActions(state, s));
+      return null;
+    }
+    // no_report, failed, or cancelled without a report
+    if (s.status === 'no_report' && work.misses === 1) {
+      dispatchAt(p, purpose, s.round + 1);
+      return null;
+    }
+    const key = memberFailedKey('build', state.cycle, s.round, owner, p.key, purpose);
+    const request = requestFor(state, key);
+    if (!request) {
+      actions.push({
+        type: 'open_request',
+        kind: 'member_failed',
+        dedupeKey: key,
+        payload: { phase: 'build', purpose, agentId: owner, packageKey: p.key, dispatchId: s.id, outcome: s.status },
+        choices: ['retry', 'stop'],
+      });
+      return null;
+    }
+    if (request.status !== 'answered') return null;
+    const choice = choiceOf(request);
+    if (choice === 'retry') dispatchAt(p, purpose, s.round + 1);
+    else if (choice === 'stop') return { type: 'stop', reason: `Stopped after ${owner} failed to ${purpose} ${p.key}` };
+    return null;
+  };
+
   for (const p of state.packages) {
     if (isIn(p)) continue;
     const owner = p.ownerAgentId;
@@ -562,51 +635,63 @@ function decideBuild(state: WorkshopState, spec: AgentPhaseSpec, settings: Engin
       packageOp('branch_package', p, startOf(state, p));
       continue;
     }
+    if (onRepository && p.status === 'conflicted') {
+      // Wait for the owner's worktree to come free, or for the operation already asked for.
+      if (opOf('begin_resolve', p) || busy.has(owner)) continue;
+      busy.add(owner);
+      packageOp('begin_resolve', p);
+      continue;
+    }
+    if (onRepository && p.status === 'resolving') {
+      const stop = follow(p, owner, 'resolve', resolveWork(state, p), () => {
+        if (!opOf('finish_resolve', p)) packageOp('finish_resolve', p);
+      });
+      if (stop) return [stop];
+      continue;
+    }
 
     const s = slot(p);
-    if (!s) {
-      if (!onRepository) {
-        if (!canStart(p)) continue;
-        busy.add(owner);
-      }
-      dispatchAt(p, state.round);
-      continue;
+    if (!s && !onRepository) {
+      if (!canStart(p)) continue;
+      busy.add(owner);
     }
-    if (s.status === 'reported') {
-      if (!opOf('checkpoint', p)) packageOp('checkpoint', p);
-      continue;
-    }
-    if (UNFINISHED.includes(s.status)) {
-      actions.push(...clockActions(state, s));
-      continue;
-    }
-    // no_report, failed, or cancelled without a report
-    if (s.status === 'no_report' && noReportsInInstance(state, spec, owner, p.key) === 1) {
-      dispatchAt(p, s.round + 1);
-      continue;
-    }
-    const key = memberFailedKey('build', state.cycle, s.round, owner, p.key);
-    const request = requestFor(state, key);
-    if (!request) {
-      actions.push({
-        type: 'open_request',
-        kind: 'member_failed',
-        dedupeKey: key,
-        payload: { phase: 'build', agentId: owner, packageKey: p.key, dispatchId: s.id, outcome: s.status },
-        choices: ['retry', 'stop'],
-      });
-      continue;
-    }
-    if (request.status !== 'answered') continue;
-    const choice = choiceOf(request);
-    if (choice === 'retry') dispatchAt(p, s.round + 1);
-    else if (choice === 'stop') return [{ type: 'stop', reason: `Stopped after ${owner} failed to build ${p.key}` }];
+    const work = { latest: s, misses: noReportsInInstance(state, spec, owner, p.key), firstRound: state.round };
+    const stop = follow(p, owner, 'build', work, () => {
+      if (onRepository && !opOf('checkpoint', p)) packageOp('checkpoint', p);
+    });
+    if (stop) return [stop];
   }
 
   if (state.packages.every(isIn)) {
     actions.push(transition(state, 'check', 0, { settled: 'build', packages: state.packages.length }));
   }
   return actions;
+}
+
+/**
+ * The dispatches of a package's resolve in progress. Each resolve ends with
+ * one reported dispatch, so those after the package's earlier resolves are
+ * the current one's; rounds keep counting up across resolves, so a new
+ * resolve never reuses a dispatch key.
+ */
+function resolveWork(state: WorkshopState, p: PackageView): { latest: DispatchView | undefined; misses: number; firstRound: number } {
+  const all = state.dispatches
+    .filter((d) => d.purpose === 'resolve' && d.packageKey === p.key)
+    .sort((a, b) => a.cycle - b.cycle || a.round - b.round);
+  let from = 0;
+  let ended = 0;
+  for (let i = 0; i < all.length && ended < p.resolves; i += 1) {
+    if (all[i]!.status === 'reported') {
+      ended += 1;
+      from = i + 1;
+    }
+  }
+  const current = all.slice(from);
+  return {
+    latest: current.at(-1),
+    misses: current.filter((d) => d.status === 'no_report').length,
+    firstRound: all.length > 0 ? all.at(-1)!.round + 1 : state.round,
+  };
 }
 
 /** A package without dependencies starts from the base; one with dependencies from the integration head they were merged into. */

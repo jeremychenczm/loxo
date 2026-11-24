@@ -25,7 +25,7 @@ import type {
   WorktreeState,
 } from './engine';
 
-const PACKAGE_OP_KINDS: readonly PackageOpKind[] = ['branch_package', 'checkpoint', 'integrate'];
+const PACKAGE_OP_KINDS: readonly PackageOpKind[] = ['branch_package', 'checkpoint', 'integrate', 'begin_resolve', 'finish_resolve'];
 
 /** What Brief freezes; later phases read the roster and lead from here, never from the live task. */
 export interface WorkshopSnapshot {
@@ -73,7 +73,14 @@ async function packagesOf(tx: Tx, taskId: string, planRows: Plan[]): Promise<Pac
   const rank = (key: string) => (order.includes(key) ? order.indexOf(key) : order.length);
   return rows
     .sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
-    .map((p) => ({ key: p.key, ownerAgentId: p.ownerAgentId, dependsOn: p.dependsOn, status: p.status, attempt: p.attempt }));
+    .map((p) => ({
+      key: p.key,
+      ownerAgentId: p.ownerAgentId,
+      dependsOn: p.dependsOn,
+      status: p.status,
+      attempt: p.attempt,
+      resolves: p.resolves,
+    }));
 }
 
 async function packageOpsOf(tx: Tx, taskId: string): Promise<Record<string, PlatformOpStatus>> {
