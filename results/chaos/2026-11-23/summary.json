@@ -1,0 +1,396 @@
+{
+  "commits": [
+    "cf83fd0d0f762968d5d5cf00fc64d72a92fcb2da"
+  ],
+  "dirty": false,
+  "startedAt": "2026-11-23T00:32:55.349Z",
+  "finishedAt": "2026-11-23T01:35:01.843Z",
+  "host": {
+    "platform": "win32 10.0.26200",
+    "node": "v24.22.1",
+    "cpus": 20,
+    "memoryGb": 16
+  },
+  "settings": {
+    "leaseTtlMs": 4000,
+    "killBudgetMs": 800,
+    "retryBackoffMs": 500,
+    "maxAttempts": 3,
+    "reconcilerCycleMaxMs": 2400
+  },
+  "trialsPerCell": 1,
+  "crashPoints": 6,
+  "runKinds": 1,
+  "totals": {
+    "trials": 9,
+    "passed": 9,
+    "violations": 0,
+    "trialsWithViolations": 0,
+    "errors": 0,
+    "unreached": 0,
+    "fenceRejections": 0,
+    "leftovers": 0
+  },
+  "violationsByInvariant": {},
+  "timingsMs": {
+    "restart": {
+      "samples": 9,
+      "p50": 1598,
+      "p99": 1800,
+      "max": 1800
+    },
+    "recovered": {
+      "samples": 5,
+      "p50": 5211,
+      "p99": 5930,
+      "max": 5930
+    },
+    "settled": {
+      "samples": 9,
+      "p50": 18823,
+      "p99": 26465,
+      "max": 26465
+    },
+    "afterlife": {
+      "samples": 4,
+      "p50": 0,
+      "p99": 0,
+      "max": 0
+    }
+  },
+  "cells": [
+    {
+      "cell": "workshop wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > failed/retry > failed/retry > failed > succeeded > succeeded > failed"
+      ]
+    },
+    {
+      "cell": "workshop workshop.after_advance@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop admission.after_claim@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded/known > succeeded/known > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.after_settle@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded/known > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded/known > succeeded/known > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@4+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded/known > succeeded/known > succeeded > succeeded"
+      ]
+    }
+  ],
+  "graceful": {
+    "totals": {
+      "trials": 2,
+      "passed": 2,
+      "violations": 0,
+      "trialsWithViolations": 0,
+      "errors": 0,
+      "unreached": 0,
+      "fenceRejections": 0,
+      "leftovers": 0
+    },
+    "violationsByInvariant": {},
+    "cleanTrials": 1,
+    "sentToPerson": 0,
+    "recoveredAfterClean": 0,
+    "timingsMs": {
+      "shutdown": {
+        "samples": 1,
+        "p50": 916,
+        "p99": 916,
+        "max": 916
+      },
+      "handoff": {
+        "samples": 1,
+        "p50": 2514,
+        "p99": 2514,
+        "max": 2514
+      },
+      "afterlife": {
+        "samples": 2,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "cells": [
+      {
+        "cell": "workshop graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded > succeeded > succeeded > succeeded > succeeded > cancelled > succeeded > succeeded"
+        ]
+      },
+      {
+        "cell": "workshop graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded > succeeded > succeeded > succeeded > succeeded > interrupted/interrupted"
+        ]
+      }
+    ]
+  },
+  "controls": {
+    "trials": 0,
+    "trialsWithViolations": 0,
+    "errors": 0,
+    "violationsByInvariant": {},
+    "afterlifeMs": {
+      "samples": 0,
+      "p50": null,
+      "p99": null,
+      "max": null
+    }
+  },
+  "twoInstances": {
+    "kill": {
+      "runs": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 50,
+      "takeovers": 5,
+      "fenceRejections": 0,
+      "peakRunning": 10,
+      "settledMs": {
+        "samples": 1,
+        "p50": 18835,
+        "p99": 18835,
+        "max": 18835
+      },
+      "afterlifeMs": {
+        "samples": 1,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "stall": {
+      "runs": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 50,
+      "takeovers": 3,
+      "fenceRejections": 2,
+      "peakRunning": 10,
+      "settledMs": {
+        "samples": 1,
+        "p50": 32995,
+        "p99": 32995,
+        "max": 32995
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "restart": {
+      "runs": 1,
+      "passed": 0,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 50,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": 0,
+      "settledMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    }
+  },
+  "twoInstanceWorkshops": {
+    "kill": {
+      "runs": 1,
+      "passed": 0,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 10,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": 0,
+      "settledMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "stall": {
+      "runs": 1,
+      "passed": 0,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 10,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": 0,
+      "settledMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "restart": {
+      "runs": 0,
+      "passed": 0,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 0,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": null,
+      "settledMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    }
+  },
+  "invocations": [
+    {
+      "commit": "cf83fd0d0f762968d5d5cf00fc64d72a92fcb2da",
+      "dirty": false,
+      "startedAt": "2026-11-23T00:32:55.349Z",
+      "finishedAt": "2026-11-23T00:41:06.674Z",
+      "requested": {
+        "trials": 1,
+        "controls": 0,
+        "two": 0
+      },
+      "host": {
+        "platform": "win32 10.0.26200",
+        "node": "v24.22.1",
+        "cpus": 20,
+        "memoryGb": 16
+      }
+    },
+    {
+      "commit": "cf83fd0d0f762968d5d5cf00fc64d72a92fcb2da",
+      "dirty": false,
+      "startedAt": "2026-11-23T01:31:45.770Z",
+      "finishedAt": "2026-11-23T01:35:01.843Z",
+      "requested": {
+        "trials": 0,
+        "controls": 0,
+        "two": 1
+      },
+      "host": {
+        "platform": "win32 10.0.26200",
+        "node": "v24.22.1",
+        "cpus": 20,
+        "memoryGb": 16
+      },
+      "note": "stopped early: Three trials in a row could not start a backend instance; stopped. Check free memory."
+    }
+  ]
+}

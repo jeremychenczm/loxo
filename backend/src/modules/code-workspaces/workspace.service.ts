@@ -23,7 +23,7 @@ import { config } from '../../config';
 import { crashPoint } from '../ownership/crash-points';
 import { fence } from '../ownership/fence';
 import { runLeases } from '../ownership/lease';
-import { recordBeforeState, TASK_GATE_STATUSES, type RunOwner } from '../runs/runs.service';
+import { GATE_STATUSES, recordBeforeState, type RunOwner } from '../runs/runs.service';
 import { moveTask } from '../tasks/tasks.service';
 import type { TurnPermission } from '../runner/runner';
 import { runBeforeRef, workspaceBranchName, workspaceLeaf } from './branch-name';
@@ -59,6 +59,23 @@ export async function findRepository(
 }
 
 /** The task's active integration workspace: the branch that gets delivered. */
+export async function getWorkspace(workspaceId: string, ex: Executor = db): Promise<Workspace | null> {
+  const [row] = await ex.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+  return row ?? null;
+}
+
+/**
+ * The worktree a run works in: the one recorded on the run, or for a run that
+ * never recorded one (a legacy run that died before preparing), its task's
+ * integration worktree.
+ */
+export async function runWorkspace(
+  run: { userId: string; taskId: string | null; workspaceId: string | null }
+): Promise<Workspace | null> {
+  if (run.workspaceId) return getWorkspace(run.workspaceId);
+  return run.taskId ? getTaskWorkspace(run.userId, run.taskId) : null;
+}
+
 export async function getTaskWorkspace(
   userId: string,
   taskId: string
@@ -93,6 +110,12 @@ export async function hasActiveWorkspaces(
   return row !== undefined;
 }
 
+/** The branch of a worktree that must have one: the task's integration worktree always does. */
+function branchOf(workspace: Workspace): string {
+  if (workspace.branchName === null) throw conflict('workspace_detached', 'This worktree has no branch');
+  return workspace.branchName;
+}
+
 async function updateWorkspace(
   id: string,
   patch: Partial<typeof workspaces.$inferInsert>,
@@ -122,7 +145,7 @@ async function assertNoRunningRun(taskId: string): Promise<void> {
   const [active] = await db
     .select({ status: runs.status })
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), inArray(runs.status, [...TASK_GATE_STATUSES])))
+    .where(and(eq(runs.taskId, taskId), inArray(runs.status, [...GATE_STATUSES])))
     .limit(1);
   if (active?.status === 'interrupted') {
     throw conflict('run_interrupted', 'An interrupted run is waiting for a decision; answer its retry request first');
@@ -132,11 +155,20 @@ async function assertNoRunningRun(taskId: string): Promise<void> {
   }
 }
 
-async function hasInterruptedRun(taskId: string): Promise<boolean> {
+/** An interrupted run whose worktree this is: recorded on the run, or the task's worktree for a run that recorded none. */
+async function hasInterruptedRun(workspace: Workspace): Promise<boolean> {
   const [row] = await db
     .select({ id: runs.id })
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'interrupted')))
+    .where(
+      and(
+        eq(runs.status, 'interrupted'),
+        or(
+          eq(runs.workspaceId, workspace.id),
+          and(isNull(runs.workspaceId), workspace.taskId ? eq(runs.taskId, workspace.taskId) : sql`false`)
+        )
+      )
+    )
     .limit(1);
   return row !== undefined;
 }
@@ -195,6 +227,7 @@ export async function prepareTaskWorkspace(
           kind: 'integration',
           worktreePath: path.join(worktreesRoot, workspaceLeaf(task.id, 'integration', null)),
           branchName,
+          currentBranch: branchName,
           baseRef: repository.defaultBranch,
           baseCommit: info.baseCommit,
           status: 'preparing',
@@ -218,7 +251,7 @@ export async function prepareTaskWorkspace(
       repositoryRoot: root,
       worktreesRoot,
       leaf: workspaceLeaf(task.id, 'integration', null),
-      branchName: row.branchName,
+      branchName: row.currentBranch,
       baseRef: row.baseRef,
       baseCommit: row.baseCommit,
     });
@@ -248,8 +281,21 @@ export async function reconcileTaskWorkspace(
 ): Promise<Workspace> {
   const row = await getTaskWorkspace(userId, taskId);
   if (!row) throw notFound('Task has no active workspace');
+  return reconcileWorkspaceRow(userId, row);
+}
+
+/** Reconciles one of a task's worktrees by id. */
+export async function reconcileWorkspace(userId: string, taskId: string, workspaceId: string): Promise<Workspace> {
+  const row = await getWorkspace(workspaceId);
+  if (!row || row.userId !== userId || row.taskId !== taskId || (TERMINALS as readonly string[]).includes(row.status)) {
+    throw notFound('Workspace not found');
+  }
+  return reconcileWorkspaceRow(userId, row);
+}
+
+async function reconcileWorkspaceRow(userId: string, row: Workspace): Promise<Workspace> {
   // Lifting this quarantine is the retry decision's job.
-  if (row.status === 'quarantined' && (await hasInterruptedRun(taskId))) {
+  if (row.status === 'quarantined' && (await hasInterruptedRun(row))) {
     throw conflict('run_interrupted', 'An interrupted run is waiting for a decision; answer its retry request first');
   }
   const repository = await findRepository(userId, row.repositoryId);
@@ -259,7 +305,7 @@ export async function reconcileTaskWorkspace(
     .reconcileWorkspace({
       repositoryRoot: repository.rootPath,
       worktreePath: row.worktreePath,
-      branchName: row.branchName,
+      branchName: row.currentBranch,
       baseCommit: row.baseCommit,
     })
     .catch(rethrowGitError);
@@ -339,6 +385,7 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
     beforeHead: input.before.head,
     baseCommit: input.workspace.baseCommit,
   });
+  const { tree: treeId } = await localGitDriver.snapshotTree(input.workspace.worktreePath);
 
   let patchStorageKey: string | null = null;
   if (captured.patch.length > 0) {
@@ -366,6 +413,7 @@ export async function captureRunChanges(input: CaptureRunInput): Promise<Capture
       beforeSummaryJson: input.before.summary,
       afterSummaryJson: captured.summary,
       changeFingerprint: captured.fingerprint,
+      treeId,
       patchStorageKey,
       patchTruncated: captured.patchTruncated,
       policyViolation,
@@ -472,7 +520,7 @@ export async function settleWorkspaceForDecision(
     .reconcileWorkspace({
       repositoryRoot: repository.rootPath,
       worktreePath: workspace.worktreePath,
-      branchName: workspace.branchName,
+      branchName: workspace.currentBranch,
       baseCommit: workspace.baseCommit,
     })
     .catch(rethrowGitError);
@@ -487,12 +535,22 @@ export async function leaveQuarantine(tx: Tx, workspaceId: string, observed: Obs
     .where(and(eq(workspaces.id, workspaceId), eq(workspaces.status, 'quarantined')));
 }
 
-/** Rewrites why a quarantined workspace is locked, once the reason it was locked for has moved on. */
-export async function relabelQuarantine(tx: Tx, taskId: string, reason: string): Promise<void> {
+/** A run's own worktree: the one recorded on it, or every worktree of its task for a run that recorded none. */
+export function runWorktreeScope(run: { workspaceId: string | null; taskId: string | null }) {
+  if (run.workspaceId) return eq(workspaces.id, run.workspaceId);
+  return run.taskId ? eq(workspaces.taskId, run.taskId) : sql`false`;
+}
+
+/** Rewrites why a run's quarantined worktree is locked, once the reason it was locked for has moved on. */
+export async function relabelQuarantine(
+  tx: Tx,
+  run: { workspaceId: string | null; taskId: string | null },
+  reason: string
+): Promise<void> {
   await tx
     .update(workspaces)
     .set({ lastError: reason, updatedAt: new Date() })
-    .where(and(eq(workspaces.taskId, taskId), eq(workspaces.status, 'quarantined')));
+    .where(and(runWorktreeScope(run), eq(workspaces.status, 'quarantined')));
 }
 
 /** Latest platform-captured snapshot for the task's active workspace; approval binds to it. */
@@ -840,7 +898,7 @@ export async function finalizeTaskWorkspace(
       .mergeWorkspace({
         repositoryRoot: root,
         baseRef: repository.defaultBranch,
-        branchName: workspace.branchName,
+        branchName: branchOf(workspace),
         message: `Merge task #${task.number}: ${task.title}`,
       })
       .catch(rethrowGitError);
@@ -992,7 +1050,7 @@ export async function getTaskChanges(userId: string, taskId: string): Promise<Ta
         repositoryRoot: repository.rootPath,
         baseRef: workspace.baseRef,
         baseCommit: workspace.baseCommit,
-        branchName: workspace.branchName,
+        branchName: branchOf(workspace),
       })
       .catch(() => null);
   }

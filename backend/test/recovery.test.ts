@@ -147,13 +147,20 @@ describe('recovering a run whose owner died', () => {
 
     const [sameTask] = await db
       .insert(runs)
-      .values({ userId, agentId: ctx.agent.id, agentName: 'again', taskId: ctx.task.id, trigger: 'manual' })
+      .values({ userId, agentId: ctx.agent.id, agentName: 'again', taskId: ctx.task.id, trigger: 'manual', gateKey: `task:${ctx.task.id}` })
       .returning();
     expect(await admitRun(sameTask!.id)).toBeUndefined();
     const otherTask = await request(app).post('/api/tasks').set(auth()).send({ title: 'Elsewhere' });
     const [elsewhere] = await db
       .insert(runs)
-      .values({ userId, agentId: ctx.agent.id, agentName: 'again', taskId: otherTask.body.task.id, trigger: 'manual' })
+      .values({
+        userId,
+        agentId: ctx.agent.id,
+        agentName: 'again',
+        taskId: otherTask.body.task.id,
+        trigger: 'manual',
+        gateKey: `task:${otherTask.body.task.id}`,
+      })
       .returning();
     expect((await admitRun(elsewhere!.id))?.run.status).toBe('running');
     await db.update(runs).set({ status: 'failed', leaseExpiresAt: null }).where(eq(runs.id, elsewhere!.id));

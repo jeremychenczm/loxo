@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { badRequest } from '../../http/errors';
+import { badRequest, conflict } from '../../http/errors';
 import { requireAuth, type AuthedRequest } from '../../http/middleware/auth';
 import { requestWake } from '../runs/wake';
 import {
@@ -10,6 +10,7 @@ import {
   getTaskWorkspace,
   prepareTaskWorkspace,
   reconcileTaskWorkspace,
+  reconcileWorkspace,
 } from '../code-workspaces/workspace.service';
 import { listApprovals, recordApproval } from './approvals.service';
 import {
@@ -17,6 +18,7 @@ import {
   deleteTask,
   getBoard,
   getTask,
+  isWorkshop,
   listTasks,
   MAX_TASK_MEMBERS,
   moveTask,
@@ -25,6 +27,7 @@ import {
   updateTask,
 } from './tasks.service';
 import { addHumanTurn, listTurns } from './turns.service';
+import { startWorkshop } from '../workshop/workshop.service';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
@@ -62,6 +65,16 @@ tasksRouter.get('/:id/changes', async (req: AuthedRequest, res, next) => {
   try {
     await getTask(req.auth!.userId, String(req.params.id)); // ownership
     res.json(await getTaskChanges(req.auth!.userId, String(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+tasksRouter.post('/:id/workspaces/:workspaceId/reconcile', async (req: AuthedRequest, res, next) => {
+  try {
+    res.json({
+      workspace: await reconcileWorkspace(req.auth!.userId, String(req.params.id), String(req.params.workspaceId)),
+    });
   } catch (error) {
     next(error);
   }
@@ -155,6 +168,7 @@ tasksRouter.post('/', async (req: AuthedRequest, res, next) => {
       crewId: z.string().uuid().optional(),
       leadAgentId: z.string().uuid().optional(),
       memberAgentIds: memberIds.optional(),
+      playbook: z.enum(['legacy', 'build', 'solo']).optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) throw badRequest('invalid_input', 'Task title is required');
@@ -205,6 +219,15 @@ tasksRouter.post('/:id/move', async (req: AuthedRequest, res, next) => {
   }
 });
 
+tasksRouter.post('/:id/start', async (req: AuthedRequest, res, next) => {
+  try {
+    const task = await startWorkshop(req.auth!.userId, String(req.params.id));
+    res.status(202).json({ task: await toTaskView(task) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
   try {
     const schema = z.object({ reason: z.string().trim().max(2000).optional() });
@@ -212,6 +235,9 @@ tasksRouter.post('/:id/wake', async (req: AuthedRequest, res, next) => {
     if (!parsed.success) throw badRequest('invalid_input', 'Invalid wake request');
 
     const task = await getTask(req.auth!.userId, String(req.params.id));
+    if (isWorkshop(task)) {
+      throw conflict('workshop_task', 'The workshop engine starts runs on this task');
+    }
     if (!task.leadAgentId) {
       throw badRequest('no_lead', 'Choose a lead agent for this task first');
     }

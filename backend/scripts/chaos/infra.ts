@@ -107,6 +107,8 @@ export interface InstanceSpec {
   launcher?: boolean;
   /** Database pool size; more concurrent runs need more. */
   poolMax?: number;
+  /** Where the instance records the platform operations it executes (LOXO_PLATFORM_WITNESS_DIR). */
+  platformWitnessDir?: string;
 }
 
 export interface InstanceExit {
@@ -138,7 +140,7 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   const stdoutFile = path.join(spec.logDir, `${spec.label}.out.log`);
   const stderrFile = path.join(spec.logDir, `${spec.label}.err.log`);
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of ['LOXO_CRASH_AT', 'LOXO_STALL_AT', 'LOXO_AGENT_LAUNCHER', 'MCP_PUBLIC_URL', 'REPOSITORY_ROOTS']) {
+  for (const key of ['LOXO_CRASH_AT', 'LOXO_STALL_AT', 'LOXO_AGENT_LAUNCHER', 'LOXO_PLATFORM_WITNESS_DIR', 'MCP_PUBLIC_URL', 'REPOSITORY_ROOTS']) {
     delete env[key];
   }
   Object.assign(env, {
@@ -157,6 +159,7 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
     ...(spec.crashAt ? { LOXO_CRASH_AT: spec.crashAt } : {}),
     ...(spec.stallAt ? { LOXO_STALL_AT: spec.stallAt } : {}),
     ...(spec.launcher === false ? { LOXO_AGENT_LAUNCHER: 'off' } : {}),
+    ...(spec.platformWitnessDir ? { LOXO_PLATFORM_WITNESS_DIR: spec.platformWitnessDir } : {}),
   });
   const out = fs.openSync(stdoutFile, 'a');
   const err = fs.openSync(stderrFile, 'a');
@@ -171,9 +174,11 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   fs.closeSync(out);
   fs.closeSync(err);
   let exited = false;
+  let exitCode: number | null = null;
   const exit = new Promise<InstanceExit>((resolve) => {
     child.once('exit', (code, signal) => {
       exited = true;
+      exitCode = code;
       resolve({ code, signal, at: Date.now() });
     });
   });
@@ -209,7 +214,9 @@ export async function startInstance(spec: InstanceSpec): Promise<Instance> {
   }
   child.kill('SIGKILL');
   const tail = fs.readFileSync(stderrFile, 'utf8').slice(-2_000);
-  throw new Error(`Instance ${spec.label} did not become ready${exited ? ' (it exited)' : ''}: ${tail}`);
+  // Windows reports resource exhaustion at process start only through the exit code, e.g. 0xC0000142.
+  const how = exited ? ` (it exited with code ${exitCode === null ? 'null' : `0x${(exitCode >>> 0).toString(16).toUpperCase()}`})` : '';
+  throw new Error(`Instance ${spec.label} did not become ready${how}: ${tail}`);
 }
 
 export class ApiError extends Error {

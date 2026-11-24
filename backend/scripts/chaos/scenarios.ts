@@ -7,11 +7,21 @@ import type { Scenario } from '@swarmdev/fake-agent';
  * double-execution check needs to see.
  */
 export const RUN_KINDS = ['read', 'comment', 'submit', 'edit-clean', 'edit-dirty'] as const;
-export type RunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * A workshop on a repository: platform runs prepare its worktrees, then its
+ * members explore at once, each under its own worktree's gate. Kept out of
+ * RUN_KINDS so the run-kind cells and controls stay as they were.
+ */
+export const WORKSHOP_KIND = 'workshop';
+export type RunKind = (typeof RUN_KINDS)[number] | typeof WORKSHOP_KIND;
+export const ALL_KINDS: readonly RunKind[] = [...RUN_KINDS, WORKSHOP_KIND];
 
 export interface RunKindSpec {
   /** Bind the task to a repository, so the run gets a worktree it may edit. */
   repository: boolean;
+  /** Start a workshop with this many members instead of waking a single agent. */
+  members?: number;
   /** About how long one run plays, for the trial's check time. */
   durationMs: number;
   /** `tag` keeps timeline entries unique per trial. */
@@ -21,6 +31,14 @@ export interface RunKindSpec {
 const DURATION_MS = 6_000;
 
 const turn = (steps: Scenario['turns'][number]['steps']): Scenario => ({ turns: [{ steps }] });
+
+/** One package for the lead; the trial names its members "Chaos member 1" (the lead) and up. */
+const chaosPlan = (tag: string) => ({
+  summary: `Plan ${tag}`,
+  packages: [{ key: 'main', title: 'The trial change', owner: 'Chaos member 1', area: 'everything', acceptance: ['It runs'] }],
+  integration: 'One package.',
+  verification: 'The trial checks.',
+});
 
 export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
   read: {
@@ -64,6 +82,27 @@ export const RUN_KIND_SPECS: Record<RunKind, RunKindSpec> = {
     repository: true,
     durationMs: DURATION_MS,
     scenario: () => turn([{ sleep: 3_000 }, { say: 'Looked around; nothing to edit.' }, { sleep: 3_000 }]),
+  },
+  // After the platform runs: both members explore at once, the lead plans, the other member approves,
+  // and the lead builds the plan's one package, which the platform branches before and checkpoints and
+  // merges after: four agent rounds and three package operations in a row. Each turn calls every
+  // report tool, and only its phase's is offered.
+  workshop: {
+    repository: true,
+    members: 2,
+    durationMs: 4 * DURATION_MS + 4_000,
+    scenario: (tag) =>
+      turn([
+        { say: 'Looking around the repository. ' },
+        { sleep: 1_500 },
+        { mcp: { tool: 'submit_exploration', args: { summary: `Exploration ${tag}` } } },
+        { mcp: { tool: 'submit_plan', args: chaosPlan(tag) } },
+        { mcp: { tool: 'submit_plan_review', args: { verdict: 'approve' } } },
+        { mcp: { tool: 'submit_result', args: { summary: `Built ${tag}` } } },
+        { sleep: 3_000 },
+        { say: 'Reported.' },
+        { sleep: 1_500 },
+      ]),
   },
   'edit-dirty': {
     repository: true,

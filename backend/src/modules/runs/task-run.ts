@@ -15,13 +15,16 @@ import {
 import {
   captureRunChanges,
   findRepository,
-  getTaskWorkspace,
+  getWorkspace,
   resolveWorkspace,
+  runWorkspace,
   snapshotBeforeRun,
   type ResolvedWorkspace,
 } from '../code-workspaces/workspace.service';
 import { addSystemTurn, listTurns } from '../tasks/turns.service';
-import { buildTaskRunPrompt, buildReviewRunPrompt } from '../runner/turn-context';
+import { buildTaskRunPrompt, buildReviewRunPrompt, buildWorkshopRunPrompt } from '../runner/turn-context';
+import { toolsForRun } from '../control-plane/names';
+import { workshopRunView } from '../workshop/run-view';
 import { isAgentRuntime, type CliRuntime } from '../agents/runtimes';
 import { config } from '../../config';
 import { mintRunToken } from '../control-plane/run-token';
@@ -32,11 +35,12 @@ import { createPermissionArbiter } from '../hosts/permission-arbiter';
 import { acpLaunchSpec, resolveAcpAdapter } from '../hosts/runtime-catalog';
 import { withWatchdog } from '../hosts/watchdog';
 import { RunEventRecorder } from './run-events.service';
-import { recordSessionStart } from './runs.service';
+import { recordRunWorkspace, recordSessionStart } from './runs.service';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError } from '../ownership/fence';
 import { runLeases, type RunLease } from '../ownership/lease';
 import { HttpError } from '../../http/errors';
+import { dispatchOf, isReadOnlyDispatch } from '../workshop/dispatch-info';
 
 const TASK_RUN_TIMEOUT_MS = 15 * 60_000;
 
@@ -110,11 +114,6 @@ export async function executeTaskTurn(
     ? await getProviderCredentials(run.userId, agent.providerId)
     : null;
 
-  const timeline = (await listTurns(run.userId, task.id)).map((t) => ({
-    author: t.kind,
-    body: t.content,
-  }));
-
   // A repository binding switches the run into the task's isolated worktree;
   // without one the agent works in its own workspace.
   const codeWorkspace = await resolveCodeWorkspace(run, agent, task);
@@ -122,28 +121,40 @@ export async function executeTaskTurn(
   const agentWorkspace = storage.agentPaths(run.userId, agent.id).workspace;
   const workspace = codeWorkspace ? codeWorkspace.workspace.worktreePath : agentWorkspace;
 
-  // The agent level is a ceiling: review turns are always forced to read-only.
-  const permission: TurnPermission =
-    run.trigger === 'review'
-      ? lowerPermission(agent.permissionLevel, 'read_only')
-      : agent.permissionLevel;
+  const dispatch = run.dispatchId ? await dispatchOf(run.dispatchId) : undefined;
+  // The agent level is a ceiling: review turns and read-only workshop phases are forced to read-only.
+  const readOnly = run.trigger === 'review' || (run.dispatchId !== null && isReadOnlyDispatch(dispatch));
+  const permission: TurnPermission = readOnly
+    ? lowerPermission(agent.permissionLevel, 'read_only')
+    : agent.permissionLevel;
 
   const launch =
     agent.runtime === 'api' || hostFactoryForTests
       ? null
       : acpLaunchSpec(agent.runtime as CliRuntime, { credentials, model: agent.model, permission });
 
+  // A workshop run sees only what its phase allows; see workshopRunView.
+  const view = run.dispatchId ? await workshopRunView(run) : null;
   const buildPrompt = run.trigger === 'review' ? buildReviewRunPrompt : buildTaskRunPrompt;
-  const prompt = buildPrompt({
-    agent,
-    taskNumber: task.number,
-    title: task.title,
-    brief: task.brief,
-    status: task.status,
-    reason: run.reason,
-    timeline,
-    workspace,
-  });
+  const prompt = view
+    ? buildWorkshopRunPrompt({
+        agent,
+        taskNumber: task.number,
+        view,
+        tools: toolsForRun(run, view.phase),
+        workspace,
+        readOnly,
+      })
+    : buildPrompt({
+        agent,
+        taskNumber: task.number,
+        title: task.title,
+        brief: task.brief,
+        status: task.status,
+        reason: run.reason,
+        timeline: (await listTurns(run.userId, task.id)).map((t) => ({ author: t.kind, body: t.content })),
+        workspace,
+      });
 
   const runToken = mintRunToken(run.id, lease.epoch);
   const mcpServers: HostMcpServer[] = [
@@ -161,8 +172,8 @@ export async function executeTaskTurn(
         'api_failed'
       );
     }
-    // A reviewer reads the task's worktree when there is one, never its own scratch space.
-    const taskWorkspace = await getTaskWorkspace(run.userId, task.id);
+    // A reviewer reads the run's worktree (or its task's) when there is one, never its own scratch space.
+    const taskWorkspace = await runWorkspace(run);
     if (taskWorkspace) readRoot = taskWorkspace.worktreePath;
     host = new ApiHost({
       protocol: credentials.vendor as ApiProtocol,
@@ -172,7 +183,7 @@ export async function executeTaskTurn(
       system: agent.manifest.api?.systemPrompt ?? `You are ${agent.name}. ${agent.description}`.trim(),
       turnTimeoutMs: TASK_RUN_TIMEOUT_MS,
       repo: { baseCommit: taskWorkspace?.baseCommit ?? null },
-      extraTools: buildControlPlaneToolDefs({ run, epoch: lease.epoch, agent, task }),
+      extraTools: buildControlPlaneToolDefs({ run, epoch: lease.epoch, agent, task, phase: dispatch?.phase ?? null }),
     });
   } else {
     if (!launch) {
@@ -322,8 +333,26 @@ async function resolveCodeWorkspace(
     return null;
   }
 
+  // A workshop dispatch works in the worktree the engine chose for it; legacy runs prepare their task's.
+  if (run.dispatchId && run.workspaceId) {
+    const workspace = await getWorkspace(run.workspaceId);
+    if (!workspace || (workspace.status !== 'ready' && workspace.status !== 'dirty')) {
+      throw new RunnerError(
+        workspace?.lastError ?? `The run's worktree is ${workspace?.status ?? 'gone'}; reconcile it before running`,
+        'cli_failed'
+      );
+    }
+    return { workspace, repository };
+  }
   try {
-    return await resolveWorkspace(run.userId, task);
+    const resolved = await resolveWorkspace(run.userId, task);
+    if (resolved) {
+      await recordRunWorkspace(
+        { runId: run.id, epoch: run.ownerEpoch, instance: runLeases.instance },
+        resolved.workspace.id
+      );
+    }
+    return resolved;
   } catch (err) {
     if (err instanceof HttpError && err.code === 'workspace_unavailable') {
       throw new RunnerError(err.message, 'cli_failed');
@@ -353,7 +382,7 @@ async function settleRunCapture(
       const note = policyViolation
         ? `Read-only policy violation: tracked files changed during a read-only run (${snapshot.changedFiles} files).`
         : snapshot.changedFiles > 0
-          ? `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.branchName}.`
+          ? `Code changes captured: ${snapshot.changedFiles} file(s), +${snapshot.additions}/-${snapshot.deletions} on ${codeWorkspace.workspace.currentBranch ?? 'a detached worktree'}.`
           : null;
       if (note) await addSystemTurn(run.userId, task.id, note, { runId: run.id, epoch }, tx);
     },

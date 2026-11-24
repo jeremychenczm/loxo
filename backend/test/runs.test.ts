@@ -13,7 +13,8 @@ import {
   failQueuedRun,
   getRun,
   listRuns,
-  nextQueuedRunForTask,
+  nextQueuedRunForGate,
+  taskGateKey,
   ownerOf,
   settleRun,
 } from '../src/modules/runs/runs.service';
@@ -79,6 +80,13 @@ describe('runs service', () => {
     expect(run.output).toBe('');
     expect(run.startedAt).toBeNull();
     expect(run.agentName).toBe('Run worker');
+    expect(run).toMatchObject({ actor: 'agent', gateKey: `task:${taskId}`, workspaceId: null, dispatchId: null });
+  });
+
+  it('gives a run without a task no gate key', async () => {
+    const run = await queueRun({ taskId: null });
+    await failQueuedRun(run.id, 'cleanup');
+    expect(run.gateKey).toBeNull();
   });
 
   it('admits a queued run exactly once, with a new epoch and a lease on the database clock', async () => {
@@ -132,11 +140,11 @@ describe('runs service', () => {
   it('holds a backing-off run until its not_before passes', async () => {
     const run = await queueRun();
     await db.update(runs).set({ notBefore: new Date(Date.now() + 60_000) }).where(eq(runs.id, run.id));
-    expect(await nextQueuedRunForTask(taskId)).toBeUndefined();
+    expect(await nextQueuedRunForGate(taskGateKey(taskId))).toBeUndefined();
     expect(await admitRun(run.id)).toBeUndefined();
 
     await db.update(runs).set({ notBefore: new Date(Date.now() - 1_000) }).where(eq(runs.id, run.id));
-    expect((await nextQueuedRunForTask(taskId))?.id).toBe(run.id);
+    expect((await nextQueuedRunForGate(taskGateKey(taskId)))?.id).toBe(run.id);
     expect(await admitRun(run.id)).toBeDefined();
     await settleRun(await owned(run.id), { status: 'succeeded' }, 'idle');
   });
@@ -149,13 +157,13 @@ describe('runs service', () => {
     const first = await queueRun({ taskId: task.body.task.id });
     const second = await queueRun({ taskId: task.body.task.id });
 
-    expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(first.id);
+    expect((await nextQueuedRunForGate(taskGateKey(task.body.task.id)))?.id).toBe(first.id);
 
     await failQueuedRun(first.id, 'cancelled');
-    expect((await nextQueuedRunForTask(task.body.task.id))?.id).toBe(second.id);
+    expect((await nextQueuedRunForGate(taskGateKey(task.body.task.id)))?.id).toBe(second.id);
 
     await failQueuedRun(second.id, 'cancelled');
-    expect(await nextQueuedRunForTask(task.body.task.id)).toBeUndefined();
+    expect(await nextQueuedRunForGate(taskGateKey(task.body.task.id))).toBeUndefined();
   });
 
   it('scopes reads to the owning user', async () => {

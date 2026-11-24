@@ -66,6 +66,7 @@ export async function deadRun(
       agentName: `Worker ${counter}`,
       taskId: task!.id,
       trigger: options.trigger ?? 'manual',
+      gateKey: `task:${task!.id}`,
       reason: `Work on task ${counter}`,
     })
     .returning();

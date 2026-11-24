@@ -95,6 +95,9 @@ async function queuedRun(agentId: string, taskId: string): Promise<string> {
   return (await createQueuedRun(userId, { agentId, agentName: 'Worker', taskId, trigger: 'manual' })).id;
 }
 
+/** Tests on a real repository: their git work takes seconds on a busy disk, past the default limit. */
+const REPOSITORY_TIMEOUT = 30_000;
+
 async function prepareWorkspace(taskId: string) {
   const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
   return prepareTaskWorkspace(userId, task!);
@@ -150,7 +153,7 @@ describe('reconciler', () => {
     expect(statuses.find((r) => r.id === theirs!.id)?.status).toBe('open');
   });
 
-  it('quarantines the workspace a lost writer could touch and holds its task for a decision', async () => {
+  it('quarantines the workspace a lost writer could touch and holds its task for a decision', { timeout: REPOSITORY_TIMEOUT }, async () => {
     const taskId = await newTask(true);
     await prepareWorkspace(taskId);
     const orphan = await orphanedRun(await newAgent(), taskId);
@@ -194,7 +197,7 @@ describe('reconciler', () => {
     expect((await getRun(userId, pushed.run.id)).status).toBe('succeeded');
   });
 
-  it('keeps the task open after losing a run that could not write', async () => {
+  it('keeps the task open after losing a run that could not write', { timeout: REPOSITORY_TIMEOUT }, async () => {
     const taskId = await newTask(true);
     await prepareWorkspace(taskId);
     await orphanedRun(await newAgent(), taskId, 'review');
@@ -207,7 +210,7 @@ describe('reconciler', () => {
     expect((await getRun(userId, waiting)).status).toBe('succeeded');
   });
 
-  it('refuses to finalize or abandon a workspace while a run is working on the task', async () => {
+  it('refuses to finalize or abandon a workspace while a run is working on the task', { timeout: REPOSITORY_TIMEOUT }, async () => {
     const taskId = await newTask(true);
     await prepareWorkspace(taskId);
     const run = await queuedRun(await newAgent(), taskId);

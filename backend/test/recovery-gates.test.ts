@@ -56,7 +56,7 @@ async function task(title: string, extra: Record<string, unknown> = {}): Promise
 async function queuedRun(agentId: string, taskId: string) {
   const [row] = await db
     .insert(runs)
-    .values({ userId, agentId, agentName: 'gate test', taskId, trigger: 'manual' })
+    .values({ userId, agentId, agentName: 'gate test', taskId, trigger: 'manual', gateKey: `task:${taskId}` })
     .returning();
   return row!;
 }
@@ -71,6 +71,7 @@ async function interruptedRun(agentId: string, taskId: string) {
       agentName: 'gate test',
       taskId,
       trigger: 'manual',
+      gateKey: `task:${taskId}`,
       status: 'interrupted',
       recoveryStep: 'resolved',
       recoveryClass: 'interrupted',

@@ -8,6 +8,8 @@ export type GitDriverErrorCode =
   | 'dirty_workspace'
   | 'git_identity_missing'
   | 'merge_precondition_failed'
+  | 'branch_elsewhere'
+  | 'unresolved_conflicts'
   | 'output_overflow'
   | 'git_failed';
 
@@ -77,12 +79,13 @@ export interface PrepareWorkspaceResult extends WorkspaceObservation {
 export interface ReconcileWorkspaceInput {
   repositoryRoot: string;
   worktreePath: string;
-  branchName: string;
+  /** Null for a detached worktree, which has no branch to recover from. */
+  branchName: string | null;
   baseCommit: string;
 }
 
 export interface ReconcileWorkspaceResult extends WorkspaceObservation {
-  branchName: string;
+  branchName: string | null;
   /** The worktree was re-attached from its surviving branch after a crash or out-of-band deletion. */
   recovered: boolean;
 }
@@ -180,6 +183,24 @@ export interface PrimaryCheckoutState {
 export interface CheckpointInput {
   worktreePath: string;
   message: string;
+}
+
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
+export interface CommitAsInput {
+  worktreePath: string;
+  message: string;
+  author: GitIdentity;
+  /** Defaults to the author. */
+  committer?: GitIdentity;
+}
+
+export interface InterruptedStateCleared {
+  removedLock: boolean;
+  abortedMerge: boolean;
 }
 
 export interface CheckpointResult {

@@ -6,7 +6,7 @@ import { CRASH_POINTS, type CrashPoint } from '../../src/modules/ownership/crash
 import { BACKEND_DIR, prepareTemplate } from './infra';
 import { cellLabel, chaosMatrix } from './matrix';
 import { appendLine, FILES, hostInfo, writeSummary, type Invocation } from './results';
-import { RUN_KINDS, type RunKind } from './scenarios';
+import { ALL_KINDS, RUN_KINDS, type RunKind } from './scenarios';
 import { runTrial, type NamedFault, type TrialResult, type TrialSpec } from './trial';
 import { runTwoInstances, type TwoInstanceFault, type TwoInstanceResult } from './two-instances';
 
@@ -25,17 +25,25 @@ import { runTwoInstances, type TwoInstanceFault, type TwoInstanceResult } from '
  *   npm run chaos -w backend -- --kind read --first random --no-launcher
  *   npm run chaos -w backend -- --kind edit-dirty --first graceful
  *   npm run chaos -w backend -- --kind comment --first handoff.before_commit --shutdown
- * One two-instance race, printed:
+ * One two-instance race, printed (--workshop races workshops, several runs per task):
  *   npm run chaos:two -w backend -- --fault stall --seed 2
+ *   npm run chaos:two -w backend -- --fault kill --workshop
  */
 
 const REPO_DIR = path.resolve(BACKEND_DIR, '..');
 const TWO_INSTANCE_RUNS = 50;
 const TWO_INSTANCE_AGENTS = 10;
+/** Workshops per race in the workshop variant; each runs several members at once. */
+const TWO_INSTANCE_WORKSHOPS = 10;
+const RACE_FAULTS = ['kill', 'stall', 'restart'] as const;
+const RACE_VARIANTS = [false, true] as const;
 
 type Values = Record<string, string | boolean | undefined>;
 
 const str = (values: Values, key: string) => (typeof values[key] === 'string' ? (values[key] as string) : undefined);
+
+const raceCount = (summary: ReturnType<typeof writeSummary>) =>
+  [summary.twoInstances, summary.twoInstanceWorkshops].flatMap((groups) => Object.values(groups)).reduce((n, g) => n + g.runs, 0);
 
 function namedFault(value: string): NamedFault {
   const [point, hit] = value.split('@');
@@ -78,7 +86,7 @@ function verdict(result: TrialResult): string {
 
 async function runOne(values: Values): Promise<number> {
   const kind = values.kind as RunKind;
-  if (!RUN_KINDS.includes(kind)) throw new Error(`--kind is one of: ${RUN_KINDS.join(', ')}`);
+  if (!ALL_KINDS.includes(kind)) throw new Error(`--kind is one of: ${ALL_KINDS.join(', ')}`);
   const first = str(values, 'first');
   if (!first) throw new Error('--first is a crash point, "random", or "graceful"');
   const answer = values.answer as TrialSpec['answer'] | undefined;
@@ -103,10 +111,12 @@ async function runTwoOnce(values: Values): Promise<number> {
   const fault = (str(values, 'fault') ?? 'kill') as TwoInstanceFault;
   if (fault !== 'kill' && fault !== 'stall' && fault !== 'restart') throw new Error('--fault is kill, stall, or restart');
   await prepareTemplate();
+  const workshop = values.workshop === true;
   const result = await runTwoInstances({
     fault,
-    runs: TWO_INSTANCE_RUNS,
+    runs: workshop ? TWO_INSTANCE_WORKSHOPS : TWO_INSTANCE_RUNS,
     agents: TWO_INSTANCE_AGENTS,
+    workshop,
     seed: Number(str(values, 'seed') ?? 1),
     failuresDir: str(values, 'failures'),
   });
@@ -135,7 +145,7 @@ async function runMatrix(values: Values): Promise<number> {
   const startedAt = new Date().toISOString();
   await prepareTemplate();
 
-  const total = cells.length * perCell + RUN_KINDS.length * controlsPerKind + 3 * twoPerFault;
+  const total = cells.length * perCell + RUN_KINDS.length * controlsPerKind + RACE_FAULTS.length * RACE_VARIANTS.length * twoPerFault;
   let index = 0;
   const step = () => `[${(index += 1)}/${total}]`;
   const pass = (r: TrialResult) => r.reached && !r.error && r.violations.length === 0 && r.leftovers.length === 0;
@@ -174,11 +184,12 @@ async function runMatrix(values: Values): Promise<number> {
     }
 
     for (let round = 0; round < twoPerFault; round += 1) {
-      for (const fault of ['kill', 'stall', 'restart'] as const) {
+      for (const [workshop, fault] of RACE_VARIANTS.flatMap((w) => RACE_FAULTS.map((f) => [w, f] as const))) {
         const result = await runTwoInstances({
           fault,
-          runs: TWO_INSTANCE_RUNS,
+          runs: workshop ? TWO_INSTANCE_WORKSHOPS : TWO_INSTANCE_RUNS,
           agents: TWO_INSTANCE_AGENTS,
+          workshop,
           seed: baseSeed + round,
           failuresDir,
         });
@@ -187,7 +198,7 @@ async function runMatrix(values: Values): Promise<number> {
         noteStart(result.error);
         const state = result.error ? `ERROR ${result.error}` : `violations ${result.violations.length}`;
         console.log(
-          `${step()} two instances, ${fault}: ${state} | takeovers ${result.takeovers}, fence rejections ${result.fenceRejections}, peak running ${result.peakRunning}`
+          `${step()} two instances${workshop ? ', workshops' : ''}, ${fault}: ${state} | takeovers ${result.takeovers}, fence rejections ${result.fenceRejections}, peak running ${result.peakRunning}`
         );
       }
     }
@@ -212,7 +223,7 @@ async function runMatrix(values: Values): Promise<number> {
     `
 this invocation: ${trials.length} matrix trials (${trials.filter(pass).length} passed), ${races.length} races (${racesFailed} failed)` +
       `
-directory: matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials, ${summary.graceful?.totals.violations ?? 0} violations; controls ${summary.controls.trials}; races ${Object.values(summary.twoInstances).reduce((n, g) => n + g.runs, 0)}` +
+directory: matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials, ${summary.graceful?.totals.violations ?? 0} violations; controls ${summary.controls.trials}; races ${raceCount(summary)}` +
       `
 -> ${path.relative(REPO_DIR, out)}`
   );
@@ -225,7 +236,7 @@ function runSummarize(dir: string): number {
   const summary = writeSummary(out);
   const t = summary.totals;
   console.log(
-    `matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials; controls ${summary.controls.trials}; races ${Object.values(summary.twoInstances).reduce((n, g) => n + g.runs, 0)} -> ${path.relative(REPO_DIR, out)}`
+    `matrix ${t.trials} trials, ${t.passed} passed, ${t.violations} violations; graceful ${summary.graceful?.totals.trials ?? 0} trials; controls ${summary.controls.trials}; races ${raceCount(summary)} -> ${path.relative(REPO_DIR, out)}`
   );
   return 0;
 }
@@ -245,6 +256,7 @@ async function main(): Promise<void> {
       controls: { type: 'string' },
       two: { type: 'string' },
       'two-instances': { type: 'boolean' },
+      workshop: { type: 'boolean' },
       fault: { type: 'string' },
       only: { type: 'string' },
       match: { type: 'string' },

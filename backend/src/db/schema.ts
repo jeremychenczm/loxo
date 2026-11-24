@@ -187,6 +187,28 @@ export type TaskStatus =
   | 'cancelled';
 
 /**
+ * legacy: status-driven wakes (lead on assignment, peers on review).
+ * build / solo: phases advanced by the workshop engine; status is derived.
+ */
+export type Playbook = 'legacy' | 'build' | 'solo';
+
+export type WorkshopPhase =
+  | 'brief'
+  | 'explore'
+  | 'plan'
+  | 'plan_review'
+  | 'build'
+  | 'check'
+  | 'verify'
+  | 'triage'
+  | 'fix'
+  | 'sign_off'
+  | 'approval'
+  | 'merge'
+  | 'done'
+  | 'stopped';
+
+/**
  * Unit of work. Status transitions are enforced by a static transition table
  * in the tasks service, never by direct writes. The lead is always one of
  * the task's active members. number is unique per user and drawn from
@@ -215,6 +237,27 @@ export const tasks = pgTable(
     turnCounter: integer('turn_counter').notNull().default(0),
     /** Position within a kanban column; fractional values allow reorder without renumbering. */
     boardOrder: doublePrecision('board_order').notNull().default(0),
+    playbook: text('playbook').$type<Playbook>().notNull().default('legacy'),
+    /** Null until a workshop starts; legacy tasks never have one. */
+    phase: text('phase').$type<WorkshopPhase>(),
+    /** Fix loops entered so far. */
+    cycle: integer('cycle').notNull().default(0),
+    /** Repeats within the current phase: revisions, re-asks, re-reviews. */
+    round: integer('round').notNull().default(0),
+    /** Brief, repository, base commit, checks, roster, lead and signers frozen at start. */
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>(),
+    snapshotHash: text('snapshot_hash'),
+    planHash: text('plan_hash'),
+    /** Upper bound on unfinished agent dispatches at once. */
+    parallelism: integer('parallelism'),
+    /**
+     * Set in the same transaction that ends a run or answers a request; the
+     * engine advances in its own transaction and clears it, and the
+     * reconciler retries tasks still flagged.
+     */
+    advancePending: boolean('advance_pending').notNull().default(false),
+    /** Consecutive failed advances; the engine asks a person after three. */
+    advanceFailures: integer('advance_failures').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
@@ -224,12 +267,15 @@ export const tasks = pgTable(
     index('tasks_user_status').on(t.userId, t.status),
     index('tasks_repository_status').on(t.repositoryId, t.status),
     index('tasks_lead_agent').on(t.leadAgentId, t.status),
+    /** Reconciler scan for advances that did not complete. */
+    index('tasks_advance_pending').on(t.id).where(sql`${t.advancePending}`),
   ]
 );
 
 export type Task = typeof tasks.$inferSelect;
 
-export type TaskMemberState = 'active' | 'removed';
+/** skipped: left out of a running workshop after a person chose to skip them. */
+export type TaskMemberState = 'active' | 'removed' | 'skipped';
 
 /**
  * Agents taking part in a task. Removed members keep their row so their
@@ -260,7 +306,14 @@ export const taskMembers = pgTable(
 export type TaskMember = typeof taskMembers.$inferSelect;
 
 
-export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review';
+/**
+ * dispatch: created by the workshop engine; what the run may do comes from its dispatch.
+ * platform: one execution of a platform operation; no agent.
+ */
+export type RunTrigger = 'assignment' | 'manual' | 'comment' | 'review' | 'dispatch' | 'platform';
+
+/** platform: a git or check operation the platform runs itself; no agent. */
+export type RunActor = 'agent' | 'platform';
 
 /** interrupted: lost its owner with an uncertain outcome; holds the task until a person decides. */
 export type RunStatus = 'queued' | 'running' | 'interrupted' | 'succeeded' | 'failed' | 'cancelled';
@@ -335,25 +388,40 @@ export const runs = pgTable(
     launcherHost: text('launcher_host'),
     recoveryStep: text('recovery_step').$type<RecoveryStep>(),
     recoveryClass: text('recovery_class').$type<RecoveryClass>(),
+    actor: text('actor').$type<RunActor>().notNull().default('agent'),
+    /** Worktree the run uses, fixed at creation. */
+    workspaceId: uuid('workspace_id').references((): AnyPgColumn => workspaces.id, { onDelete: 'set null' }),
+    /**
+     * Admission exclusion key: ws:<workspace id> for workshop runs, task:<task
+     * id> for legacy runs. Follow-up runs copy it.
+     */
+    gateKey: text('gate_key'),
+    /** The engine's request this run serves; follow-up runs copy it. */
+    dispatchId: uuid('dispatch_id').references((): AnyPgColumn => dispatches.id, { onDelete: 'set null' }),
+    /** The platform operation a platform run executes; retries and follow-ups copy it. */
+    opId: uuid('op_id').references((): AnyPgColumn => platformOps.id, { onDelete: 'set null' }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('runs_task_status').on(t.taskId, t.status),
+    index('runs_dispatch').on(t.dispatchId),
     index('runs_agent_status').on(t.agentId, t.status),
     index('runs_user_created').on(t.userId, t.createdAt),
     /** Reconciler scan for expired leases. */
     index('runs_running_lease').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
     /**
-     * The agent claim and the task execution lock: at most one running run
-     * per agent, and one running or interrupted run per task. Admission flips
-     * a run to running and a held gate surfaces as a unique violation. Keep
-     * the predicates in step with AGENT_GATE_STATUSES and TASK_GATE_STATUSES.
+     * The agent claim and the execution gate: at most one running run per
+     * agent, and one running or interrupted run per gate key (a worktree, or
+     * a whole task for legacy runs; runs without a gate key share nothing).
+     * Admission flips a run to running and a held gate surfaces as a unique
+     * violation. Keep the predicates in step with AGENT_GATE_STATUSES and
+     * GATE_STATUSES.
      */
     uniqueIndex('runs_one_running_per_agent').on(t.agentId).where(sql`${t.status} = 'running'`),
-    uniqueIndex('runs_one_running_per_task')
-      .on(t.taskId)
+    uniqueIndex('runs_one_running_per_gate')
+      .on(t.gateKey)
       .where(sql`${t.status} IN ('running', 'interrupted')`),
     check(
       'runs_running_has_lease',
@@ -368,8 +436,279 @@ export const runs = pgTable(
 
 export type Run = typeof runs.$inferSelect;
 
+export type DispatchPurpose =
+  | 'explore'
+  | 'plan'
+  | 'plan_review'
+  | 'build'
+  | 'resolve'
+  | 'verify'
+  | 'triage'
+  | 'fix'
+  | 'sign_off';
+
+export type DispatchStatus =
+  | 'pending'
+  | 'running'
+  | 'reported'
+  | 'no_report'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
+
+/**
+ * One piece of work the engine asks a member for. Retries, handoffs and
+ * continue decisions are further runs of the same dispatch; a repeat the
+ * engine asks for is a new dispatch with the next round.
+ */
+export const dispatches = pgTable(
+  'dispatches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    phase: text('phase').$type<WorkshopPhase>().notNull(),
+    purpose: text('purpose').$type<DispatchPurpose>().notNull(),
+    /** Work package key; empty when the dispatch belongs to no package. */
+    packageKey: text('package_key').notNull().default(''),
+    cycle: integer('cycle').notNull(),
+    round: integer('round').notNull(),
+    agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    workspaceId: uuid('workspace_id').references((): AnyPgColumn => workspaces.id, { onDelete: 'set null' }),
+    status: text('status').$type<DispatchStatus>().notNull().default('pending'),
+    /** Time budget counted from the first run start, excluding paused spans. */
+    timeoutMs: integer('timeout_ms').notNull(),
+    /** Start of the current running span; cleared on pause, reset on resume. */
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    /** Set while the dispatch waits on a person; the clock stops. */
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** Running time banked before the current span. */
+    elapsedMs: integer('elapsed_ms').notNull().default(0),
+    /** Read back by the lease holder's renewal; the holder stops the run. */
+    cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('dispatches_key').on(t.taskId, t.purpose, t.cycle, t.round, t.agentId, t.packageKey),
+    index('dispatches_task_status').on(t.taskId, t.status),
+  ]
+);
+
+export type Dispatch = typeof dispatches.$inferSelect;
+
+export type PlatformOpStatus = 'wanted' | 'running' | 'done' | 'failed' | 'cancelled';
+
+/**
+ * A git or check operation the platform carries out for a task. Each
+ * execution is a platform run under the gate of the worktree it touches, so
+ * it never overlaps an agent writing there; a retry is a new run of the same
+ * operation. op_key makes asking for the same operation twice harmless.
+ */
+export const platformOps = pgTable(
+  'platform_ops',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    opKey: text('op_key').notNull(),
+    kind: text('kind').notNull(),
+    args: jsonb('args').$type<Record<string, unknown>>().notNull().default({}),
+    workspaceId: uuid('workspace_id').references((): AnyPgColumn => workspaces.id, { onDelete: 'set null' }),
+    status: text('status').$type<PlatformOpStatus>().notNull().default('wanted'),
+    attempts: integer('attempts').notNull().default(0),
+    /** The workshop phase and cycle the operation belongs to; a later phase makes it stale. */
+    phase: text('phase').$type<WorkshopPhase>(),
+    cycle: integer('cycle'),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('platform_ops_key').on(t.taskId, t.opKey),
+    index('platform_ops_task_status').on(t.taskId, t.status),
+  ]
+);
+
+export type PlatformOp = typeof platformOps.$inferSelect;
+
+/**
+ * The single report a dispatch accepts. Terminal tools only insert here, so
+ * a report never needs the task row; a second report for the same dispatch
+ * returns the first.
+ */
+export const dispatchReports = pgTable(
+  'dispatch_reports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    dispatchId: uuid('dispatch_id')
+      .notNull()
+      .references(() => dispatches.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
+    /** Owner epoch the report was fenced under. */
+    epoch: integer('epoch').notNull(),
+    tool: text('tool').notNull(),
+    report: jsonb('report').$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('dispatch_reports_dispatch').on(t.dispatchId)]
+);
+
+export type DispatchReport = typeof dispatchReports.$inferSelect;
+
+/** Append-only history of phase changes, written by the advancing transaction. */
+export const phaseTransitions = pgTable(
+  'phase_transitions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    fromPhase: text('from_phase').$type<WorkshopPhase>(),
+    toPhase: text('to_phase').$type<WorkshopPhase>().notNull(),
+    cycle: integer('cycle').notNull(),
+    round: integer('round').notNull(),
+    /** What satisfied the exit condition: dispatches, an answer, a check, a person. */
+    cause: jsonb('cause').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * The task's last timeline seq when the phase began. A blind phase shows
+     * its participants nothing after it; null on rows from before it was kept.
+     */
+    turnSeq: integer('turn_seq'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('phase_transitions_task').on(t.taskId, t.createdAt)]
+);
+
+export type PhaseTransition = typeof phaseTransitions.$inferSelect;
+
+/**
+ * lead: the lead's report; degraded: one package for the lead, after the lead
+ * gave no acceptable plan; solo: the one package of a solo workshop.
+ */
+export type PlanSource = 'lead' | 'degraded' | 'solo';
+
+/**
+ * Plan versions within a cycle: the first, and at most one revision. The
+ * content is the normalized plan report; hash is over its canonical JSON, and
+ * the version that goes ahead is pinned on the task (tasks.plan_hash).
+ */
+export const plans = pgTable(
+  'plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    cycle: integer('cycle').notNull(),
+    version: integer('version').notNull(),
+    /** The task round when the plan was recorded: the plan-phase instance it came out of. */
+    round: integer('round').notNull(),
+    source: text('source').$type<PlanSource>().notNull(),
+    dispatchId: uuid('dispatch_id').references(() => dispatches.id, { onDelete: 'set null' }),
+    content: jsonb('content').$type<Record<string, unknown>>().notNull(),
+    hash: text('hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('plans_version').on(t.taskId, t.cycle, t.version)]
+);
+
+export type Plan = typeof plans.$inferSelect;
+
+/**
+ * pending until its branch exists; branched while it is built; built once
+ * checkpointed; integrated once merged. A package that conflicts with the
+ * integration branch is conflicted, then resolving while its owner merges
+ * the integration head into the package branch, and built again after.
+ */
+export type WorkPackageStatus = 'pending' | 'branched' | 'built' | 'conflicted' | 'resolving' | 'integrated';
+
+/** The packages of the pinned plan, one row each; keys are unique within a task. */
+export const workPackages = pgTable(
+  'work_packages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    title: text('title').notNull(),
+    ownerAgentId: uuid('owner_agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    area: text('area').notNull(),
+    dependsOn: jsonb('depends_on').$type<string[]>().notNull().default([]),
+    acceptance: jsonb('acceptance').$type<string[]>().notNull().default([]),
+    status: text('status').$type<WorkPackageStatus>().notNull().default('pending'),
+    /** Starts at 0; a reassignment continues on a new branch and bumps it. */
+    attempt: integer('attempt').notNull().default(0),
+    branch: text('branch'),
+    /** Where the branch started: the base for a package without dependencies, else the integration head once they were in. */
+    startCommit: text('start_commit'),
+    /** The branch head after the last checkpoint or resolved merge. */
+    headCommit: text('head_commit'),
+    /** Conflicts resolved on this branch so far. */
+    resolves: integer('resolves').notNull().default(0),
+    /** The integration head the package last conflicted with: the second parent of its resolving merge. */
+    resolveOnto: text('resolve_onto'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('work_packages_key').on(t.taskId, t.key)]
+);
+
+export type WorkPackage = typeof workPackages.$inferSelect;
+
+export type IntegrationOutcome = 'merged' | 'conflicted';
+
+/**
+ * One integration of a package, written by the operation that tried it:
+ * merged into the integration branch, or refused for a conflict that its
+ * owner resolves on the package branch. The integration branch only grows,
+ * so merged rows in order are its history.
+ */
+export const integrations = pgTable(
+  'integrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    opId: uuid('op_id')
+      .notNull()
+      .references(() => platformOps.id, { onDelete: 'cascade' }),
+    packageKey: text('package_key').notNull(),
+    cycle: integer('cycle').notNull(),
+    outcome: text('outcome').$type<IntegrationOutcome>().notNull(),
+    /** The integration head the package was merged onto, or conflicted with. */
+    ontoCommit: text('onto_commit').notNull(),
+    packageHead: text('package_head').notNull(),
+    /** Null for a conflict, or when the package head was already in without a merge of its own. */
+    mergeCommit: text('merge_commit'),
+    conflictFiles: jsonb('conflict_files').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('integrations_op').on(t.opId), index('integrations_task').on(t.taskId, t.createdAt)]
+);
+
+export type Integration = typeof integrations.$inferSelect;
+
 /** Tools whose effect is final for a run: they take effect at most once per run, whatever the arguments. */
-export const TERMINAL_CONTROL_PLANE_TOOLS = ['submit_result', 'submit_review'] as const;
+export const TERMINAL_CONTROL_PLANE_TOOLS = [
+  'submit_result',
+  'submit_review',
+  'submit_exploration',
+  'submit_plan',
+  'submit_plan_review',
+  'submit_verification',
+  'submit_triage',
+  'submit_sign_off',
+] as const;
 
 /**
  * Control-plane writes a run committed, in call order. Each row lands in the
@@ -398,7 +737,9 @@ export const controlPlaneRequests = pgTable(
     /** Terminal tools take effect at most once per run. Keep in step with TERMINAL_CONTROL_PLANE_TOOLS. */
     uniqueIndex('control_plane_requests_terminal')
       .on(t.runId, t.tool)
-      .where(sql`${t.tool} IN ('submit_result', 'submit_review')`),
+      .where(
+        sql`${t.tool} IN ('submit_result', 'submit_review', 'submit_exploration', 'submit_plan', 'submit_plan_review', 'submit_verification', 'submit_triage', 'submit_sign_off')`
+      ),
   ]
 );
 
@@ -561,7 +902,10 @@ export const workspaces = pgTable(
     agentId: uuid('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     /** Generated by the workspace driver; never supplied by the client. */
     worktreePath: text('worktree_path').notNull(),
-    branchName: text('branch_name').notNull(),
+    /** The branch the worktree was created on; null for detached worktrees (reviews, checks). */
+    branchName: text('branch_name'),
+    /** What the platform last checked out in the worktree; null when detached. Prepare and reconcile compare against it. */
+    currentBranch: text('current_branch'),
     baseRef: text('base_ref').notNull(),
     /** Immutable creation point; cumulative diffs and change fingerprints are relative to it. */
     baseCommit: text('base_commit').notNull(),
@@ -640,6 +984,8 @@ export const changeSnapshots = pgTable(
       .notNull()
       .default({ files: [], untracked: [] }),
     changeFingerprint: text('change_fingerprint').notNull(),
+    /** Git tree of the worktree at capture, untracked files included; null for captures made before it was recorded. */
+    treeId: text('tree_id'),
     patchStorageKey: text('patch_storage_key'),
     patchTruncated: boolean('patch_truncated').notNull().default(false),
     /** A read-only run mutated tracked files; blocks automated verdicts. */
@@ -660,7 +1006,10 @@ export type HumanRequestKind =
   | 'permission'
   | 'retry'
   | 'budget'
-  | 'base_drift';
+  | 'base_drift'
+  | 'member_failed'
+  | 'engine_error'
+  | 'plan_dispute';
 
 export type HumanRequestStatus = 'open' | 'answered' | 'expired' | 'cancelled';
 
@@ -680,6 +1029,11 @@ export const humanRequests = pgTable(
     /** Run that raised the request; cancelled with it when the run loses its owner. */
     runId: uuid('run_id').references((): AnyPgColumn => runs.id, { onDelete: 'set null' }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
+    /**
+     * Set on requests the workshop engine opens: kind, cycle, round, package
+     * and worktree, so repeated advances reuse the open request.
+     */
+    dedupeKey: text('dedupe_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     answeredAt: timestamp('answered_at', { withTimezone: true }),
   },
@@ -688,6 +1042,9 @@ export const humanRequests = pgTable(
     index('human_requests_run').on(t.runId),
     /** An interrupted run gets exactly one retry decision. */
     uniqueIndex('human_requests_one_retry_per_run').on(t.runId).where(sql`${t.kind} = 'retry'`),
+    uniqueIndex('human_requests_open_dedupe')
+      .on(t.taskId, t.dedupeKey)
+      .where(sql`${t.status} = 'open' AND ${t.dedupeKey} IS NOT NULL`),
   ]
 );
 

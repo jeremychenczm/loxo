@@ -36,6 +36,7 @@ export interface RunLease {
  */
 export class RunOwnership implements RunLease {
   private readonly controller = new AbortController();
+  private readonly stopper = new AbortController();
   private deadlineMono: number;
   private deadlineWall: number;
   private timer: NodeJS.Timeout | undefined;
@@ -67,6 +68,19 @@ export class RunOwnership implements RunLease {
 
   get signal(): AbortSignal {
     return this.controller.signal;
+  }
+
+  /**
+   * Aborts when the database asks the holder to stop the run (its workshop
+   * dispatch ran out of time, or the workshop stopped). The lease is still
+   * held: the holder stops the agent and settles the run itself.
+   */
+  get stopSignal(): AbortSignal {
+    return this.stopper.signal;
+  }
+
+  requestStop(): void {
+    if (!this.stopper.signal.aborted) this.stopper.abort();
   }
 
   /** Wall-clock time at which this instance stops acting for the run. */
@@ -138,7 +152,8 @@ WITH c AS (
 )
 UPDATE runs SET lease_expires_at = GREATEST(runs.lease_expires_at, clock_timestamp() + $4::integer * interval '1 millisecond')
 FROM c WHERE runs.id = c.id
-RETURNING runs.id, extract(epoch from runs.lease_expires_at - clock_timestamp()) * 1000 AS remaining_ms`;
+RETURNING runs.id, extract(epoch from runs.lease_expires_at - clock_timestamp()) * 1000 AS remaining_ms,
+  EXISTS (SELECT 1 FROM dispatches d WHERE d.id = runs.dispatch_id AND d.cancel_requested_at IS NOT NULL) AS stop`;
 
 const RECHECK_SQL = `
 SELECT o.id, COALESCE(r.owner_instance = $1 AND r.owner_epoch = o.epoch AND r.status = 'running'
@@ -296,13 +311,14 @@ export class LeaseKeeper {
     let renewed: Map<string, number>;
     try {
       const client = await this.connection();
-      const { rows } = await client.query<{ id: string; remaining_ms: string }>(RENEW_SQL, [
+      const { rows } = await client.query<{ id: string; remaining_ms: string; stop: boolean }>(RENEW_SQL, [
         this.instance,
         ids,
         epochs,
         this.ttlMs,
       ]);
       renewed = new Map(rows.map((r) => [r.id, Number(r.remaining_ms)]));
+      for (const row of rows) if (row.stop) this.owned.get(row.id)?.requestStop();
     } catch (err) {
       // The deadline timers fence the runs if renewals keep failing.
       console.error('Lease renewal failed:', err);

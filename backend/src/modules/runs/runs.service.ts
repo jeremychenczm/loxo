@@ -1,25 +1,42 @@
 import { and, asc, desc, eq, getTableColumns, isNull, lte, or, sql } from 'drizzle-orm';
 import { config } from '../../config';
 import { db, type Executor } from '../../db/client';
-import { agents, runs, workspaces, type Run, type RunStatus, type RunTrigger } from '../../db/schema';
+import {
+  agents,
+  dispatches,
+  platformOps,
+  runs,
+  tasks,
+  workspaces,
+  type Run,
+  type RunActor,
+  type RunStatus,
+  type RunTrigger,
+} from '../../db/schema';
 import { notFound } from '../../http/errors';
 import { crashPoint } from '../ownership/crash-points';
 import { FencedError, recordFenceRejection } from '../ownership/fence';
 import { instanceId } from '../ownership/instance';
 
 /**
- * Statuses that hold the agent claim and the task lock. The partial unique
- * indexes runs_one_running_per_agent/_task enforce them; keep both in step.
- * An interrupted run keeps its task (a person decides what happens to its
- * work) but frees its agent for other tasks.
+ * Statuses that hold the agent claim and the execution gate. The partial
+ * unique indexes runs_one_running_per_agent/_gate enforce them; keep both in
+ * step. An interrupted run keeps its gate (a person decides what happens to
+ * its work) but frees its agent for other tasks.
  */
 export const AGENT_GATE_STATUSES = ['running'] as const satisfies readonly RunStatus[];
-export const TASK_GATE_STATUSES = ['running', 'interrupted'] as const satisfies readonly RunStatus[];
+export const GATE_STATUSES = ['running', 'interrupted'] as const satisfies readonly RunStatus[];
 
-const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_task']);
+const GATE_INDEXES = new Set(['runs_one_running_per_agent', 'runs_one_running_per_gate']);
+
+/** The gate a workshop run on a worktree holds; runs without a worktree hold none. */
+export function worktreeGateKey(workspaceId: string | null): string | null {
+  return workspaceId ? `ws:${workspaceId}` : null;
+}
 
 export interface CreateRunInput {
-  agentId: string;
+  /** Null for platform runs, which have no agent. */
+  agentId: string | null;
   agentName: string;
   taskId?: string | null;
   trigger: RunTrigger;
@@ -30,6 +47,16 @@ export interface CreateRunInput {
   attempt?: number;
   /** Keeps the run from being promoted for this long, measured on the database clock. */
   delayMs?: number;
+  /** Defaults to task:<taskId>, the per-task gate legacy runs use. */
+  gateKey?: string | null;
+  workspaceId?: string | null;
+  dispatchId?: string | null;
+  actor?: RunActor;
+  opId?: string | null;
+}
+
+export function taskGateKey(taskId: string): string {
+  return `task:${taskId}`;
 }
 
 export interface RunOutcome {
@@ -78,6 +105,11 @@ export async function createQueuedRun(userId: string, input: CreateRunInput, ex:
       parentRunId: input.parentRunId ?? null,
       attempt: input.attempt ?? 1,
       notBefore: input.delayMs ? sql`clock_timestamp() + ${input.delayMs}::integer * interval '1 millisecond'` : null,
+      gateKey: input.gateKey !== undefined ? input.gateKey : input.taskId ? taskGateKey(input.taskId) : null,
+      workspaceId: input.workspaceId ?? null,
+      dispatchId: input.dispatchId ?? null,
+      actor: input.actor ?? 'agent',
+      opId: input.opId ?? null,
     })
     .returning();
   return run!;
@@ -112,12 +144,78 @@ export async function listRuns(
 const promotable = () => or(isNull(runs.notBefore), lte(runs.notBefore, sql`clock_timestamp()`));
 
 /**
- * The run's task has no quarantined workspace. Checked inside admission so
- * every path (wake, promotion, reconciler) waits instead of starting a run
- * that would collide with a writer that lost its owner.
+ * The run's worktree is not quarantined: the worktree recorded on the run,
+ * or, for a run that has not recorded one yet, any worktree of its task.
+ * Checked inside admission so every path (wake, promotion, reconciler) waits
+ * instead of starting a run that would collide with a writer that lost its
+ * owner. The two operations that exist to release a quarantined worktree
+ * (reset_to_before, reconcile_worktree) are exempt. Shared with the
+ * reconciler's promotion query.
  */
-const notQuarantined = () =>
-  sql`NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.task_id = ${runs.taskId} AND w.status = 'quarantined')`;
+export const notQuarantined = () =>
+  sql`(EXISTS (SELECT 1 FROM ${platformOps} o WHERE o.id = ${runs.opId} AND o.kind IN ('reset_to_before', 'reconcile_worktree'))
+    OR NOT EXISTS (SELECT 1 FROM ${workspaces} w WHERE w.status = 'quarantined' AND (
+      w.id = ${runs.workspaceId} OR (${runs.workspaceId} IS NULL AND w.task_id = ${runs.taskId}))))`;
+
+/**
+ * Records the worktree a run works in once it has one, guarded by ownership
+ * like recordBeforeState. Throws FencedError when the run moved on.
+ */
+export async function recordRunWorkspace(owner: RunOwner, workspaceId: string, executor: Executor = db): Promise<void> {
+  const [row] = await executor
+    .update(runs)
+    .set({ workspaceId })
+    .where(
+      and(
+        eq(runs.id, owner.runId),
+        eq(runs.status, 'running'),
+        eq(runs.ownerEpoch, owner.epoch),
+        eq(runs.ownerInstance, owner.instance)
+      )
+    )
+    .returning({ id: runs.id });
+  if (!row) {
+    recordFenceRejection('run_workspace', owner.runId, owner.epoch);
+    throw new FencedError(owner.runId, owner.epoch, 'run_workspace');
+  }
+}
+
+/**
+ * A workshop run may start only while its dispatch is still wanted: not
+ * ended, not told to stop, and still in the task's current phase, cycle and
+ * round. Runs without a dispatch always pass.
+ */
+const dispatchCurrent = () =>
+  sql`(${runs.dispatchId} IS NULL OR EXISTS (
+    SELECT 1 FROM ${dispatches} d JOIN ${tasks} t ON t.id = d.task_id
+    WHERE d.id = ${runs.dispatchId}
+      AND d.status IN ('pending', 'running')
+      AND d.cancel_requested_at IS NULL
+      AND t.phase = d.phase AND t.cycle = d.cycle AND d.round >= t.round))`;
+
+/**
+ * A platform run may start only while its operation is still wanted, its
+ * task's workshop is not finished (cleanup is what runs after it ends), and,
+ * for an operation tied to a phase, the workshop is still in that phase and
+ * cycle. Runs without one pass.
+ */
+const opCurrent = () =>
+  sql`(${runs.opId} IS NULL OR EXISTS (
+    SELECT 1 FROM ${platformOps} o JOIN ${tasks} t ON t.id = o.task_id
+    WHERE o.id = ${runs.opId}
+      AND o.status IN ('wanted', 'running')
+      AND (t.phase IS NULL OR t.phase NOT IN ('done', 'stopped') OR o.kind = 'cleanup')
+      AND (o.phase IS NULL OR (o.phase = t.phase AND o.cycle IS NOT DISTINCT FROM t.cycle))))`;
+
+/** Cancels a queued workshop or platform run whose dispatch or operation is no longer current; it never started, so nothing else changes. */
+export async function cancelStaleRun(runId: string, executor: Executor = db): Promise<boolean> {
+  const rows = await executor
+    .update(runs)
+    .set({ status: 'cancelled', stopReason: 'stale', error: 'Its workshop moved on before it started', finishedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), sql`NOT (${dispatchCurrent()} AND ${opCurrent()})`))
+    .returning({ id: runs.id });
+  return rows.length > 0;
+}
 
 function isGateConflict(err: unknown): boolean {
   const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
@@ -152,13 +250,26 @@ export async function admitRun(runId: string, options: AdmitOptions = {}): Promi
           leaseExpiresAt: sql`clock_timestamp() + ${ttlMs}::integer * interval '1 millisecond'`,
           startedAt: sql`clock_timestamp()`,
         })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined()))
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued'), promotable(), notQuarantined(), dispatchCurrent(), opCurrent()))
         .returning({
           ...getTableColumns(runs),
           leaseRemainingMs: sql<string>`extract(epoch from ${runs.leaseExpiresAt} - clock_timestamp()) * 1000`,
         });
       if (!row) return undefined;
       crashPoint('admission.after_claim');
+      if (row.opId) {
+        await tx
+          .update(platformOps)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(and(eq(platformOps.id, row.opId), sql`${platformOps.status} IN ('wanted', 'running')`));
+      }
+      if (row.dispatchId) {
+        // The dispatch's clock starts with its first run; follow-up runs keep it going.
+        await tx
+          .update(dispatches)
+          .set({ status: 'running', startedAt: sql`COALESCE(${dispatches.startedAt}, clock_timestamp())`, updatedAt: new Date() })
+          .where(and(eq(dispatches.id, row.dispatchId), sql`${dispatches.status} IN ('pending', 'running')`, isNull(dispatches.pausedAt)));
+      }
       if (row.agentId) {
         await tx
           .update(agents)
@@ -311,12 +422,12 @@ export async function queuedRunFor(agentId: string, taskId: string, ex: Executor
   return run;
 }
 
-/** Oldest promotable queued run waiting on a task; promotion order is FIFO. */
-export async function nextQueuedRunForTask(taskId: string): Promise<Run | undefined> {
+/** Oldest promotable queued run waiting on a gate; promotion order is FIFO. */
+export async function nextQueuedRunForGate(gateKey: string): Promise<Run | undefined> {
   const [run] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.taskId, taskId), eq(runs.status, 'queued'), promotable()))
+    .where(and(eq(runs.gateKey, gateKey), eq(runs.status, 'queued'), promotable()))
     .orderBy(asc(runs.createdAt))
     .limit(1);
   return run;

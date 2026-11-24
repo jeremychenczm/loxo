@@ -6,10 +6,11 @@ import { addAgentTurn, runHasAgentTurns } from '../tasks/turns.service';
 import { RunnerError } from '../runner/runner';
 import { executeTaskTurn } from './task-run';
 import {
+  cancelStaleRun,
   createQueuedRun,
   failQueuedRun,
   nextQueuedRunForAgent,
-  nextQueuedRunForTask,
+  nextQueuedRunForGate,
   queuedRunFor,
   settleRun,
   type RunOutcome,
@@ -18,6 +19,9 @@ import { crashPoint } from '../ownership/crash-points';
 import { fence, FencedError } from '../ownership/fence';
 import { handOffRun } from '../ownership/handoff';
 import { OwnershipLostError, runLeases, type RunOwnership } from '../ownership/lease';
+import { advanceAfterRunEnded, noteRunEnded } from '../workshop/dispatch-end';
+import { postsFallbackReport } from '../workshop/dispatch-info';
+import { executePlatformRun, notePlatformRunEnded, type PlatformRunEnding } from '../workshop/platform-ops';
 
 export type WakeAdmission = 'started' | 'queued' | 'merged';
 
@@ -32,6 +36,9 @@ export interface WakeDecision {
   run: Run;
   admitted: WakeAdmission;
 }
+
+/** Abort reason when the database asked this instance to stop a run, as opposed to a shutdown handoff. */
+const STOP_REQUESTED = 'stop_requested';
 
 /** In-flight executions, awaitable by tests. */
 const settling = new Set<Promise<void>>();
@@ -150,8 +157,15 @@ export async function promoteQueuedRun(run: Run): Promise<boolean> {
  * failure part-way leaves no claim or lock behind.
  */
 async function tryStartRun(run: Run): Promise<Run | undefined> {
-  if (!run.agentId) {
-    await failQueuedRun(run.id, 'Agent no longer exists').catch(() => {});
+  // A platform run has no agent by design; an agent run without one lost it to a deletion.
+  if (run.actor === 'agent' && !run.agentId) {
+    const taskId = await db
+      .transaction(async (tx) => {
+        await failQueuedRun(run.id, 'Agent no longer exists', tx);
+        return noteRunEnded(tx, run.id, { kind: 'settled', status: 'failed' });
+      })
+      .catch(() => null);
+    await advanceAfterRunEnded(taskId);
     return undefined;
   }
   const admission = runLeases.admit(run.id);
@@ -162,12 +176,18 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
   } finally {
     admitting.delete(admission);
   }
-  if (!admitted) return undefined;
+  if (!admitted) {
+    // A queued run whose dispatch or operation is no longer wanted is cancelled rather than left waiting.
+    if (run.dispatchId || run.opId) await cancelStaleRun(run.id).catch(() => {});
+    return undefined;
+  }
 
   const { run: started, lease } = admitted;
   const handoff = new AbortController();
   // Admitted while a shutdown began: hand it on before its agent starts.
   if (runLeases.draining) handoff.abort();
+  // A stop the database asks for (a workshop dispatch out of time, a stopped workshop) uses the same signal.
+  lease.stopSignal.addEventListener('abort', () => handoff.abort(STOP_REQUESTED), { once: true });
   handoffs.set(started.id, handoff);
   const settled = performRun(started, lease, handoff.signal).catch((error) => {
     console.error(`Run ${started.id} settlement failed:`, error);
@@ -182,7 +202,8 @@ async function tryStartRun(run: Run): Promise<Run | undefined> {
 
 async function performRun(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
   try {
-    await executeAndSettle(run, lease, handoff);
+    if (run.actor === 'platform') await executeAndSettlePlatform(run, lease, handoff);
+    else await executeAndSettle(run, lease, handoff);
   } finally {
     runLeases.release(run.id);
   }
@@ -235,7 +256,16 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   if (lease.lost) return;
 
   const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
-  if (handoff.aborted && !completed) {
+  const stopRequested = handoff.aborted && handoff.reason === STOP_REQUESTED;
+  if (stopRequested && !completed) {
+    outcome = {
+      ...outcome,
+      status: 'cancelled',
+      stopReason: 'cancel_requested',
+      error: 'Stopped: its workshop dispatch ran out of time or the workshop was stopped',
+    };
+  }
+  if (handoff.aborted && !completed && !stopRequested) {
     // A refused or failed handoff leaves the run to crash recovery once the lease lapses.
     await handOffRun(owner, outcome).catch((error) => {
       if (!(error instanceof FencedError)) console.error(`Run ${run.id} could not be handed off:`, error);
@@ -246,7 +276,7 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   // Fallback report: only when the agent said nothing through the control
   // plane during the run. Posted while the run still holds the task, so the
   // next run's prompt sees it. Best-effort — the run result stands regardless.
-  if (report && !(await runHasAgentTurns(run.id))) {
+  if (report && !(await runHasAgentTurns(run.id)) && (await postsFallbackReport(run))) {
     const { taskId, agentId, text } = report;
     await db
       .transaction(async (tx) => {
@@ -258,27 +288,80 @@ async function executeAndSettle(run: Run, lease: RunOwnership, handoff: AbortSig
   // If settling fails the run keeps its lease and the reconciler takes it over;
   // if it is refused, the run was taken over and its new owner settles it.
   crashPoint('run.before_settle');
-  const settled = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error').catch(
-    (error) => {
+  let workshopTask: string | null = null;
+  const settled = await db
+    .transaction(async (tx) => {
+      const row = await settleRun(owner, outcome, outcome.status === 'succeeded' ? 'idle' : 'error', tx);
+      if (row) workshopTask = await noteRunEnded(tx, row.id, { kind: 'settled', status: outcome.status });
+      return row;
+    })
+    .catch((error) => {
       console.error(`Run ${run.id} could not be settled:`, error);
       return undefined;
-    }
-  );
+    });
   if (!settled) return;
   crashPoint('run.after_settle');
+  await advanceAfterRunEnded(workshopTask);
   await promoteNext(run);
 }
 
 /**
- * After a run settles, try the oldest queued run waiting on the same task,
- * then the oldest waiting on the same agent. Gate failures leave candidates
- * queued for the next settlement.
+ * Executes a platform operation and settles its run. No agent, no timeline
+ * entries: the operation's own row records the result. A failure is retried
+ * as a new run of the same operation (see notePlatformRunEnded); a shutdown
+ * that interrupts the handler hands the operation to a follow-up run.
+ */
+async function executeAndSettlePlatform(run: Run, lease: RunOwnership, handoff: AbortSignal): Promise<void> {
+  let outcome: RunOutcome;
+  let ending: PlatformRunEnding;
+  try {
+    if (handoff.aborted) throw new RunnerError('Handed off before the operation started', 'aborted');
+    const result = await executePlatformRun(run, { lease, signal: handoff });
+    outcome = { status: 'succeeded' };
+    ending = { kind: 'done', result };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    outcome = { status: 'failed', error: detail };
+    ending = { kind: 'failed', error: detail };
+  }
+  if (lease.lost) return;
+
+  const owner = { runId: run.id, epoch: lease.epoch, instance: runLeases.instance };
+  if (handoff.aborted && ending.kind !== 'done' && handoff.reason !== STOP_REQUESTED) {
+    await handOffRun(owner, outcome).catch((error) => {
+      if (!(error instanceof FencedError)) console.error(`Run ${run.id} could not be handed off:`, error);
+    });
+    return;
+  }
+  crashPoint('run.before_settle');
+  let noted: { taskId: string | null; retry: Run | null } = { taskId: null, retry: null };
+  const settled = await db
+    .transaction(async (tx) => {
+      const row = await settleRun(owner, outcome, 'idle', tx);
+      if (row) noted = await notePlatformRunEnded(tx, row, ending);
+      return row;
+    })
+    .catch((error) => {
+      console.error(`Run ${run.id} could not be settled:`, error);
+      return undefined;
+    });
+  if (!settled) return;
+  crashPoint('run.after_settle');
+  await advanceAfterRunEnded(noted.taskId);
+  if (noted.retry) await startQueuedRuns([noted.retry]);
+  await promoteNext(run);
+}
+
+/**
+ * After a run settles, try the oldest queued run waiting on the gate it
+ * freed, then the oldest waiting on the same agent. Gate failures leave
+ * candidates queued for the next settlement.
  */
 async function promoteNext(finished: Run): Promise<void> {
   const candidates: Run[] = [];
-  if (finished.taskId) {
-    const byTask = await nextQueuedRunForTask(finished.taskId);
-    if (byTask) candidates.push(byTask);
+  if (finished.gateKey) {
+    const byGate = await nextQueuedRunForGate(finished.gateKey);
+    if (byGate) candidates.push(byGate);
   }
   if (finished.agentId) {
     const byAgent = await nextQueuedRunForAgent(finished.agentId);

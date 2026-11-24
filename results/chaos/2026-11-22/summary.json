@@ -1,0 +1,1057 @@
+{
+  "commits": [
+    "f883d1ac42e61b83593e83bd8d2fa2b468153bab",
+    "dd416795169203f5f1f0c687aa822baf5e7a0020"
+  ],
+  "dirty": false,
+  "startedAt": "2026-11-22T08:20:12.220Z",
+  "finishedAt": "2026-11-22T22:20:37.113Z",
+  "host": {
+    "platform": "win32 10.0.26200",
+    "node": "v24.22.1",
+    "cpus": 20,
+    "memoryGb": 16
+  },
+  "settings": {
+    "leaseTtlMs": 4000,
+    "killBudgetMs": 800,
+    "retryBackoffMs": 500,
+    "maxAttempts": 3,
+    "reconcilerCycleMaxMs": 2400
+  },
+  "trialsPerCell": 1,
+  "crashPoints": 13,
+  "runKinds": 6,
+  "totals": {
+    "trials": 60,
+    "passed": 60,
+    "violations": 0,
+    "trialsWithViolations": 0,
+    "errors": 0,
+    "unreached": 0,
+    "fenceRejections": 0,
+    "leftovers": 0
+  },
+  "violationsByInvariant": {},
+  "timingsMs": {
+    "restart": {
+      "samples": 60,
+      "p50": 3471,
+      "p99": 4313,
+      "max": 4313
+    },
+    "recovered": {
+      "samples": 40,
+      "p50": 4640,
+      "p99": 7889,
+      "max": 7889
+    },
+    "settled": {
+      "samples": 60,
+      "p50": 6879,
+      "p99": 28240,
+      "max": 28240
+    },
+    "afterlife": {
+      "samples": 38,
+      "p50": 0,
+      "p99": 48,
+      "max": 48
+    }
+  },
+  "cells": [
+    {
+      "cell": "read wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "read admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "read run.after_spawn_before_pid_recorded@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "read run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "read run.after_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "read random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "read run.before_settle@1+recovery.before_assess@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "read run.before_settle@1+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "comment admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "comment run.after_spawn_before_pid_recorded@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "comment run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment run.after_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "comment control_plane.before_record@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "comment control_plane.after_commit@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment run.before_settle@1+recovery.before_assess@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment run.before_settle@1+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "submit wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "submit admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "submit run.after_spawn_before_pid_recorded@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "submit run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded/known"
+      ]
+    },
+    {
+      "cell": "submit run.after_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "submit control_plane.before_record@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "submit control_plane.after_commit@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded/known"
+      ]
+    },
+    {
+      "cell": "submit random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded/known"
+      ]
+    },
+    {
+      "cell": "submit run.before_settle@1+recovery.before_assess@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded/known"
+      ]
+    },
+    {
+      "cell": "submit run.before_settle@1+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded/known"
+      ]
+    },
+    {
+      "cell": "edit-clean wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-clean admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-clean run.after_spawn_before_pid_recorded@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-clean run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-clean run.after_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-clean run.after_before_ref@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-clean run.before_capture@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "edit-clean random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "edit-clean run.before_settle@1+recovery.before_assess@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-clean run.before_settle@1+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.after_spawn_before_pid_recorded@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.after_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.after_before_ref@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_capture@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_settle@1+recovery.before_assess@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_settle@1+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "comment control_plane.after_commit@1/continue",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/interrupted > succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_settle@1/discard",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/interrupted > succeeded"
+      ]
+    },
+    {
+      "cell": "edit-dirty run.before_settle@1+decision.before_commit@1/discard",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/interrupted > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop wake.before_start@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop admission.after_claim@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "failed/retry > failed/retry > failed/retry > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop workshop.after_advance@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop admission.after_claim@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > interrupted/interrupted > interrupted/interrupted"
+      ]
+    },
+    {
+      "cell": "workshop run.after_settle@4",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > succeeded > interrupted/interrupted > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop random",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > failed/retry > failed/retry > succeeded > succeeded > succeeded > succeeded"
+      ]
+    },
+    {
+      "cell": "workshop run.before_settle@4+recovery.before_resolve@1",
+      "trials": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "outcomes": [
+        "succeeded > succeeded > succeeded > interrupted/interrupted > failed/retry > succeeded > succeeded"
+      ]
+    }
+  ],
+  "graceful": {
+    "totals": {
+      "trials": 17,
+      "passed": 17,
+      "violations": 0,
+      "trialsWithViolations": 0,
+      "errors": 0,
+      "unreached": 0,
+      "fenceRejections": 0,
+      "leftovers": 0
+    },
+    "violationsByInvariant": {},
+    "cleanTrials": 6,
+    "sentToPerson": 0,
+    "recoveredAfterClean": 0,
+    "timingsMs": {
+      "shutdown": {
+        "samples": 6,
+        "p50": 475,
+        "p99": 1814,
+        "max": 1814
+      },
+      "handoff": {
+        "samples": 4,
+        "p50": 4373,
+        "p99": 5387,
+        "max": 5387
+      },
+      "afterlife": {
+        "samples": 17,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "cells": [
+      {
+        "cell": "read graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "read graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "failed/retry > succeeded"
+        ]
+      },
+      {
+        "cell": "read graceful>handoff.after_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "comment graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "comment graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "failed/retry > succeeded"
+        ]
+      },
+      {
+        "cell": "comment graceful>handoff.after_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "submit graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded"
+        ]
+      },
+      {
+        "cell": "submit graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "failed/retry > succeeded"
+        ]
+      },
+      {
+        "cell": "submit graceful>handoff.after_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded"
+        ]
+      },
+      {
+        "cell": "edit-clean graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "edit-clean graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "interrupted/interrupted"
+        ]
+      },
+      {
+        "cell": "edit-clean graceful>handoff.after_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "edit-dirty graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "edit-dirty graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "interrupted/interrupted"
+        ]
+      },
+      {
+        "cell": "edit-dirty graceful>handoff.after_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "cancelled > succeeded"
+        ]
+      },
+      {
+        "cell": "workshop graceful",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded > succeeded > succeeded > succeeded > succeeded > succeeded > succeeded"
+        ]
+      },
+      {
+        "cell": "workshop graceful>handoff.before_commit@1",
+        "trials": 1,
+        "passed": 1,
+        "violations": 0,
+        "errors": 0,
+        "outcomes": [
+          "succeeded > succeeded > succeeded > failed/retry > interrupted/interrupted > succeeded > succeeded"
+        ]
+      }
+    ]
+  },
+  "controls": {
+    "trials": 0,
+    "trialsWithViolations": 0,
+    "errors": 0,
+    "violationsByInvariant": {},
+    "afterlifeMs": {
+      "samples": 0,
+      "p50": null,
+      "p99": null,
+      "max": null
+    }
+  },
+  "twoInstances": {
+    "kill": {
+      "runs": 2,
+      "passed": 2,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 100,
+      "takeovers": 14,
+      "fenceRejections": 0,
+      "peakRunning": 10,
+      "settledMs": {
+        "samples": 2,
+        "p50": 24349,
+        "p99": 37168,
+        "max": 37168
+      },
+      "afterlifeMs": {
+        "samples": 2,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "stall": {
+      "runs": 2,
+      "passed": 2,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 100,
+      "takeovers": 11,
+      "fenceRejections": 1,
+      "peakRunning": 10,
+      "settledMs": {
+        "samples": 2,
+        "p50": 16959,
+        "p99": 32032,
+        "max": 32032
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "restart": {
+      "runs": 2,
+      "passed": 1,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 100,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": 10,
+      "settledMs": {
+        "samples": 1,
+        "p50": 21321,
+        "p99": 21321,
+        "max": 21321
+      },
+      "afterlifeMs": {
+        "samples": 1,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "twoInstanceWorkshops": {
+    "kill": {
+      "runs": 2,
+      "passed": 1,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 20,
+      "takeovers": 6,
+      "fenceRejections": 0,
+      "peakRunning": 30,
+      "settledMs": {
+        "samples": 1,
+        "p50": 25481,
+        "p99": 25481,
+        "max": 25481
+      },
+      "afterlifeMs": {
+        "samples": 1,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    },
+    "stall": {
+      "runs": 2,
+      "passed": 1,
+      "violations": 0,
+      "errors": 1,
+      "wokenRuns": 20,
+      "takeovers": 13,
+      "fenceRejections": 1,
+      "peakRunning": 30,
+      "settledMs": {
+        "samples": 1,
+        "p50": 29062,
+        "p99": 29062,
+        "max": 29062
+      },
+      "afterlifeMs": {
+        "samples": 0,
+        "p50": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "restart": {
+      "runs": 1,
+      "passed": 1,
+      "violations": 0,
+      "errors": 0,
+      "wokenRuns": 10,
+      "takeovers": 0,
+      "fenceRejections": 0,
+      "peakRunning": 30,
+      "settledMs": {
+        "samples": 1,
+        "p50": 19695,
+        "p99": 19695,
+        "max": 19695
+      },
+      "afterlifeMs": {
+        "samples": 1,
+        "p50": 0,
+        "p99": 0,
+        "max": 0
+      }
+    }
+  },
+  "invocations": [
+    {
+      "commit": "f883d1ac42e61b83593e83bd8d2fa2b468153bab",
+      "dirty": false,
+      "startedAt": "2026-11-22T08:20:12.220Z",
+      "finishedAt": "2026-11-22T09:07:20.815Z",
+      "requested": {
+        "trials": 1,
+        "controls": 0,
+        "two": 1
+      },
+      "host": {
+        "platform": "win32 10.0.26200",
+        "node": "v24.22.1",
+        "cpus": 20,
+        "memoryGb": 16
+      },
+      "note": "stopped early: Three trials in a row could not start a backend instance; stopped. Check free memory."
+    },
+    {
+      "commit": "dd416795169203f5f1f0c687aa822baf5e7a0020",
+      "dirty": false,
+      "startedAt": "2026-11-22T22:11:07.950Z",
+      "finishedAt": "2026-11-22T22:20:37.113Z",
+      "requested": {
+        "trials": 0,
+        "controls": 0,
+        "two": 1
+      },
+      "host": {
+        "platform": "win32 10.0.26200",
+        "node": "v24.22.1",
+        "cpus": 20,
+        "memoryGb": 16
+      }
+    }
+  ]
+}

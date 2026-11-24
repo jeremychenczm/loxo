@@ -110,6 +110,8 @@ interface TrialPaths {
   dir: string;
   storage: string;
   witness: string;
+  /** Platform operation witnesses; apart from the agents', whose file names are pids. */
+  platformWitness: string;
   logs: string;
   repo: string;
   agent: string;
@@ -128,10 +130,14 @@ async function setUp(api: Api, kind: RunKindSpec, paths: TrialPaths, id: string,
     password: 'chaos-trial-password',
   });
   api.token = reg.token;
-  const { agent } = await api.call<{ agent: { id: string } }>('POST', '/api/agents', {
-    name: 'Chaos agent',
-    runtime: 'claude-code',
-  });
+  const agentIds: string[] = [];
+  for (let i = 0; i < (kind.members ?? 1); i += 1) {
+    const { agent } = await api.call<{ agent: { id: string } }>('POST', '/api/agents', {
+      name: kind.members ? `Chaos member ${i + 1}` : 'Chaos agent',
+      runtime: 'claude-code',
+    });
+    agentIds.push(agent.id);
+  }
   let repositoryId: string | undefined;
   if (kind.repository) {
     initRepository(paths.repo);
@@ -142,10 +148,16 @@ async function setUp(api: Api, kind: RunKindSpec, paths: TrialPaths, id: string,
   }
   const { task } = await api.call<{ task: { id: string } }>('POST', '/api/tasks', {
     title: `Chaos trial ${id}`,
-    leadAgentId: agent.id,
+    leadAgentId: agentIds[0],
+    ...(kind.members ? { playbook: 'build', memberAgentIds: agentIds } : {}),
     ...(repositoryId ? { repositoryId } : {}),
   });
   setup.taskId = task.id;
+  if (kind.members) {
+    await api.call('POST', `/api/tasks/${task.id}/start`);
+    setup.wakeAccepted = true;
+    return;
+  }
   // Entering todo wakes the lead through the outbox, as a person dragging the card does.
   await api.call('POST', `/api/tasks/${task.id}/move`, { status: 'todo' });
   setup.wakeAccepted = true;
@@ -232,12 +244,24 @@ async function trialProcesses(db: pg.Pool, witnessDir: string): Promise<number[]
 
 async function keepEvidence(db: pg.Pool, paths: TrialPaths, target: string): Promise<void> {
   fs.mkdirSync(target, { recursive: true });
-  for (const dir of [paths.logs, paths.witness]) {
+  for (const dir of [paths.logs, paths.witness, paths.platformWitness]) {
     fs.cpSync(dir, path.join(target, path.basename(dir)), { recursive: true });
   }
   if (fs.existsSync(paths.crashLog)) fs.copyFileSync(paths.crashLog, path.join(target, 'crashes.jsonl'));
   const tables: Record<string, unknown[]> = {};
-  for (const table of ['runs', 'human_requests', 'workspaces', 'control_plane_requests', 'turns', 'run_events', 'change_snapshots']) {
+  for (const table of [
+    'runs',
+    'human_requests',
+    'workspaces',
+    'control_plane_requests',
+    'turns',
+    'run_events',
+    'change_snapshots',
+    'dispatches',
+    'dispatch_reports',
+    'platform_ops',
+    'phase_transitions',
+  ]) {
     tables[table] = (
       await db.query(`SELECT *, pg_xact_commit_timestamp(xmin) AS committed_at FROM ${table}`).catch(() => ({ rows: [] }))
     ).rows;
@@ -259,12 +283,13 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     dir,
     storage: path.join(dir, 'storage'),
     witness: path.join(dir, 'witness'),
+    platformWitness: path.join(dir, 'platform-witness'),
     logs: path.join(dir, 'logs'),
     repo: path.join(dir, 'repo'),
     agent: path.join(dir, 'agent.mjs'),
     crashLog: path.join(dir, 'crashes.jsonl'),
   };
-  for (const sub of [paths.storage, paths.witness, paths.logs]) fs.mkdirSync(sub, { recursive: true });
+  for (const sub of [paths.storage, paths.witness, paths.platformWitness, paths.logs]) fs.mkdirSync(sub, { recursive: true });
   writeAgentScript(paths.agent, kind.scenario(id), paths.witness);
 
   const result: TrialResult = {
@@ -303,6 +328,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
       crashLog: paths.crashLog,
       crashAt: fault ? faultValue(fault) : undefined,
       launcher: spec.launcher,
+      platformWitnessDir: paths.platformWitness,
     });
     instances.push(instance);
     return instance;
@@ -421,6 +447,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
       db,
       wakeRuns: roots.map((r) => r.id),
       witnessDir: paths.witness,
+      platformWitnessDir: paths.platformWitness,
       // Generous on purpose: a run promoted a moment before the check is not stuck.
       cycleMs: LEASE_TTL_MS,
       deaths,
@@ -432,7 +459,7 @@ export async function runTrial(spec: TrialSpec, options: TrialOptions = {}): Pro
     );
     result.afterlifeMs = afterlives.length > 0 ? Math.max(...afterlives) : null;
     if (setup.wakeAccepted && setup.taskId && !roots.some((r) => r.task_id === setup.taskId)) {
-      result.violations.push({ invariant: 'INV-8', subject: setup.taskId, detail: 'accepted wake left no run' });
+      result.violations.push({ invariant: 'INV-8', subject: setup.taskId, detail: 'accepted wake or start left no run' });
     }
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);

@@ -101,6 +101,7 @@ export function buildSummary(dir: string) {
     graceful: gracefulTrials.length > 0 ? summarizeGraceful(gracefulTrials) : null,
     controls: summarizeControls(controls),
     twoInstances: summarizeTwoInstances(races),
+    twoInstanceWorkshops: summarizeTwoInstances(races, true),
     invocations,
   };
 }

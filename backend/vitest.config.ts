@@ -15,12 +15,13 @@ export default defineConfig({
       STORAGE_ROOT: process.env.STORAGE_ROOT ?? path.join(os.tmpdir(), 'loxo-test-storage'),
     },
     fileParallelism: false,
-    // `npm run test:coverage`: the run-ownership and recovery modules must stay covered.
+    // `npm run test:coverage`: the run-ownership, recovery and workshop engine modules must stay covered.
     coverage: {
       provider: 'v8',
       include: [
         'src/lib/child-env.ts',
         'src/modules/ownership/**/*.ts',
+        'src/modules/workshop/**/*.ts',
         'src/modules/hosts/launcher/launcher.ts',
         'src/modules/control-plane/run-token.ts',
         'src/modules/runs/run-effects.ts',
