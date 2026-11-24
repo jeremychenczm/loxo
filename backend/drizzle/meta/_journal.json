@@ -351,6 +351,13 @@
       "when": 1795405795883,
       "tag": "0049_package-branches",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795481333071,
+      "tag": "0050_package-resolves",
+      "breakpoints": true
     }
   ]
 }

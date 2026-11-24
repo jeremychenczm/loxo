@@ -1,9 +1,11 @@
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
+  integrations,
   runs,
   workPackages,
+  type IntegrationOutcome,
   type PlatformOp,
   type WorkPackage,
   type WorkPackageStatus,
@@ -42,10 +44,25 @@ export interface PackageObservation {
   branch?: string;
   startCommit?: string;
   headCommit?: string;
+  resolves?: number;
+  resolveOnto?: string;
+}
+
+/** What an integration came to, recorded once per operation when its run settles. */
+export interface IntegrationObservation {
+  packageKey: string;
+  outcome: IntegrationOutcome;
+  ontoCommit: string;
+  packageHead: string;
+  mergeCommit: string | null;
+  conflictFiles: string[];
 }
 
 /** Operations allowed on a quarantined worktree: they exist to release one. */
 export const QUARANTINE_RECOVERY_OPS = ['reset_to_before', 'reconcile_worktree'] as const;
+
+/** Operations that run in a package worktree mid-merge; a redo must not abort that merge. */
+export const KEEPS_MERGE_OPS: readonly string[] = ['begin_resolve', 'finish_resolve'];
 
 async function worktreeOf(op: PlatformOp): Promise<{ workspace: Workspace; repositoryRoot: string }> {
   const workspace = op.workspaceId ? await getWorkspace(op.workspaceId) : null;
@@ -167,7 +184,12 @@ const checkpoint: PlatformOpHandler = async (op) => {
   return { worktree, package: observed };
 };
 
-/** Merges a built package into the integration branch with a merge commit; a package already merged is left alone. */
+/**
+ * Merges a built package into the integration branch with a merge commit,
+ * once a trial merge shows it is clean; a package already merged is left
+ * alone. A conflict leaves the integration worktree untouched: the package
+ * is marked conflicted against the current head, for its owner to resolve.
+ */
 const integrate: PlatformOpHandler = async (op) => {
   const { workspace } = await worktreeOf(op);
   const pkg = await packageOf(op);
@@ -178,9 +200,76 @@ const integrate: PlatformOpHandler = async (op) => {
     message: `Integrate package ${pkg.key}: ${pkg.title}`,
     identity: PLATFORM_IDENTITY,
   });
-  if (merged.result === 'conflicted') throw new Error(`Package "${pkg.key}" conflicts with the integration branch`);
+  const conflicted = merged.result === 'conflicted';
   const worktree: WorktreeObservation = { id: workspace.id, status: 'ready', headCommit: merged.head, lastError: null };
-  const observed: PackageObservation = { key: pkg.key, status: 'integrated' };
+  const observed: PackageObservation = conflicted
+    ? { key: pkg.key, status: 'conflicted', resolveOnto: merged.onto }
+    : { key: pkg.key, status: 'integrated' };
+  const integration: IntegrationObservation = {
+    packageKey: pkg.key,
+    outcome: conflicted ? 'conflicted' : 'merged',
+    ontoCommit: merged.onto,
+    packageHead: merged.tip,
+    mergeCommit: merged.mergeCommit,
+    conflictFiles: merged.conflicts,
+  };
+  return { worktree, package: observed, integration };
+};
+
+/** A package with a conflict to resolve: its branch, head and the integration head it conflicted with. */
+function resolvable(pkg: WorkPackage): { branch: string; head: string; onto: string } {
+  if (!pkg.branch || !pkg.headCommit || !pkg.resolveOnto) throw new Error(`Package "${pkg.key}" has no conflict to resolve`);
+  return { branch: pkg.branch, head: pkg.headCommit, onto: pkg.resolveOnto };
+}
+
+/**
+ * Puts the owner's worktree on the package branch with the integration head
+ * it conflicted with merged in but not committed, conflict markers in place.
+ */
+const beginResolve: PlatformOpHandler = async (op) => {
+  const { workspace } = await worktreeOf(op);
+  const pkg = await packageOf(op);
+  const { branch, head, onto } = resolvable(pkg);
+  const { conflicts } = await localGitDriver.beginPackageMerge({ worktreePath: workspace.worktreePath, branch, head, onto });
+  const worktree: WorktreeObservation = { id: workspace.id, status: 'dirty', headCommit: head, currentBranch: branch, lastError: null };
+  const observed: PackageObservation = { key: pkg.key, status: 'resolving' };
+  return { worktree, package: observed, conflicts };
+};
+
+/** The files the package's latest integration conflicted on, when it was against the head being resolved. */
+async function conflictFilesOf(pkg: WorkPackage): Promise<string[]> {
+  const [latest] = await db
+    .select({ ontoCommit: integrations.ontoCommit, conflictFiles: integrations.conflictFiles })
+    .from(integrations)
+    .where(and(eq(integrations.taskId, pkg.taskId), eq(integrations.packageKey, pkg.key), eq(integrations.outcome, 'conflicted')))
+    .orderBy(desc(integrations.createdAt))
+    .limit(1);
+  return latest && latest.ontoCommit === pkg.resolveOnto ? latest.conflictFiles : [];
+}
+
+/**
+ * Commits the owner's resolution onto the package branch as a merge of the
+ * branch head and the integration head, authored as the owner via the
+ * platform. The package is built again, one resolve further, and goes back
+ * to integration.
+ */
+const finishResolve: PlatformOpHandler = async (op) => {
+  const { workspace } = await worktreeOf(op);
+  const pkg = await packageOf(op);
+  const { branch, head, onto } = resolvable(pkg);
+  const author = typeof op.args.author === 'string' && op.args.author ? op.args.author : 'A member';
+  const { commit } = await localGitDriver.finishPackageMerge({
+    worktreePath: workspace.worktreePath,
+    branch,
+    head,
+    onto,
+    conflicts: await conflictFilesOf(pkg),
+    message: `Resolve package ${pkg.key} against the integration branch`,
+    author: { name: `${author} via Loxo`, email: PLATFORM_IDENTITY.email },
+    committer: PLATFORM_IDENTITY,
+  });
+  const worktree: WorktreeObservation = { id: workspace.id, status: 'ready', headCommit: commit, lastError: null };
+  const observed: PackageObservation = { key: pkg.key, status: 'built', headCommit: commit, resolves: pkg.resolves + 1 };
   return { worktree, package: observed };
 };
 
@@ -189,6 +278,8 @@ export const BUILT_IN_PLATFORM_OPS: Readonly<Record<string, PlatformOpHandler>> 
   branch_package: branchPackage,
   checkpoint,
   integrate,
+  begin_resolve: beginResolve,
+  finish_resolve: finishResolve,
   reset_to_before: resetToBefore,
   reconcile_worktree: reconcileWorktree,
   cleanup,

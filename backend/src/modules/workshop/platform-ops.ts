@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   humanRequests,
+  integrations,
   platformOps,
   tasks,
   workPackages,
@@ -16,7 +17,13 @@ import {
 } from '../../db/schema';
 import { localGitDriver } from '../code-workspaces/local-git-driver';
 import { getWorkspace } from '../code-workspaces/workspace.service';
-import { BUILT_IN_PLATFORM_OPS, type PackageObservation, type WorktreeObservation } from './platform-op-kinds';
+import {
+  BUILT_IN_PLATFORM_OPS,
+  KEEPS_MERGE_OPS,
+  type IntegrationObservation,
+  type PackageObservation,
+  type WorktreeObservation,
+} from './platform-op-kinds';
 import type { RunLease } from '../ownership/lease';
 import { createQueuedRun, worktreeGateKey } from '../runs/runs.service';
 
@@ -154,7 +161,7 @@ export async function executePlatformRun(run: Run, ctx: Omit<PlatformOpContext, 
   if (run.parentRunId && op.workspaceId) {
     const workspace = await getWorkspace(op.workspaceId);
     if (workspace && fs.existsSync(workspace.worktreePath)) {
-      await localGitDriver.clearInterruptedState(workspace.worktreePath, { keepMerge: op.kind === 'begin_resolve' });
+      await localGitDriver.clearInterruptedState(workspace.worktreePath, { keepMerge: KEEPS_MERGE_OPS.includes(op.kind) });
     }
   }
   const witnessed = witness(run, ctx.lease.epoch);
@@ -237,6 +244,8 @@ export async function notePlatformRunEnded(
     if (observed) await applyWorktreeObservation(tx, observed);
     const pkg = ending.result.package as PackageObservation | undefined;
     if (pkg) await applyPackageObservation(tx, op.taskId, pkg);
+    const integration = ending.result.integration as IntegrationObservation | undefined;
+    if (integration) await recordIntegration(tx, op, integration);
     return { taskId: op.taskId, retry: null };
   }
   if (run.attempt < config.runMaxAttempts) {
@@ -284,9 +293,18 @@ async function applyPackageObservation(tx: Tx, taskId: string, observed: Package
       ...(observed.branch !== undefined ? { branch: observed.branch } : {}),
       ...(observed.startCommit !== undefined ? { startCommit: observed.startCommit } : {}),
       ...(observed.headCommit !== undefined ? { headCommit: observed.headCommit } : {}),
+      ...(observed.resolves !== undefined ? { resolves: observed.resolves } : {}),
+      ...(observed.resolveOnto !== undefined ? { resolveOnto: observed.resolveOnto } : {}),
       updatedAt: new Date(),
     })
     .where(and(eq(workPackages.taskId, taskId), eq(workPackages.key, observed.key)));
+}
+
+async function recordIntegration(tx: Tx, op: PlatformOp, observed: IntegrationObservation): Promise<void> {
+  await tx
+    .insert(integrations)
+    .values({ taskId: op.taskId, opId: op.id, cycle: op.cycle ?? 0, ...observed })
+    .onConflictDoNothing();
 }
 
 const OP_REQUEST_PREFIX = 'platform_op:';

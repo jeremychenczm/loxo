@@ -620,8 +620,13 @@ export const plans = pgTable(
 
 export type Plan = typeof plans.$inferSelect;
 
-/** pending until its branch exists; branched while it is built; built once checkpointed; integrated once merged. */
-export type WorkPackageStatus = 'pending' | 'branched' | 'built' | 'integrated';
+/**
+ * pending until its branch exists; branched while it is built; built once
+ * checkpointed; integrated once merged. A package that conflicts with the
+ * integration branch is conflicted, then resolving while its owner merges
+ * the integration head into the package branch, and built again after.
+ */
+export type WorkPackageStatus = 'pending' | 'branched' | 'built' | 'conflicted' | 'resolving' | 'integrated';
 
 /** The packages of the pinned plan, one row each; keys are unique within a task. */
 export const workPackages = pgTable(
@@ -646,8 +651,12 @@ export const workPackages = pgTable(
     branch: text('branch'),
     /** Where the branch started: the base for a package without dependencies, else the integration head once they were in. */
     startCommit: text('start_commit'),
-    /** The branch head after the last checkpoint. */
+    /** The branch head after the last checkpoint or resolved merge. */
     headCommit: text('head_commit'),
+    /** Conflicts resolved on this branch so far. */
+    resolves: integer('resolves').notNull().default(0),
+    /** The integration head the package last conflicted with: the second parent of its resolving merge. */
+    resolveOnto: text('resolve_onto'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -655,6 +664,40 @@ export const workPackages = pgTable(
 );
 
 export type WorkPackage = typeof workPackages.$inferSelect;
+
+export type IntegrationOutcome = 'merged' | 'conflicted';
+
+/**
+ * One integration of a package, written by the operation that tried it:
+ * merged into the integration branch, or refused for a conflict that its
+ * owner resolves on the package branch. The integration branch only grows,
+ * so merged rows in order are its history.
+ */
+export const integrations = pgTable(
+  'integrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    opId: uuid('op_id')
+      .notNull()
+      .references(() => platformOps.id, { onDelete: 'cascade' }),
+    packageKey: text('package_key').notNull(),
+    cycle: integer('cycle').notNull(),
+    outcome: text('outcome').$type<IntegrationOutcome>().notNull(),
+    /** The integration head the package was merged onto, or conflicted with. */
+    ontoCommit: text('onto_commit').notNull(),
+    packageHead: text('package_head').notNull(),
+    /** Null for a conflict, or when the package head was already in without a merge of its own. */
+    mergeCommit: text('merge_commit'),
+    conflictFiles: jsonb('conflict_files').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('integrations_op').on(t.opId), index('integrations_task').on(t.taskId, t.createdAt)]
+);
+
+export type Integration = typeof integrations.$inferSelect;
 
 /** Tools whose effect is final for a run: they take effect at most once per run, whatever the arguments. */
 export const TERMINAL_CONTROL_PLANE_TOOLS = [

@@ -60,47 +60,78 @@ const PLATFORM_IDENTITY = {
 
 type ExecError = NodeJS.ErrnoException & { stderr?: Buffer; stdout?: Buffer };
 
+/** A line that opens or closes a conflict hunk, as git writes them. */
+const CONFLICT_MARKER = /^(<{7}|>{7})(?: |\r?$)/m;
+
+/** What merging a package branch came to: the head it was merged onto, the package tip, and the files in conflict. */
+export interface PackageMerge {
+  result: 'merged' | 'already_merged' | 'conflicted';
+  head: string;
+  onto: string;
+  tip: string;
+  /** Null for a conflict, or when the tip was already in without a merge of its own. */
+  mergeCommit: string | null;
+  conflicts: string[];
+}
+
 interface GitOptions {
   env?: Record<string, string>;
   stdin?: string;
 }
 
+async function execGit(cwd: string, args: string[], options: GitOptions): Promise<Buffer> {
+  const pending = execFileAsync('git', args, {
+    cwd,
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: GIT_MAX_BUFFER,
+    windowsHide: true,
+    encoding: 'buffer',
+    // No optional locks: read-only commands such as status must not refresh the
+    // user's index as a side effect.
+    env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', ...options.env }),
+  });
+  // Git may exit before reading its input (an early failure, or a command that
+  // reads none); the write then fails with EPIPE. The exit status reports the
+  // outcome; an unhandled stream error would take the whole process down.
+  pending.child.stdin?.on('error', () => {});
+  pending.child.stdin?.end(options.stdin ?? '');
+  const { stdout } = await pending;
+  return stdout;
+}
+
+function gitError(err: unknown, cwd: string, args: string[]): GitDriverError {
+  const e = err as ExecError;
+  if (e.code === 'ENOENT') {
+    return new GitDriverError('git_failed', 'Git executable not found on PATH');
+  }
+  if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+    return new GitDriverError('output_overflow', `git ${args[0] ?? ''} output exceeded the buffer limit`);
+  }
+  const stderr = e.stderr?.toString('utf8').trim() ?? '';
+  if (/not a git repository/i.test(stderr)) {
+    return new GitDriverError('not_a_repository', `${cwd} is not a Git repository`);
+  }
+  return new GitDriverError('git_failed', `git ${args[0] ?? ''} failed${stderr ? `: ${stderr.slice(0, 500)}` : ''}`);
+}
+
 /** Fixed-argument Git execution; never a shell, never client-supplied argv. Exported for tests only. */
 export async function runGit(cwd: string, args: string[], options: GitOptions = {}): Promise<Buffer> {
   try {
-    const pending = execFileAsync('git', args, {
-      cwd,
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-      windowsHide: true,
-      encoding: 'buffer',
-      // No optional locks: read-only commands such as status must not refresh the
-      // user's index as a side effect.
-      env: childEnv('git', { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', ...options.env }),
-    });
-    // Git may exit before reading its input (an early failure, or a command that
-    // reads none); the write then fails with EPIPE. The exit status reports the
-    // outcome; an unhandled stream error would take the whole process down.
-    pending.child.stdin?.on('error', () => {});
-    pending.child.stdin?.end(options.stdin ?? '');
-    const { stdout } = await pending;
-    return stdout;
+    return await execGit(cwd, args, options);
   } catch (err) {
-    const e = err as ExecError;
-    if (e.code === 'ENOENT') {
-      throw new GitDriverError('git_failed', 'Git executable not found on PATH');
-    }
-    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-      throw new GitDriverError('output_overflow', `git ${args[0] ?? ''} output exceeded the buffer limit`);
-    }
-    const stderr = e.stderr?.toString('utf8').trim() ?? '';
-    if (/not a git repository/i.test(stderr)) {
-      throw new GitDriverError('not_a_repository', `${cwd} is not a Git repository`);
-    }
-    throw new GitDriverError(
-      'git_failed',
-      `git ${args[0] ?? ''} failed${stderr ? `: ${stderr.slice(0, 500)}` : ''}`
-    );
+    throw gitError(err, cwd, args);
+  }
+}
+
+/** For commands that answer with exit status 1 (merge-tree reports conflicts that way): the status and the output. */
+async function runGitAnswering(cwd: string, args: string[]): Promise<{ status: 0 | 1; stdout: Buffer }> {
+  try {
+    return { status: 0, stdout: await execGit(cwd, args, {}) };
+  } catch (err) {
+    // A process that exits nonzero reports its exit status as a number in `code`.
+    const e = err as { code?: unknown; stdout?: Buffer };
+    if (e.code === 1 && e.stdout) return { status: 1, stdout: e.stdout };
+    throw gitError(err, cwd, args);
   }
 }
 
@@ -577,16 +608,28 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
 
   /**
    * Merges a package branch into the worktree's current branch with a merge
-   * commit under `identity`. A branch already merged is left alone; a
-   * conflict is aborted and reported, leaving the worktree as it was.
+   * commit under `identity`, after computing the merge in memory first
+   * (`merge-tree`): a conflict is reported with its files and the worktree is
+   * never touched. A branch already merged is left alone and its merge commit
+   * found in the history.
    */
-  async mergePackage(input: { worktreePath: string; branch: string; message: string; identity: GitIdentity }): Promise<{ result: 'merged' | 'already_merged' | 'conflicted'; head: string }> {
+  async mergePackage(input: { worktreePath: string; branch: string; message: string; identity: GitIdentity }): Promise<PackageMerge> {
+    const cwd = input.worktreePath;
     const branch = assertSafeRefName(input.branch);
-    const tip = line(await runGit(input.worktreePath, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]));
-    const headNow = () => runGit(input.worktreePath, ['rev-parse', 'HEAD']).then(line);
-    if (await isAncestor(input.worktreePath, tip, 'HEAD')) return { result: 'already_merged', head: await headNow() };
+    const tip = line(await runGit(cwd, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]));
+    const onto = line(await runGit(cwd, ['rev-parse', 'HEAD']));
+    if (await isAncestor(cwd, tip, onto)) {
+      const mergeCommit = await this.mergeOf(cwd, tip);
+      const firstParent = mergeCommit ? line(await runGit(cwd, ['rev-parse', `${mergeCommit}^1`])) : onto;
+      return { result: 'already_merged', head: onto, onto: firstParent, tip, mergeCommit, conflicts: [] };
+    }
+    const trial = await runGitAnswering(cwd, ['merge-tree', '--write-tree', '--name-only', '-z', '--no-messages', onto, tip]);
+    if (trial.status === 1) {
+      const [, ...conflicts] = parseNulList(text(trial.stdout));
+      return { result: 'conflicted', head: onto, onto, tip, mergeCommit: null, conflicts };
+    }
     try {
-      await runGit(input.worktreePath, ['-c', 'commit.gpgsign=false', 'merge', '--no-ff', '--no-verify', '-m', input.message, branch], {
+      await runGit(cwd, ['-c', 'commit.gpgsign=false', 'merge', '--no-ff', '--no-verify', '-m', input.message, branch], {
         env: {
           GIT_AUTHOR_NAME: input.identity.name,
           GIT_AUTHOR_EMAIL: input.identity.email,
@@ -594,11 +637,132 @@ export class LocalGitWorkspaceDriver implements WorkspaceDriver {
           GIT_COMMITTER_EMAIL: input.identity.email,
         },
       });
-    } catch {
-      await tryGit(input.worktreePath, ['merge', '--abort']);
-      return { result: 'conflicted', head: await headNow() };
+    } catch (err) {
+      await tryGit(cwd, ['merge', '--abort']);
+      throw err;
     }
-    return { result: 'merged', head: await headNow() };
+    const head = line(await runGit(cwd, ['rev-parse', 'HEAD']));
+    return { result: 'merged', head, onto, tip, mergeCommit: head, conflicts: [] };
+  }
+
+  /** The merge commit on HEAD's first-parent line that brought `tip` in, or null when it came in some other way. */
+  private async mergeOf(cwd: string, tip: string): Promise<string | null> {
+    const out = text(await runGit(cwd, ['rev-list', '--first-parent', '--merges', '--parents', 'HEAD']));
+    for (const entry of out.split('\n')) {
+      const [commit, , second] = entry.trim().split(' ');
+      if (commit && second === tip) return commit;
+    }
+    return null;
+  }
+
+  /**
+   * Starts merging `onto` into a package branch and leaves the conflicts in
+   * the worktree for its owner: the branch is checked out (the worktree must
+   * be clean to switch), then `merge --no-commit`. Redone after a crash, a
+   * merge of `onto` already under way is kept, and anything a killed merge
+   * left half-written is reset to the branch head first; the head is
+   * committed, so nothing of the owner's is lost.
+   */
+  async beginPackageMerge(input: { worktreePath: string; branch: string; head: string; onto: string }): Promise<{ conflicts: string[] }> {
+    const cwd = input.worktreePath;
+    const branch = assertSafeRefName(input.branch);
+    const head = assertCommitId(input.head);
+    const onto = assertCommitId(input.onto);
+    const current = await tryGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    if (current === null || line(current) !== branch) {
+      if (text(await runGit(cwd, ['status', '--porcelain'])).trim()) {
+        throw new GitDriverError('dirty_workspace', `The worktree has uncommitted changes; cannot switch to ${branch}`);
+      }
+      await runGit(cwd, ['checkout', '--quiet', branch]);
+    }
+    const at = line(await runGit(cwd, ['rev-parse', 'HEAD']));
+    if (await isAncestor(cwd, onto, at)) return { conflicts: [] };
+    if (at !== head) throw new GitDriverError('branch_elsewhere', `Branch ${branch} is at ${at}, not ${head}`);
+
+    const merging = await tryGit(cwd, ['rev-parse', '--quiet', '--verify', 'MERGE_HEAD']);
+    if (merging !== null && line(merging) === onto) return { conflicts: await this.unmergedFiles(cwd) };
+    if (merging !== null) await runGit(cwd, ['merge', '--abort']);
+    if (text(await runGit(cwd, ['status', '--porcelain'])).trim()) {
+      await runGit(cwd, ['reset', '--hard', '--quiet', head]);
+      await runGit(cwd, ['clean', '-f', '-d', '--quiet']);
+    }
+    // Exits nonzero on conflicts, which is the point; MERGE_HEAD tells whether the merge began.
+    await tryGit(cwd, ['merge', '--no-commit', '--no-ff', '--no-verify', onto]);
+    const begun = await tryGit(cwd, ['rev-parse', '--quiet', '--verify', 'MERGE_HEAD']);
+    if (begun === null || line(begun) !== onto) {
+      throw new GitDriverError('git_failed', `Could not start merging ${onto} into ${branch}`);
+    }
+    return { conflicts: await this.unmergedFiles(cwd) };
+  }
+
+  private async unmergedFiles(cwd: string): Promise<string[]> {
+    return parseNulList(text(await runGit(cwd, ['diff', '--name-only', '--diff-filter=U', '-z'])));
+  }
+
+  /**
+   * Commits a resolved merge onto the package branch with both parents given
+   * explicitly (the branch head and `onto`) and the worktree as its tree, so
+   * the result does not depend on MERGE_HEAD surviving a crash or a discard.
+   * Refused while any of `conflicts` still holds conflict markers. Redone, a
+   * branch already at that merge is taken as it stands; the merge state and
+   * index are cleared either way.
+   */
+  async finishPackageMerge(input: {
+    worktreePath: string;
+    branch: string;
+    head: string;
+    onto: string;
+    conflicts: string[];
+    message: string;
+    author: GitIdentity;
+    committer: GitIdentity;
+  }): Promise<{ commit: string }> {
+    const cwd = input.worktreePath;
+    const branch = assertSafeRefName(input.branch);
+    const head = assertCommitId(input.head);
+    const onto = assertCommitId(input.onto);
+    const current = await tryGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    if (current === null || line(current) !== branch) {
+      throw new GitDriverError('branch_elsewhere', `The worktree is off ${branch}`);
+    }
+    const at = line(await runGit(cwd, ['rev-parse', 'HEAD']));
+    const parents = line(await runGit(cwd, ['rev-list', '--parents', '-n', '1', at])).split(' ').slice(1);
+    const done = parents.length === 2 && parents[0] === head && parents[1] === onto;
+    let commit = at;
+    if (!done && !(at === head && (await isAncestor(cwd, onto, at)))) {
+      if (at !== head) throw new GitDriverError('branch_elsewhere', `Branch ${branch} is at ${at}, not ${head}`);
+      const unresolved = this.unresolvedConflicts(cwd, input.conflicts);
+      if (unresolved.length > 0) {
+        throw new GitDriverError('unresolved_conflicts', `Conflict markers remain in ${unresolved.join(', ')}`);
+      }
+      const { tree } = await this.snapshotTree(cwd);
+      commit = line(
+        await runGit(cwd, ['-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', head, '-p', onto, '-m', input.message], {
+          env: {
+            GIT_AUTHOR_NAME: input.author.name,
+            GIT_AUTHOR_EMAIL: input.author.email,
+            GIT_COMMITTER_NAME: input.committer.name,
+            GIT_COMMITTER_EMAIL: input.committer.email,
+          },
+        })
+      );
+      await runGit(cwd, ['update-ref', `refs/heads/${branch}`, commit, head]);
+    }
+    if ((await tryGit(cwd, ['rev-parse', '--quiet', '--verify', 'MERGE_HEAD'])) !== null) {
+      await runGit(cwd, ['merge', '--quit']);
+    }
+    // The tree came from the worktree, so matching the index to the new head leaves it clean.
+    await runGit(cwd, ['reset', '--quiet']);
+    return { commit };
+  }
+
+  /** Which of `files` still hold conflict markers in the worktree. */
+  unresolvedConflicts(worktreePath: string, files: string[]): string[] {
+    return files.filter((rel) => {
+      const target = resolveInside(worktreePath, rel);
+      if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return false;
+      return CONFLICT_MARKER.test(fs.readFileSync(target, 'utf8'));
+    });
   }
 
   /** The installed git version, or null when git cannot be run. */

@@ -9,6 +9,7 @@ export type GitDriverErrorCode =
   | 'git_identity_missing'
   | 'merge_precondition_failed'
   | 'branch_elsewhere'
+  | 'unresolved_conflicts'
   | 'output_overflow'
   | 'git_failed';
 
