@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
-import { agents, dispatches, platformOps, runs, tasks, workPackages, workspaces, type Agent } from '../src/db/schema';
+import { agents, dispatches, integrations, platformOps, runs, tasks, workPackages, workspaces, type Agent } from '../src/db/schema';
 import { createApp } from '../src/http/app';
 import { submitDispatchReport, submitResult } from '../src/modules/control-plane/tools';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
@@ -32,8 +32,12 @@ let base = '';
 
 /** The plan the lead of the next workshop submits. */
 let planFor: () => Record<string, unknown> = () => ({});
-/** What each build found when it started, by package key. */
-const builds = new Map<string, { branch: string; files: string[]; prompt: string }>();
+/**
+ * What each build found when it started, by package key, and when it ran on
+ * this process's clock: run rows stamp their start on the database clock and
+ * their end on this one, and the Docker VM clock drifts.
+ */
+const builds = new Map<string, { branch: string; files: string[]; prompt: string; start: number; end: number }>();
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -65,35 +69,33 @@ const packagesOf = async (taskId: string) =>
 const integrationOf = async (taskId: string) =>
   (await db.select().from(workspaces).where(and(eq(workspaces.taskId, taskId), eq(workspaces.kind, 'integration'))))[0]!;
 
-/** Each build dispatch's run span, by package key. */
-async function buildSpans(taskId: string): Promise<Map<string, { start: number; end: number; workspaceId: string | null }>> {
+/** The worktree each build dispatch's run worked in, by package key. */
+async function buildWorktrees(taskId: string): Promise<Map<string, string | null>> {
   const rows = await db
-    .select({ key: dispatches.packageKey, run: runs })
+    .select({ key: dispatches.packageKey, workspaceId: runs.workspaceId })
     .from(runs)
     .innerJoin(dispatches, eq(dispatches.id, runs.dispatchId))
     .where(and(eq(runs.taskId, taskId), eq(dispatches.phase, 'build')));
-  return new Map(
-    rows.map((r) => [r.key, { start: r.run.startedAt!.getTime(), end: r.run.finishedAt!.getTime(), workspaceId: r.run.workspaceId }])
-  );
+  return new Map(rows.map((r) => [r.key, r.workspaceId]));
 }
 
 /**
- * Each package operation by key: when the engine asked for it, and its run's span. The worktree gate does
- * not keep a waiting run ahead of one started right after an advance, so order is read off the requests.
+ * When the engine asked for each package operation, by key, on the database
+ * clock. The worktree gate does not keep a waiting run ahead of one started
+ * right after an advance, so order is read off the requests, not the runs.
  */
-async function opSpans(taskId: string): Promise<Map<string, { kind: string; requested: number; start: number; end: number }>> {
+async function opRequests(taskId: string): Promise<Map<string, number>> {
+  const rows = await db.select().from(platformOps).where(eq(platformOps.taskId, taskId));
+  return new Map(rows.map((op) => [op.opKey, op.createdAt.getTime()]));
+}
+
+/** When each package's merge was recorded, on the database clock: in the transaction that settled it. */
+async function mergeRecorded(taskId: string): Promise<Map<string, number>> {
   const rows = await db
-    .select({ op: platformOps, run: runs })
-    .from(runs)
-    .innerJoin(platformOps, eq(platformOps.id, runs.opId))
-    .where(eq(platformOps.taskId, taskId))
-    .orderBy(asc(runs.createdAt));
-  return new Map(
-    rows.map((r) => [
-      r.op.opKey,
-      { kind: r.op.kind, requested: r.op.createdAt.getTime(), start: r.run.startedAt!.getTime(), end: r.run.finishedAt!.getTime() },
-    ])
-  );
+    .select()
+    .from(integrations)
+    .where(and(eq(integrations.taskId, taskId), eq(integrations.outcome, 'merged')));
+  return new Map(rows.map((r) => [r.packageKey, r.createdAt.getTime()]));
 }
 
 beforeAll(async () => {
@@ -109,11 +111,13 @@ beforeAll(async () => {
       const tool = agentPhase(dispatch!.phase)!.reportTool;
       if (tool === 'submit_result') {
         const key = dispatch!.packageKey;
+        const start = Date.now();
         const files = fs.readdirSync(turn.workspace).filter((f) => f !== '.git').sort();
-        builds.set(key, { branch: await git(turn.workspace, 'rev-parse', '--abbrev-ref', 'HEAD'), files, prompt: turn.prompt });
+        const branch = await git(turn.workspace, 'rev-parse', '--abbrev-ref', 'HEAD');
         await new Promise((resolve) => setTimeout(resolve, BUILD_MS));
         fs.writeFileSync(path.join(turn.workspace, `${key}.txt`), `${agent!.name} built ${key}\n`);
         await submitResult(ctx, `Built ${key}.`);
+        builds.set(key, { branch, files, prompt: turn.prompt, start, end: Date.now() });
       } else if (tool === 'submit_plan') {
         await submitDispatchReport(ctx, tool, planFor());
       } else if (tool === 'submit_plan_review') {
@@ -162,14 +166,14 @@ describe('build on a repository', () => {
 
     const task = await taskRow(taskId);
     expect(task.phase).toBe('check');
-    const spans = await buildSpans(taskId);
-    const api = spans.get('api')!;
-    const ui = spans.get('ui')!;
+    const api = builds.get('api')!;
+    const ui = builds.get('ui')!;
     expect(Math.max(api.start, ui.start)).toBeLessThan(Math.min(api.end, ui.end));
     const members = await db.select().from(workspaces).where(and(eq(workspaces.taskId, taskId), eq(workspaces.kind, 'member')));
     const worktreeOf = (agentId: string) => members.find((w) => w.agentId === agentId)!.id;
-    expect(api.workspaceId).toBe(worktreeOf(ids[0]!));
-    expect(ui.workspaceId).toBe(worktreeOf(ids[1]!));
+    const worktrees = await buildWorktrees(taskId);
+    expect(worktrees.get('api')).toBe(worktreeOf(ids[0]!));
+    expect(worktrees.get('ui')).toBe(worktreeOf(ids[1]!));
     // Each started on its own branch at base, without the other's work.
     for (const key of ['api', 'ui']) {
       expect(builds.get(key)).toMatchObject({ branch: `loxo/t${task.number}/p/${key}`, files: ['README.md'] });
@@ -206,8 +210,8 @@ describe('build on a repository', () => {
     expect(await git(repoDir, 'rev-parse', `${ui.startCommit}^1`, `${ui.startCommit}^2`)).toBe(`${base}\n${api.headCommit}`);
     expect(builds.get('ui')).toMatchObject({ branch: `loxo/t${task.number}/p/ui`, files: ['README.md', 'api.txt'] });
     expect(builds.get('ui')!.prompt).toContain('It builds on api, already merged into the commit your branch starts from.');
-    const ops = await opSpans(taskId);
-    expect(ops.get('branch_package:0:0:ui')!.requested).toBeGreaterThanOrEqual(ops.get('integrate:0:0:api')!.end);
+    // Asked for after the transaction that recorded api's merge.
+    expect((await opRequests(taskId)).get('branch_package:0:0:ui')!).toBeGreaterThanOrEqual((await mergeRecorded(taskId)).get('api')!);
 
     const integration = await integrationOf(taskId);
     expect(await git(integration.worktreePath, 'ls-files')).toBe('README.md\napi.txt\nui.txt');
@@ -227,11 +231,10 @@ describe('build on a repository', () => {
 
     const task = await taskRow(taskId);
     expect(task.phase).toBe('check');
-    const spans = await buildSpans(taskId);
-    expect(spans.get('zeta')!.end).toBeLessThanOrEqual(spans.get('alpha')!.start);
-    const ops = await opSpans(taskId);
-    // alpha's branch is asked for only once zeta's work is committed, and from base: zeta's file is not in it.
-    expect(ops.get('branch_package:0:0:alpha')!.requested).toBeGreaterThanOrEqual(ops.get('checkpoint:0:0:zeta')!.end);
+    expect(builds.get('zeta')!.end).toBeLessThanOrEqual(builds.get('alpha')!.start);
+    const ops = await opRequests(taskId);
+    // alpha's branch is asked for only after zeta's checkpoint was (both share no advance), and from base: zeta's file is not in it.
+    expect(ops.get('branch_package:0:0:alpha')!).toBeGreaterThan(ops.get('checkpoint:0:0:zeta')!);
     expect(builds.get('alpha')).toMatchObject({ branch: `loxo/t${task.number}/p/alpha`, files: ['README.md'] });
     const packages = await packagesOf(taskId);
     expect(packages.get('alpha')).toMatchObject({ status: 'integrated', startCommit: base });
