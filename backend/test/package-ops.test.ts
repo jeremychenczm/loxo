@@ -9,6 +9,7 @@ import { createApp } from '../src/http/app';
 import { packageBranchName, workspaceBranchName } from '../src/modules/code-workspaces/branch-name';
 import { localGitDriver } from '../src/modules/code-workspaces/local-git-driver';
 import { drainRunsForTests, startQueuedRuns } from '../src/modules/runs/wake';
+import { conflictOf, mergedBefore } from '../src/modules/workshop/conflicts';
 import { BUILT_IN_PLATFORM_OPS } from '../src/modules/workshop/platform-op-kinds';
 import {
   requestPlatformOp,
@@ -287,6 +288,25 @@ describe('package operations', () => {
       'clash conflicted',
       'clash merged',
     ]);
+  });
+
+  it('finds the conflict a resolve is for, and only the packages merged before it', { timeout: T }, async () => {
+    const setup = await setUp(['api', 'clash', 'later']);
+    const { onto } = await conflicted(setup);
+    // Another package goes in after the conflict was found.
+    await git(setup.member.worktreePath, 'checkout', '-q', '--detach', base);
+    const branch = packageBranchName(setup.task.number, 'later');
+    await settled(setup.task.id, setup.member.id, 'branch_package', 'branch:later', { packageKey: 'later', branch, startCommit: base });
+    fs.writeFileSync(path.join(setup.member.worktreePath, 'later.txt'), 'later\n');
+    await settled(setup.task.id, setup.member.id, 'checkpoint', 'checkpoint:later', { packageKey: 'later', author: 'Ada' });
+    await settled(setup.task.id, setup.integration.id, 'integrate', 'integrate:later', { packageKey: 'later' });
+    expect(await pkgRow(setup.task.id, 'later')).toMatchObject({ status: 'integrated' });
+
+    const conflict = await conflictOf(await pkgRow(setup.task.id, 'clash'));
+    expect(conflict).toMatchObject({ files: ['app.txt'], onto });
+    expect((await mergedBefore(setup.task.id, conflict!.id)).map((p) => p.key)).toEqual(['api']);
+    // A package not resolving onto that head has no conflict to resolve.
+    expect(await conflictOf({ ...(await pkgRow(setup.task.id, 'clash')), resolveOnto: base })).toBeNull();
   });
 
   it('keeps both parents when a discard to the resolve run before-state lost MERGE_HEAD', { timeout: T }, async () => {

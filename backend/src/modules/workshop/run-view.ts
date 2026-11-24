@@ -9,6 +9,7 @@ import {
   tasks,
   turns,
   type Dispatch,
+  type DispatchPurpose,
   type Run,
   type Task,
   type Turn,
@@ -32,6 +33,8 @@ export interface WorkshopRunView {
   title: string;
   brief: string;
   phase: WorkshopPhase;
+  /** What the dispatch is for; a resolve runs inside Build. */
+  purpose: DispatchPurpose;
   cycle: number;
   round: number;
   role: 'lead' | 'member';
@@ -60,6 +63,7 @@ export async function workshopRunView(run: Pick<Run, 'dispatchId' | 'agentId'>, 
     title: snapshot?.title ?? task.title,
     brief: snapshot?.brief ?? task.brief,
     phase: dispatch.phase,
+    purpose: dispatch.purpose,
     cycle: dispatch.cycle,
     round: dispatch.round,
     role: dispatch.agentId === (snapshot?.leadAgentId ?? task.leadAgentId) ? 'lead' : 'member',

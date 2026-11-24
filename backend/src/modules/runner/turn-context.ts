@@ -1,6 +1,6 @@
 import type { Agent, WorkshopPhase } from '../../db/schema';
 import { describeTool, type ControlPlaneTool } from '../control-plane/names';
-import type { PackageMaterial, PlanMaterial, WorkshopMaterials } from '../workshop/materials';
+import type { ConflictMaterial, PackageMaterial, PlanMaterial, WorkshopMaterials } from '../workshop/materials';
 import type { WorkshopRunView } from '../workshop/run-view';
 
 const MAX_PROMPT_CHARS = 24_000;
@@ -166,6 +166,13 @@ const PHASE_GUIDANCE: Partial<Record<WorkshopPhase, string[]>> = {
   ],
 };
 
+/** A resolve runs inside Build, on the member's own package branch. */
+const RESOLVE_GUIDANCE = [
+  'Build phase: resolve a conflict. Your package conflicts with the integration branch, so the platform has merged the integration branch into your package branch and left the conflicts in your worktree.',
+  'Resolve every conflict so that your package and the packages already merged (listed below) both keep working: remove all conflict markers, keep the intent of both sides, and change nothing the merge did not touch.',
+  'Do not commit, abort the merge, or switch branches; the platform commits the merge when you report. Finish by calling submit_result with a concise report of how you resolved each file. It is refused while conflict markers remain.',
+];
+
 /** Longest stretch of phase materials a prompt carries; get_task has them in full. */
 const MAX_MATERIALS_CHARS = 12_000;
 
@@ -204,6 +211,18 @@ function formatPackage(p: PackageMaterial): string {
     .join('\n');
 }
 
+function formatConflict(c: ConflictMaterial): string {
+  return [
+    `Integration commit merged into your branch: ${c.onto}`,
+    `Files in conflict: ${c.files.length ? c.files.join(', ') : 'none reported; check git status'}`,
+    c.merged.length
+      ? ['Packages already merged into the integration branch:', ...c.merged.map((p) => `- ${p.key}: ${p.title} (owner ${p.owner}; area ${p.area})`)].join('\n')
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** The phase materials as prompt text, cut to length with a pointer to get_task. */
 export function formatMaterials(materials: WorkshopMaterials): string {
   const parts: string[] = [];
@@ -222,6 +241,7 @@ export function formatMaterials(materials: WorkshopMaterials): string {
   }
   if (materials.plan) parts.push(formatPlan(materials.plan));
   if (materials.package) parts.push(formatPackage(materials.package));
+  if (materials.conflict) parts.push(formatConflict(materials.conflict));
   if (materials.objections?.length) {
     const version = materials.plan?.version ?? 1;
     parts.push(
@@ -255,10 +275,12 @@ export interface WorkshopTurnContext {
 export function buildWorkshopRunPrompt(input: WorkshopTurnContext): string {
   const { view } = input;
   const reportTool = input.tools.find((t) => t.startsWith('submit_')) ?? null;
-  const label = view.phase.replace('_', ' ');
-  const guidance =
-    PHASE_GUIDANCE[view.phase] ??
-    [`${label[0]!.toUpperCase()}${label.slice(1)} phase.`, reportTool ? `Finish by calling ${reportTool} once.` : ''].filter(Boolean);
+  const resolving = view.purpose === 'resolve';
+  const label = `${view.phase.replace('_', ' ')}${resolving ? ', resolving a conflict' : ''}`;
+  const guidance = resolving
+    ? RESOLVE_GUIDANCE
+    : (PHASE_GUIDANCE[view.phase] ??
+      [`${label[0]!.toUpperCase()}${label.slice(1)} phase.`, reportTool ? `Finish by calling ${reportTool} once.` : ''].filter(Boolean));
   const retry =
     view.previousReply !== null && reportTool
       ? [

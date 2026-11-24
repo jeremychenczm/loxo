@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
 import type { Executor } from '../../db/client';
 import { dispatchReports, dispatches, humanRequests, plans, workPackages, type Dispatch, type PlanSource } from '../../db/schema';
+import { conflictOf, mergedBefore } from './conflicts';
 import { questionsKey } from './engine';
 import type { ExplorationReport, PlanReport, PlanReviewReport } from './reports';
 
@@ -25,11 +26,19 @@ export interface PackageMaterial {
   branch: string | null;
 }
 
+/** The conflict a resolve is for: the files in conflict, the integration head merged in, and what that head already has. */
+export interface ConflictMaterial {
+  files: string[];
+  onto: string;
+  merged: { key: string; title: string; owner: string; area: string }[];
+}
+
 /**
  * What a phase gives its participants to work from. Plan: every member's
  * exploration and the person's answer to their questions, and when revising,
  * the plan as it stood and the objections to it. Plan review: the plan.
- * Build: the pinned plan and the member's own package.
+ * Build: the pinned plan and the member's own package, and for a resolve the
+ * conflict and the packages on the other side of it.
  */
 export interface WorkshopMaterials {
   explorations?: { member: string; summary: string; questions: string[] }[];
@@ -41,6 +50,7 @@ export interface WorkshopMaterials {
   plan?: PlanMaterial;
   objections?: { member: string; comments: string }[];
   package?: PackageMaterial;
+  conflict?: ConflictMaterial;
 }
 
 type NameOf = (agentId: string | null) => string;
@@ -67,6 +77,7 @@ export async function phaseMaterials(dispatch: Dispatch, nameOf: NameOf, ex: Exe
         .where(and(eq(workPackages.taskId, dispatch.taskId), eq(workPackages.key, dispatch.packageKey)));
       if (!own) return {};
       const [pinned] = await ex.select().from(plans).where(eq(plans.id, own.planId));
+      const conflict = dispatch.purpose === 'resolve' ? await conflictOf(own, ex) : null;
       return {
         ...(pinned ? { plan: planMaterial(pinned, nameOf) } : {}),
         package: {
@@ -77,6 +88,20 @@ export async function phaseMaterials(dispatch: Dispatch, nameOf: NameOf, ex: Exe
           acceptance: own.acceptance,
           branch: own.branch,
         },
+        ...(conflict
+          ? {
+              conflict: {
+                files: conflict.files,
+                onto: conflict.onto,
+                merged: (await mergedBefore(dispatch.taskId, conflict.id, ex)).map((p) => ({
+                  key: p.key,
+                  title: p.title,
+                  owner: nameOf(p.ownerAgentId),
+                  area: p.area,
+                })),
+              },
+            }
+          : {}),
       };
     }
     default:

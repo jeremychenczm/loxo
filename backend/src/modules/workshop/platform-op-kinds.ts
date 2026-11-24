@@ -1,8 +1,7 @@
 import path from 'node:path';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import {
-  integrations,
   runs,
   workPackages,
   type IntegrationOutcome,
@@ -14,6 +13,7 @@ import {
 } from '../../db/schema';
 import { localGitDriver } from '../code-workspaces/local-git-driver';
 import { findRepository, getWorkspace } from '../code-workspaces/workspace.service';
+import { conflictFilesOf } from './conflicts';
 import type { PlatformOpHandler } from './platform-ops';
 
 /**
@@ -235,17 +235,6 @@ const beginResolve: PlatformOpHandler = async (op) => {
   const observed: PackageObservation = { key: pkg.key, status: 'resolving' };
   return { worktree, package: observed, conflicts };
 };
-
-/** The files the package's latest integration conflicted on, when it was against the head being resolved. */
-async function conflictFilesOf(pkg: WorkPackage): Promise<string[]> {
-  const [latest] = await db
-    .select({ ontoCommit: integrations.ontoCommit, conflictFiles: integrations.conflictFiles })
-    .from(integrations)
-    .where(and(eq(integrations.taskId, pkg.taskId), eq(integrations.packageKey, pkg.key), eq(integrations.outcome, 'conflicted')))
-    .orderBy(desc(integrations.createdAt))
-    .limit(1);
-  return latest && latest.ontoCommit === pkg.resolveOnto ? latest.conflictFiles : [];
-}
 
 /**
  * Commits the owner's resolution onto the package branch as a merge of the

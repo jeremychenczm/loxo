@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { db, pool } from '../src/db/client';
 import { agents, dispatches, integrations, runs, tasks, workPackages, workspaces, type Agent } from '../src/db/schema';
 import { createApp } from '../src/http/app';
-import { submitDispatchReport, submitResult } from '../src/modules/control-plane/tools';
+import { getTaskSnapshot, submitDispatchReport, submitResult } from '../src/modules/control-plane/tools';
 import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { agentPhase } from '../src/modules/workshop/phases';
@@ -27,8 +27,13 @@ let repositoryId = '';
 let sandbox = '';
 let base = '';
 
-/** What each resolve found in the worktree when it started, by package key. */
-const resolves = new Map<string, { branch: string; shared: string; prompt: string }>();
+/** What each resolve found when it started, by package key: the worktree, the prompt, get_task, and a report sent too early. */
+const resolves = new Map<
+  string,
+  { branch: string; shared: string; prompt: string; snapshot: Record<string, unknown>; early: { code?: string; message?: string } }
+>();
+/** Each build's prompt, by package key. */
+const buildPrompts = new Map<string, string>();
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
@@ -69,14 +74,22 @@ beforeAll(async () => {
       const tool = agentPhase(dispatch!.phase)!.reportTool;
       const shared = path.join(turn.workspace, 'shared.txt');
       if (dispatch!.purpose === 'resolve') {
-        resolves.set(dispatch!.packageKey, {
+        const found = {
           branch: await git(turn.workspace, 'rev-parse', '--abbrev-ref', 'HEAD'),
           shared: fs.readFileSync(shared, 'utf8'),
           prompt: turn.prompt,
+          snapshot: (await getTaskSnapshot(ctx)) as unknown as Record<string, unknown>,
+          early: {} as { code?: string; message?: string },
+        };
+        // Reporting with the markers still in the file is refused, and the turn goes on.
+        await submitResult(ctx, 'Done too soon.').catch((err: { code?: string; message?: string }) => {
+          found.early = { code: err.code, message: err.message };
         });
+        resolves.set(dispatch!.packageKey, found);
         fs.writeFileSync(shared, 'api and ui\n');
         await submitResult(ctx, 'Kept both changes.');
       } else if (tool === 'submit_result') {
+        buildPrompts.set(dispatch!.packageKey, turn.prompt);
         // Long enough that both builds run at the same time, from base.
         await new Promise((resolve) => setTimeout(resolve, 500));
         fs.writeFileSync(shared, `${dispatch!.packageKey}\n`);
@@ -113,6 +126,7 @@ beforeAll(async () => {
 afterEach(async () => {
   await drainRunsForTests();
   resolves.clear();
+  buildPrompts.clear();
 });
 
 afterAll(() => {
@@ -154,8 +168,35 @@ describe('conflicting packages', () => {
       .from(workspaces)
       .where(and(eq(workspaces.taskId, taskId), eq(workspaces.kind, 'member'), eq(workspaces.agentId, owner)));
     expect(resolveDispatch).toMatchObject({ phase: 'build', packageKey: key, agentId: owner, workspaceId: member!.id, status: 'reported' });
-    expect(resolves.get(key)!.branch).toBe(`loxo/t${task!.number}/p/${key}`);
-    expect(resolves.get(key)!.shared).toMatch(/^<<<<<<< [^\n]*\n[a-z]+\n=======\n[a-z]+\n>>>>>>> /);
+    const seen = resolves.get(key)!;
+    expect(seen.branch).toBe(`loxo/t${task!.number}/p/${key}`);
+    expect(seen.shared).toMatch(/^<<<<<<< [^\n]*\n[a-z]+\n=======\n[a-z]+\n>>>>>>> /);
+    // Reporting before the markers were gone was refused, naming the file.
+    expect(seen.early).toMatchObject({ code: 'unresolved_conflicts' });
+    expect(seen.early.message).toContain('Conflict markers remain in shared.txt');
+
+    // The resolve is told what it is for, which files conflict, and what is on the other side.
+    const other = first!.packageKey;
+    const otherOwner = names[other === 'api' ? 0 : 1];
+    expect(seen.prompt).toContain('Current phase: build, resolving a conflict.');
+    expect(seen.prompt).toContain('Build phase: resolve a conflict.');
+    expect(seen.prompt).toContain(`Integration commit merged into your branch: ${first!.mergeCommit}`);
+    expect(seen.prompt).toContain('Files in conflict: shared.txt');
+    expect(seen.prompt).toContain(`- ${other}: The ${other} package (owner ${otherOwner}; area shared.txt)`);
+    expect(seen.prompt).toContain(`Your package: ${key}: The ${key} package`);
+    const workshop = seen.snapshot.workshop as { purpose: string; phase: string; materials: Record<string, unknown> };
+    expect(workshop).toMatchObject({ phase: 'build', purpose: 'resolve' });
+    expect(workshop.materials.conflict).toEqual({
+      files: ['shared.txt'],
+      onto: first!.mergeCommit,
+      merged: [{ key: other, title: `The ${other} package`, owner: otherOwner, area: 'shared.txt' }],
+    });
+    // Builds carry no conflict.
+    for (const prompt of buildPrompts.values()) {
+      expect(prompt).toContain('Current phase: build.');
+      expect(prompt).not.toContain('resolving a conflict');
+      expect(prompt).not.toContain('Files in conflict');
+    }
 
     // The resolution is a merge of the package's own commit and the head it conflicted with.
     expect(await git(member!.worktreePath, 'rev-parse', `${resolved.headCommit}^1`, `${resolved.headCommit}^2`)).toBe(

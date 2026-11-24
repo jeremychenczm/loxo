@@ -14,8 +14,10 @@ import {
   type TaskStatus,
   type ApprovalDecision,
   type Dispatch,
+  type DispatchPurpose,
   type Run,
   type WorkshopPhase,
+  workPackages,
 } from '../../db/schema';
 import { config } from '../../config';
 import { badRequest, conflict, unauthorized } from '../../http/errors';
@@ -26,6 +28,9 @@ import {
   REVIEW_CYCLE_CAP,
 } from '../tasks/approvals.service';
 import { isWorkshop, moveTaskWithin } from '../tasks/tasks.service';
+import { localGitDriver } from '../code-workspaces/local-git-driver';
+import { getWorkspace } from '../code-workspaces/workspace.service';
+import { conflictFilesOf } from '../workshop/conflicts';
 import { dispatchOf } from '../workshop/dispatch-info';
 import { agentPhase } from '../workshop/phases';
 import { MAX_EXPLORATION_QUESTIONS, MAX_PACKAGES, parseReport } from '../workshop/reports';
@@ -218,6 +223,8 @@ export interface TaskSnapshot {
 export interface WorkshopTaskSnapshot extends TaskSnapshot {
   workshop: {
     phase: WorkshopPhase;
+    /** What this run is for within the phase: a resolve runs inside Build. */
+    purpose: DispatchPurpose;
     round: number;
     role: 'lead' | 'member';
     members: string[];
@@ -241,6 +248,7 @@ export async function getTaskSnapshot(ctx: RunToolContext): Promise<TaskSnapshot
       status: task.status,
       workshop: {
         phase: view.phase,
+        purpose: view.purpose,
         round: view.round,
         role: view.role,
         members: view.members.map((m) => m.name),
@@ -373,9 +381,30 @@ async function insertDispatchReport(
 }
 
 /** Posts the result; a legacy task moves to review, a workshop run records it as its dispatch's report. */
+/**
+ * A resolve reports once the conflicts are gone from the worktree; refusing
+ * here lets the agent finish them in the same turn.
+ */
+async function assertResolved(ctx: RunToolContext, dispatch: Dispatch): Promise<void> {
+  if (dispatch.purpose !== 'resolve' || !ctx.run.workspaceId) return;
+  const [pkg] = await db
+    .select()
+    .from(workPackages)
+    .where(and(eq(workPackages.taskId, dispatch.taskId), eq(workPackages.key, dispatch.packageKey)));
+  const workspace = await getWorkspace(ctx.run.workspaceId);
+  if (!pkg || !workspace) return;
+  const left = localGitDriver.unresolvedConflicts(workspace.worktreePath, await conflictFilesOf(pkg));
+  if (left.length > 0) {
+    throw badRequest(
+      'unresolved_conflicts',
+      `Conflict markers remain in ${left.join(', ')}; resolve every conflict, then call submit_result again`
+    );
+  }
+}
+
 export async function submitResult(ctx: RunToolContext, summary: string): Promise<StatusResult> {
   if (!summary.trim()) throw badRequest('invalid_input', 'Result summary is required');
-  if (ctx.run.dispatchId) await assertReportTool(ctx.run.dispatchId, 'submit_result');
+  if (ctx.run.dispatchId) await assertResolved(ctx, await assertReportTool(ctx.run.dispatchId, 'submit_result'));
   return controlPlaneWrite(ctx, 'submit_result', { summary }, async (tx, queued) => {
     await postAsAgent(ctx, summary, tx);
     if (ctx.run.dispatchId) await insertDispatchReport(tx, ctx, 'submit_result', { summary });
