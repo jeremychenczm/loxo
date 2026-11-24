@@ -11,6 +11,7 @@ Loxo drives Claude Code and Codex over ACP as one engineering team. Members expl
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)
 ![Postgres 16](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)
 ![Status](https://img.shields.io/badge/status-active%20development-orange)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [How it works](#how-it-works) · [Quick start](#quick-start) · [Crash safety](#crash-safety) · [Architecture](#architecture) · [Testing](#testing) · [Roadmap](#roadmap)
 
@@ -234,3 +235,7 @@ results/chaos/        Recorded chaos runs that the README numbers come from
 - [ ] Delivery as a GitHub pull request
 
 The original single-agent board flow (a lead builds, the other members review) still runs alongside the engine. Once Solo covers it, it will be removed.
+
+## License
+
+[MIT](LICENSE)
