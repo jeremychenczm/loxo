@@ -11,6 +11,7 @@ import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { agentPhase } from '../src/modules/workshop/phases';
 import { setPlatformRetryBackoffForTests } from '../src/modules/workshop/platform-ops';
+import { checkInvariants, type InvariantId } from '../scripts/chaos/invariants';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 import { scriptedHost } from './support/scripted-host';
 
@@ -60,6 +61,9 @@ const pkg = (key: string, owner: string) => ({
 });
 
 let names: [string, string] = ['', ''];
+
+const OTHER_INVARIANTS: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9', 'INV-10'];
+const integrationViolations = () => checkInvariants({ db: pool, cycleMs: 1_000, maxAttempts: 3, skip: OTHER_INVARIANTS });
 
 beforeAll(async () => {
   await pool.query('TRUNCATE TABLE users CASCADE');
@@ -214,5 +218,7 @@ describe('conflicting packages', () => {
     expect(await git(cwd, 'show', 'HEAD:shared.txt')).toBe('api and ui');
     expect(await git(cwd, 'ls-files')).toBe('README.md\napi.txt\nshared.txt\nui.txt');
     expect(await git(cwd, 'status', '--porcelain')).toBe('');
+    // The chaos checker's integration-history rule holds on the real thing.
+    expect(await integrationViolations()).toEqual([]);
   });
 });

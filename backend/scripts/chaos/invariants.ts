@@ -18,7 +18,8 @@ export type InvariantId =
   | 'INV-7'
   | 'INV-8'
   | 'INV-9'
-  | 'INV-10';
+  | 'INV-10'
+  | 'INV-16';
 
 export interface Violation {
   invariant: InvariantId;
@@ -470,6 +471,100 @@ const lostHandoffs: Check = async ({ db, handoffs = [] }) => {
   return out;
 };
 
+/**
+ * INV-16: the integration branch only grows, and packages go into it in
+ * dependency order. A task's recorded merges form one chain from its base
+ * commit, each onto the head the one before it left; a conflict, or a
+ * package found already in, is recorded against a head on that chain; a
+ * package that depends on another starts at or after the head that merged
+ * it, and merges after it; and a live integration worktree with no merge in
+ * flight sits at the end of the chain. Rows are walked by commit, not by
+ * time: a retried merge may record after one that went in on top of it.
+ */
+const integrationHistory: Check = async ({ db }) => {
+  const out: Violation[] = [];
+  const tasks = await rows<{ id: string; base: string | null }>(
+    db,
+    `SELECT t.id, t.snapshot->>'baseCommit' AS base FROM tasks t
+     WHERE EXISTS (SELECT 1 FROM integrations i WHERE i.task_id = t.id)`
+  );
+  for (const task of tasks) {
+    const fail = (detail: string) => out.push({ invariant: 'INV-16', subject: task.id, detail });
+    if (!task.base) {
+      fail('integrations recorded for a task without a frozen base commit');
+      continue;
+    }
+    const recorded = await rows<{ package_key: string; outcome: string; onto_commit: string; merge_commit: string | null }>(
+      db,
+      'SELECT package_key, outcome, onto_commit, merge_commit FROM integrations WHERE task_id = $1',
+      [task.id]
+    );
+    const merges = recorded.filter((r) => r.outcome === 'merged' && r.merge_commit !== null);
+    const byOnto = new Map<string, typeof merges>();
+    for (const m of merges) byOnto.set(m.onto_commit, [...(byOnto.get(m.onto_commit) ?? []), m]);
+
+    // Head → its place on the chain; package → where its merge landed.
+    const at = new Map<string, number>([[task.base, 0]]);
+    const mergedAt = new Map<string, number>();
+    let tip = task.base;
+    for (let step = 1; ; step += 1) {
+      const next = byOnto.get(tip) ?? [];
+      if (next.length > 1) fail(`${next.map((m) => m.package_key).join(' and ')} were each merged onto ${tip}`);
+      const merge = next[0];
+      if (!merge || at.has(merge.merge_commit!)) break;
+      at.set(merge.merge_commit!, step);
+      mergedAt.set(merge.package_key, step);
+      tip = merge.merge_commit!;
+    }
+    // A merge off the chain whose head is on it is the other side of a fork, already named.
+    for (const m of merges) {
+      if (!at.has(m.merge_commit!) && !at.has(m.onto_commit)) {
+        fail(`the merge of ${m.package_key} onto ${m.onto_commit} is not on the history from the base`);
+      }
+    }
+    for (const r of recorded.filter((r) => r.merge_commit === null)) {
+      if (!at.has(r.onto_commit)) fail(`${r.package_key} was recorded ${r.outcome} against ${r.onto_commit}, a head the integration branch never had`);
+    }
+
+    const merged = new Set(recorded.filter((r) => r.outcome === 'merged').map((r) => r.package_key));
+    const packages = await rows<{ key: string; depends_on: string[]; start_commit: string | null }>(
+      db,
+      'SELECT key, depends_on, start_commit FROM work_packages WHERE task_id = $1',
+      [task.id]
+    );
+    for (const p of packages) {
+      for (const dep of p.depends_on) {
+        const depAt = mergedAt.get(dep);
+        if (depAt === undefined) {
+          // Found already in without a merge of its own: nothing to order against.
+          if (merged.has(dep)) continue;
+          if (p.start_commit !== null) fail(`${p.key} started before ${dep}, which it depends on, was merged`);
+          continue;
+        }
+        if (p.start_commit !== null) {
+          const startAt = at.get(p.start_commit);
+          if (startAt === undefined) fail(`${p.key} starts at ${p.start_commit}, not a head of the integration branch`);
+          else if (startAt < depAt) fail(`${p.key} starts before the merge of ${dep}, which it depends on`);
+        }
+        const ownAt = mergedAt.get(p.key);
+        if (ownAt !== undefined && ownAt <= depAt) fail(`${p.key} was merged before ${dep}, which it depends on`);
+      }
+    }
+
+    const [worktree] = await rows<{ head_commit: string | null; in_flight: boolean }>(
+      db,
+      `SELECT w.head_commit,
+         EXISTS (SELECT 1 FROM platform_ops o WHERE o.task_id = w.task_id AND o.kind = 'integrate' AND o.status IN ('wanted', 'running')) AS in_flight
+       FROM workspaces w WHERE w.task_id = $1 AND w.kind = 'integration' AND w.status <> ALL($2)`,
+      [task.id, LIVE_WORKSPACE_EXCLUDED]
+    );
+    if (worktree?.head_commit && !worktree.in_flight && worktree.head_commit !== tip) {
+      fail(`the integration worktree is at ${worktree.head_commit}, but its recorded history ends at ${tip}`);
+    }
+  }
+  return out;
+};
+
 const CHECKS: [InvariantId, Check][] = [
   ['INV-1', expiredLeases],
   ['INV-2', doubleClaims],
@@ -481,6 +576,7 @@ const CHECKS: [InvariantId, Check][] = [
   ['INV-8', unsettledWakes],
   ['INV-9', doubleExecutions],
   ['INV-10', lostHandoffs],
+  ['INV-16', integrationHistory],
 ];
 
 /** Runs every invariant not skipped; throws when the setup cannot support one. */

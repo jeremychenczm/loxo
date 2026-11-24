@@ -15,7 +15,7 @@ const ADMIN_URL = 'postgres://postgres:postgres@localhost:5434/postgres';
 const CHAOS_ADMIN_URL = 'postgres://postgres:postgres@localhost:5435/postgres';
 const chaosServerUp = await serverReachable(CHAOS_ADMIN_URL);
 
-const ALL: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9', 'INV-10'];
+const ALL: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9', 'INV-10', 'INV-16'];
 const LIMITS = { cycleMs: 1_000, maxAttempts: 3 };
 
 // The schema already refuses some breaches outright; these go so a test can build them.
@@ -127,6 +127,59 @@ async function snapshot(runId: string, kind: 'run' | 'recovery', changedFiles: n
   });
 }
 
+/** A workshop on a repository: its base commit frozen, a pinned plan, and its integration worktree at `head`. */
+async function workshopTask(base: string, head: string): Promise<{ taskId: string; planId: string }> {
+  counter += 1;
+  const taskId = await insert('tasks', {
+    user_id: userId,
+    number: counter,
+    title: `Workshop ${counter}`,
+    playbook: 'build',
+    snapshot: JSON.stringify({ baseCommit: base }),
+  });
+  const planId = await insert('plans', { task_id: taskId, cycle: 0, version: 1, round: 0, source: 'lead', content: '{}', hash: `p${counter}` });
+  counter += 1;
+  await insert('workspaces', {
+    user_id: userId,
+    task_id: taskId,
+    worktree_path: `/tmp/wt-${counter}`,
+    branch_name: `loxo/t${counter}/integration`,
+    base_ref: 'main',
+    base_commit: base,
+    kind: 'integration',
+    status: 'ready',
+    head_commit: head,
+  });
+  return { taskId, planId };
+}
+
+async function workPackage(w: { taskId: string; planId: string }, key: string, dependsOn: string[] = [], startCommit: string | null = null) {
+  return insert('work_packages', {
+    task_id: w.taskId,
+    plan_id: w.planId,
+    key,
+    title: key,
+    area: key,
+    depends_on: JSON.stringify(dependsOn),
+    start_commit: startCommit,
+  });
+}
+
+/** One recorded integration of `key` onto `onto`: merged as `merge` (null when it was already in), or conflicted. */
+async function integrated(taskId: string, key: string, onto: string, merge: string | null, outcome = 'merged'): Promise<string> {
+  const opId = await platformOp(taskId, 'integrate', 'done');
+  return insert('integrations', {
+    task_id: taskId,
+    op_id: opId,
+    package_key: key,
+    cycle: 0,
+    outcome,
+    onto_commit: onto,
+    package_head: `${key}-head`,
+    merge_commit: merge,
+  });
+}
+
 /** A witnessed execution: a line every 50 ms from `start` to `end`, for the control plane at `via`. */
 function witnessed(
   pid: number,
@@ -223,6 +276,71 @@ describe('chaos invariant checker', () => {
       skip: ['INV-3'],
     });
     expect(violations).toEqual([]);
+  });
+
+  it('INV-16: names a forked or rewritten integration history and packages merged out of dependency order', async () => {
+    // Kept the rules: api, then ui (which needs api) from the head api left, after a conflict on the way;
+    // docs found already in; a second workshop whose merge is still in flight.
+    const good = await workshopTask('b0', 'm2');
+    await workPackage(good, 'api', [], 'b0');
+    await workPackage(good, 'ui', ['api'], 'm1');
+    await workPackage(good, 'docs', [], 'b0');
+    await integrated(good.taskId, 'api', 'b0', 'm1');
+    await integrated(good.taskId, 'ui', 'm1', null, 'conflicted');
+    await integrated(good.taskId, 'ui', 'm1', 'm2');
+    await integrated(good.taskId, 'docs', 'm2', null);
+    const busy = await workshopTask('b0', 'b0');
+    await integrated(busy.taskId, 'api', 'b0', 'm1');
+    await platformOp(busy.taskId, 'integrate', 'running');
+
+    // Two merges onto one head.
+    const forked = await workshopTask('b0', 'm1');
+    await integrated(forked.taskId, 'api', 'b0', 'm1');
+    await integrated(forked.taskId, 'ui', 'b0', 'm9');
+    // A merge onto a head the chain from the base never reached.
+    const rewritten = await workshopTask('b0', 'm1');
+    await integrated(rewritten.taskId, 'api', 'b0', 'm1');
+    await integrated(rewritten.taskId, 'ui', 'x1', 'm2');
+    // ui merged before api, which it needs.
+    const early = await workshopTask('b0', 'm2');
+    await workPackage(early, 'api', [], 'b0');
+    await workPackage(early, 'ui', ['api'], 'b0');
+    await integrated(early.taskId, 'ui', 'b0', 'm1');
+    await integrated(early.taskId, 'api', 'm1', 'm2');
+    // ui branched from the base while api was merged later; and one branched before its dependency went in at all.
+    const stale = await workshopTask('b0', 'm2');
+    await workPackage(stale, 'api', [], 'b0');
+    await workPackage(stale, 'ui', ['api'], 'b0');
+    await integrated(stale.taskId, 'api', 'b0', 'm1');
+    await integrated(stale.taskId, 'ui', 'm1', 'm2');
+    const ahead = await workshopTask('b0', 'b0');
+    await workPackage(ahead, 'api', [], 'b0');
+    await workPackage(ahead, 'ui', ['api'], 'b0');
+    await integrated(ahead.taskId, 'api', 'b0', null, 'conflicted');
+    // A conflict against a head the branch never had.
+    const offChain = await workshopTask('b0', 'm1');
+    await integrated(offChain.taskId, 'api', 'b0', 'm1');
+    await integrated(offChain.taskId, 'ui', 'y1', null, 'conflicted');
+    // The worktree is not where the history ends, with nothing in flight.
+    const drifted = await workshopTask('b0', 'z9');
+    await integrated(drifted.taskId, 'api', 'b0', 'm1');
+
+    const violations = await check('INV-16');
+    expect([...new Set(found(violations))]).toEqual(
+      [forked, rewritten, early, stale, ahead, offChain, drifted].map((w) => `INV-16 ${w.taskId}`).sort()
+    );
+    const details = (w: { taskId: string }) => violations.filter((v) => v.subject === w.taskId).map((v) => v.detail);
+    expect(details(forked)).toEqual(['api and ui were each merged onto b0']);
+    expect(details(rewritten)).toEqual(['the merge of ui onto x1 is not on the history from the base']);
+    // Merged first, it also started before api went in.
+    expect(details(early).sort()).toEqual([
+      'ui starts before the merge of api, which it depends on',
+      'ui was merged before api, which it depends on',
+    ]);
+    expect(details(stale)).toEqual(['ui starts before the merge of api, which it depends on']);
+    expect(details(ahead)).toEqual(['ui started before api, which it depends on, was merged']);
+    expect(details(offChain)).toEqual(['ui was recorded conflicted against y1, a head the integration branch never had']);
+    expect(details(drifted)).toEqual(['the integration worktree is at z9, but its recorded history ends at m1']);
   });
 
   it('INV-1: names running runs whose lease expired or is missing', async () => {

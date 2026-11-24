@@ -11,6 +11,7 @@ import { setTaskHostFactoryForTests } from '../src/modules/runs/task-run';
 import { drainRunsForTests } from '../src/modules/runs/wake';
 import { agentPhase } from '../src/modules/workshop/phases';
 import { setPlatformRetryBackoffForTests } from '../src/modules/workshop/platform-ops';
+import { checkInvariants, type InvariantId } from '../scripts/chaos/invariants';
 import { git, initFixtureRepo, makeSandbox, removeSandbox } from './fixtures/git-repo';
 import { scriptedHost } from './support/scripted-host';
 
@@ -216,6 +217,9 @@ describe('build on a repository', () => {
     const integration = await integrationOf(taskId);
     expect(await git(integration.worktreePath, 'ls-files')).toBe('README.md\napi.txt\nui.txt');
     expect(await git(integration.worktreePath, 'rev-parse', 'HEAD^1', 'HEAD^2')).toBe(`${ui.startCommit}\n${ui.headCommit}`);
+    // The chaos checker's integration-history rule holds on the real thing.
+    const others: InvariantId[] = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6', 'INV-7', 'INV-8', 'INV-9', 'INV-10'];
+    expect(await checkInvariants({ db: pool, cycleMs: 1_000, maxAttempts: 3, skip: others })).toEqual([]);
   });
 
   it('gives one owner their packages one at a time, in the order the plan lists them', { timeout: T }, async () => {
